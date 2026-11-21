@@ -39,8 +39,13 @@ read/unlink, no stale-lock eviction and no timeout-based removal of a live
 holder. The kernel releases the lock when the process exits or crashes.
 
 - Timer `--once`: if the flock is held, logs `locked` and exits without mining.
-- `--on-demand`: uses the same flock. It ignores a pause marker but **cannot**
-  bypass a holder, so it cannot defeat CLTV/swap protection.
+- `--on-demand`: uses the same flock. It ignores an operator pause marker but
+  **cannot** bypass a holder, so it cannot defeat CLTV/swap protection.
+- Active-swap pause: when `pause.json` contains
+  `activeSwapPolicy.version=1`, `--on-demand` requires a valid
+  `on-demand-auth.json` under the same flock. The authorization is explicit,
+  expiring and deadline-aware; it is rejected when the next block would enter the
+  earliest active swap's 20-block safety window.
 - Swap execution/recovery: must use the same lock path and hold a kernel flock
   around funding, claim, settlement and other block-sensitive irreversible
   actions. Pending integration is the deployment blocker.
@@ -48,6 +53,23 @@ holder. The kernel releases the lock when the process exits or crashes.
   must be restored explicitly.
 - State initialization and every state mutation occur only after the flock is
   held; `--status` reads a default in memory when no state file exists.
+
+## On-demand authorization
+
+`MINER_ON_DEMAND_AUTH_FILE` defaults next to `MINER_PAUSE_FILE` as
+`on-demand-auth.json`. It is used only when `--on-demand` sees an active-swap
+pause. An operator pause without `activeSwapPolicy` does not require it.
+
+```json
+{"issuedAt":1760000000000,"expiresAt":1760000060000,"maxHeight":165,"reason":"operator check"}
+```
+
+`issuedAt`, `expiresAt` and `maxHeight` are safe integers; `reason` is 1-120
+characters of `[A-Za-z0-9 _.-]`. The current time must satisfy
+`issuedAt <= now < expiresAt`; the authorization permits at most `maxHeight`,
+which must be at most `earliestTimeoutHeight - 20`, and the next block must not
+exceed it. Missing, malformed, expired or too-wide authorization fails closed
+with `ON_DEMAND_NOT_AUTHORIZED` and mines nothing.
 
 ## Persistent state
 
@@ -132,8 +154,9 @@ operator action, not an automatic confirmation loop.
 `tests/regtestMiner.sh` uses a mock `bitcoin-cli` and real kernel `flock` to
 cover: one address/two ticks, wrong chain/wallet rejection before generation,
 shared-lock exclusion with a slow holder, concurrent acquisition, pause vs
-on-demand, ambiguous generation reconciliation, unrelated block/coinbase,
-parent/reorg mismatch, crash-boundary pending retention and a crash after state
-commit but before pending cleanup (idempotent `blocksMined`). `tests/
-regtestMiner.test.ts` runs it on Linux. No VM service, timer, wallet or real
-node was changed by this task.
+on-demand, active-swap deadline authorization (missing, malformed, expired,
+invalid reason, multiple swaps, `maxHeight`), ambiguous generation
+reconciliation, unrelated block/coinbase, parent/reorg mismatch, crash-boundary
+pending retention and a crash after state commit but before pending cleanup
+(idempotent `blocksMined`). `tests/regtestMiner.test.ts` runs it on Linux. No VM
+service, timer, wallet or real node was changed by this task.

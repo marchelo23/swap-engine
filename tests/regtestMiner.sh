@@ -123,6 +123,53 @@ test_pause_and_on_demand() {
   run_miner --resume; run_miner --status; [[ "$(jq -r '.paused' <<< "$OUT")" == "false" ]] || fail "resume: $OUT"
 }
 
+write_active_pause() {
+  local first="$1" second="${2:-}"
+  if [[ -n "$second" ]]; then
+    jq -n --argjson first "$first" --argjson second "$second" \
+      '{pausedAt:"2026-01-01T00:00:00Z",reason:"active-swap_2",activeSwapPolicy:{version:1,swaps:{a:{id:"a",state:"LOCKUP_CONFIRMED",timeoutHeight:$first,updatedAt:1},b:{id:"b",state:"INVOICE_ACCEPTED",timeoutHeight:$second,updatedAt:2}}}}' > "$DATA/pause.json"
+  else
+    jq -n --argjson first "$first" \
+      '{pausedAt:"2026-01-01T00:00:00Z",reason:"active-swap_1",activeSwapPolicy:{version:1,swaps:{a:{id:"a",state:"LOCKUP_CONFIRMED",timeoutHeight:$first,updatedAt:1}}}}' > "$DATA/pause.json"
+  fi
+}
+write_auth() {
+  local issued="$1" expires="$2" maxHeight="$3" reason="${4:-operator check}"
+  jq -n --argjson issued "$issued" --argjson expires "$expires" --argjson maxHeight "$maxHeight" --arg reason "$reason" \
+    '{issuedAt:$issued,expiresAt:$expires,maxHeight:$maxHeight,reason:$reason}' > "$DATA/on-demand-auth.json"
+}
+
+test_active_swap_auth() {
+  reset_state; write_active_pause 160
+  run_miner --on-demand; assert_failed ON_DEMAND_NOT_AUTHORIZED; [[ "$(state_value .mineCalls)" -eq 0 ]] || fail 'mined without auth'
+  now=$(date +%s%3N)
+  write_auth $((now - 1000)) $((now + 60000)) 141
+  run_miner --on-demand; assert_failed ON_DEMAND_NOT_AUTHORIZED; [[ "$(state_value .mineCalls)" -eq 0 ]] || fail 'mined inside deadline window'
+  write_auth $((now - 1000)) $((now + 60000)) 140
+  run_miner --on-demand; assert_mined; [[ "$(state_value .mineCalls)" -eq 1 ]] || fail 'auth on-demand did not mine'
+  run_miner --on-demand; assert_failed ON_DEMAND_NOT_AUTHORIZED; [[ "$(state_value .mineCalls)" -eq 1 ]] || fail 'mined past auth maxHeight'
+
+  reset_state; write_active_pause 160; write_auth $((now - 2000)) "$now" 140
+  run_miner --on-demand; assert_failed ON_DEMAND_NOT_AUTHORIZED; [[ "$(state_value .mineCalls)" -eq 0 ]] || fail 'mined with expired auth'
+  write_auth "$now" $((now + 60000)) 140
+  run_miner --on-demand; assert_mined; [[ "$(state_value .mineCalls)" -eq 1 ]] || fail 'issuedAt boundary rejected'
+
+  reset_state; write_active_pause 160; printf '{bad\n' > "$DATA/on-demand-auth.json"
+  run_miner --on-demand; assert_failed ON_DEMAND_NOT_AUTHORIZED; [[ "$(state_value .mineCalls)" -eq 0 ]] || fail 'mined with malformed auth'
+  write_auth $((now - 1000)) $((now + 60000)) 140 'bad$reason'
+  run_miner --on-demand; assert_failed ON_DEMAND_NOT_AUTHORIZED; [[ "$(state_value .mineCalls)" -eq 0 ]] || fail 'mined with invalid reason'
+
+  reset_state; write_active_pause 160 170; write_auth $((now - 1000)) $((now + 60000)) 141
+  run_miner --on-demand; assert_failed ON_DEMAND_NOT_AUTHORIZED; [[ "$(state_value .mineCalls)" -eq 0 ]] || fail 'ignored earliest deadline'
+  write_auth $((now - 1000)) $((now + 60000)) 140
+  run_miner --on-demand; assert_mined
+
+  reset_state; printf '{bad\n' > "$DATA/pause.json"
+  run_miner --on-demand; assert_failed ON_DEMAND_NOT_AUTHORIZED; [[ "$(state_value .mineCalls)" -eq 0 ]] || fail 'mined with malformed pause'
+
+  reset_state; run_miner --pause operator-check; run_miner --on-demand; assert_mined
+}
+
 test_slow_holder_and_concurrent_lock() {
   reset_state; mkdir -p "$DATA"
   flock -n "$DATA/miner.lock" -c 'sleep 2' & holder=$!
@@ -173,6 +220,7 @@ test_one_address_two_ticks
 test_wrong_chain_and_wallet
 test_address_ownership
 test_pause_and_on_demand
+test_active_swap_auth
 test_slow_holder_and_concurrent_lock
 test_ambiguous_reconcile
 test_unrelated_block_and_reorg_reconciliation

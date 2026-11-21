@@ -13,12 +13,14 @@ LOG_FILE="${MINER_LOG_FILE:-$DATA_DIR/miner.log}"
 LOCK_FILE="${MINER_LOCK_FILE:-$DATA_DIR/miner.lock}"
 PAUSE_FILE="${MINER_PAUSE_FILE:-$DATA_DIR/pause.json}"
 PENDING_FILE="${MINER_PENDING_FILE:-$DATA_DIR/pending.json}"
+AUTH_FILE="${MINER_ON_DEMAND_AUTH_FILE:-$(dirname "$PAUSE_FILE")/on-demand-auth.json}"
 WALLET="${BITCOIN_WALLET:-lqwd-lab}"
 CORE_DATADIR="${BITCOIN_DATADIR:-/home/truja/.bitcoin}"
 CLI="${BITCOIN_CLI:-bitcoin-cli}"
 ADDRESS_LABEL="${MINER_ADDRESS_LABEL:-lqwd-regtest-miner}"
 
 now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+now_ms() { date +%s%3N; }
 core() { "$CLI" -regtest -datadir="$CORE_DATADIR" "$@"; }
 core_wallet() { "$CLI" -regtest -datadir="$CORE_DATADIR" -rpcwallet="$WALLET" "$@"; }
 sync_path() { sync -f "$1"; }
@@ -127,6 +129,48 @@ reconcile_pending() {
   exit 1
 }
 
+validate_on_demand_auth() {
+  local pause_file="$1" height="$2" pause_json policy auth_json earliest count now_value
+  [[ -e "$pause_file" ]] || return 0
+  if [[ ! -f "$pause_file" ]]; then record_failure ON_DEMAND_NOT_AUTHORIZED; return 1; fi
+  pause_json=$(cat "$pause_file" 2>/dev/null || true)
+  if ! jq -e 'type == "object"' <<< "$pause_json" >/dev/null 2>&1; then
+    record_failure ON_DEMAND_NOT_AUTHORIZED
+    return 1
+  fi
+  policy=$(jq -c '.activeSwapPolicy // empty' <<< "$pause_json" 2>/dev/null || true)
+  [[ -n "$policy" ]] || return 0
+  if ! jq -e '.version == 1 and (.swaps | type) == "object" and
+    ([.swaps[] | select((.timeoutHeight | type) != "number" or (.timeoutHeight | floor) != .timeoutHeight or
+      .timeoutHeight < 0 or .timeoutHeight > 9007199254740991)] | length) == 0' <<< "$policy" >/dev/null 2>&1; then
+    record_failure ON_DEMAND_NOT_AUTHORIZED
+    return 1
+  fi
+  count=$(jq -r '.swaps | length' <<< "$policy" 2>/dev/null || true)
+  [[ "$count" =~ ^[0-9]+$ ]] || { record_failure ON_DEMAND_NOT_AUTHORIZED; return 1; }
+  [[ "$count" -gt 0 ]] || return 0
+  earliest=$(jq -r '[.swaps[].timeoutHeight] | min' <<< "$policy" 2>/dev/null || true)
+  if [[ ! "$earliest" =~ ^[0-9]+$ || ! "$height" =~ ^[0-9]+$ ]] ||
+    (( earliest > 9007199254740991 || height > 9007199254740991 )); then
+    record_failure ON_DEMAND_NOT_AUTHORIZED
+    return 1
+  fi
+  if [[ ! -f "$AUTH_FILE" ]]; then record_failure ON_DEMAND_NOT_AUTHORIZED; return 1; fi
+  auth_json=$(cat "$AUTH_FILE" 2>/dev/null || true)
+  now_value=$(now_ms)
+  if ! jq -e --argjson now "$now_value" --argjson height "$height" --argjson earliest "$earliest" '
+    def safeint: (type == "number") and (floor == .) and (. >= 0) and (. <= 9007199254740991);
+    ((.issuedAt | safeint) and (.expiresAt | safeint) and (.maxHeight | safeint) and
+      (.issuedAt <= $now) and (.expiresAt > $now) and
+      (.maxHeight <= ($earliest - 20)) and (($height + 1) <= .maxHeight) and
+      ((.reason | type) == "string") and (.reason | test("^[A-Za-z0-9 _.-]{1,120}$")))
+  ' <<< "$auth_json" >/dev/null 2>&1; then
+    record_failure ON_DEMAND_NOT_AUTHORIZED
+    return 1
+  fi
+  return 0
+}
+
 print_status() {
   mkdir -p "$DATA_DIR"
   chmod 700 "$DATA_DIR"
@@ -144,7 +188,8 @@ show_help() {
   cat <<'EOF'
 Usage: regtest-block-miner.sh [--once|--on-demand|--status|--pause [reason]|--resume|--help]
   --once       mine exactly one block unless paused or another process holds the kernel flock
-  --on-demand  explicit one-block confirmation; ignores pause but respects the shared flock
+  --on-demand  explicit one-block confirmation; ignores operator pause, respects the shared flock,
+               and requires expiring on-demand-auth.json while an active swap is paused
   --status     print sanitized state
   --pause      set pause.json for expiration tests
   --resume     remove pause.json
@@ -194,7 +239,7 @@ fi
 
 reconcile_pending
 
-if [[ "$CMD" == "--once" && -f "$PAUSE_FILE" ]]; then
+if [[ "$CMD" == "--once" && -e "$PAUSE_FILE" ]]; then
   pause_reason=$(jq -r '.reason // "unknown"' "$PAUSE_FILE" 2>/dev/null || echo unknown)
   tmp=$(mktemp "$STATE_FILE.XXXXXX")
   jq --arg reason "$pause_reason" '.paused=true | .pausedReason=$reason' "$STATE_FILE" > "$tmp"
@@ -211,6 +256,17 @@ if [[ "$chain_name" != "regtest" ]]; then record_failure CORE_WRONG_CHAIN; echo 
 if ! jq -e '.initialblockdownload == false and .headers >= .blocks' <<< "$chain" >/dev/null 2>&1; then
   record_failure CORE_NOT_READY; echo '{"status":"failed","failure":"CORE_NOT_READY"}'; exit 1
 fi
+
+if [[ "$CMD" == "--on-demand" && -e "$PAUSE_FILE" ]]; then
+  current_height=$(jq -r '.blocks' <<< "$chain")
+  if ! validate_on_demand_auth "$PAUSE_FILE" "$current_height"; then
+    log_event on_demand_rejected --argjson height "$current_height"
+    printf '%s\n' '{"status":"failed","failure":"ON_DEMAND_NOT_AUTHORIZED"}'
+    exit 1
+  fi
+  log_event on_demand_authorized --argjson height "$current_height"
+fi
+
 wallets=$(core listwallets 2>/dev/null || true)
 if ! jq -e --arg w "$WALLET" 'index($w) != null' <<< "$wallets" >/dev/null 2>&1; then
   record_failure WALLET_NOT_LOADED; echo '{"status":"failed","failure":"WALLET_NOT_LOADED"}'; exit 1
