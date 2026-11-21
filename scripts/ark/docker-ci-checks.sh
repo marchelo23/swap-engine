@@ -12,8 +12,18 @@ umask 077
 root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)
 context_dir="$root/deploy/ark/ci-tools"
 dockerfile="$context_dir/Dockerfile"
+validator_file="$context_dir/validate-e2e-evidence.sh"
+container_validator="/usr/local/libexec/ark-validate-e2e-evidence.sh"
 image="swap-engine-ark-ci-tools:local"
 pinned_base="docker.io/library/node:24.22.3-bookworm-slim@sha256:dc26ae92c9fb15cf6b1d63e20f0944b2efe0f115b20e00be48fb23fceb061c54"
+approved_evidence_files=(
+  boarding.json
+  matrix.json
+  offboard.json
+  renewal.json
+  restart.json
+  transfer.json
+)
 
 fail() {
   printf 'Ark docker-ci-checks: %s\n' "$*" >&2
@@ -53,12 +63,15 @@ cmd_build() {
   setup_engine
   [[ -d "$context_dir" && ! -L "$context_dir" ]] || fail "missing or unsafe build context $context_dir"
   [[ -f "$dockerfile" && ! -L "$dockerfile" ]] || fail "missing or unsafe $dockerfile"
+  [[ -f "$validator_file" && ! -L "$validator_file" ]] || fail "missing or unsafe $validator_file"
   grep -Fq "$pinned_base" "$dockerfile" || fail "Dockerfile base image pin mismatch"
 
   printf '=== Building pinned Ark CI tools image (context: deploy/ark/ci-tools) ===\n'
   docker build -f "$dockerfile" -t "$image" "$context_dir"
   printf '=== CI tools image metadata (--network none, --read-only, UID 1000) ===\n'
   run_hardened 16m '
+    v="'"$container_validator"'"
+    [[ -f "$v" && ! -L "$v" && "$(stat -c "%u:%g:%a" "$v")" == "0:0:555" ]] || exit 1
     jq -n \
       --arg image "'"$image"'" \
       --arg base "'"$pinned_base"'" \
@@ -66,13 +79,25 @@ cmd_build() {
       --arg git "$(git --version)" \
       --arg jq "$(jq --version)" \
       --arg bash "$(bash --version | head -n 1)" \
+      --arg validator "$v" \
+      --arg validator_sha256 "$(sha256sum "$v" | awk "{print \$1}")" \
       --argjson uid "$(id -u)" \
-      "{image:\$image, base:\$base, node:\$node, git:\$git, jq:\$jq, bash:\$bash, uid:\$uid}"
+      "{image:\$image, base:\$base, node:\$node, git:\$git, jq:\$jq, bash:\$bash, validator:\$validator, validator_sha256:\$validator_sha256, uid:\$uid}"
   ' < /dev/null
 }
 
 ensure_image() {
-  if ! docker image inspect "$image" >/dev/null 2>&1; then
+  [[ -f "$validator_file" && ! -L "$validator_file" ]] || fail "missing or unsafe $validator_file"
+  local expected_sha actual_sha=""
+  expected_sha=$(sha256sum "$validator_file" | awk '{print $1}')
+  if docker image inspect "$image" >/dev/null 2>&1; then
+    actual_sha=$(run_hardened 16m '
+      v="'"$container_validator"'"
+      [[ -f "$v" && ! -L "$v" && "$(stat -c "%u:%g:%a" "$v")" == "0:0:555" ]] &&
+        sha256sum "$v" | awk "{print \$1}"
+    ' < /dev/null 2>/dev/null || true)
+  fi
+  if [[ "$actual_sha" != "$expected_sha" ]]; then
     cmd_build >&2
   fi
 }
@@ -191,23 +216,19 @@ cmd_evidence_validator_regression() {
   setup_engine
   command -v tar >/dev/null || fail "missing tar CLI"
   [[ ! -L "$root/scripts" && ! -L "$root/scripts/ark" ]] || fail "symlink in scripts/ark path"
-
-  local rel
-  for rel in scripts/ark/validate-e2e-evidence.sh scripts/ark/test-validate-e2e-evidence.sh; do
-    [[ -f "$root/$rel" && ! -L "$root/$rel" ]] || fail "missing or unsafe required file: $rel"
-  done
+  [[ -f "$root/scripts/ark/test-validate-e2e-evidence.sh" && ! -L "$root/scripts/ark/test-validate-e2e-evidence.sh" ]] ||
+    fail "missing or unsafe scripts/ark/test-validate-e2e-evidence.sh"
 
   ensure_image
-  printf '=== Running E2E evidence validator regression in pinned container (--network none, synthetic fixtures) ===\n'
+  printf '=== Running E2E evidence validator regression in pinned container (--network none, immutable in-image validator) ===\n'
   tar -C "$root" -cf - \
-    scripts/ark/validate-e2e-evidence.sh \
     scripts/ark/test-validate-e2e-evidence.sh |
     run_hardened 32m '
       umask 077
       mkdir -m 0700 -p /tmp/work
       tar --no-same-owner -C /tmp/work -xf -
-      chmod 0444 /tmp/work/scripts/ark/validate-e2e-evidence.sh \
-        /tmp/work/scripts/ark/test-validate-e2e-evidence.sh
+      chmod 0444 /tmp/work/scripts/ark/test-validate-e2e-evidence.sh
+      export ARK_EVIDENCE_VALIDATOR="'"$container_validator"'"
       exec bash /tmp/work/scripts/ark/test-validate-e2e-evidence.sh
     '
 }
@@ -220,9 +241,6 @@ cmd_validate_e2e_evidence() {
 
   setup_engine
   command -v tar >/dev/null || fail "missing tar CLI"
-  [[ ! -L "$root/scripts" && ! -L "$root/scripts/ark" ]] || fail "symlink in scripts/ark path"
-  [[ -f "$root/scripts/ark/validate-e2e-evidence.sh" && ! -L "$root/scripts/ark/validate-e2e-evidence.sh" ]] ||
-    fail "missing or unsafe scripts/ark/validate-e2e-evidence.sh"
   [[ ! -L "$dst" ]] || fail "refusing symlink approved directory: $dst"
 
   # Fail closed: clear stale approved dir even if source is missing or validation fails.
@@ -232,10 +250,33 @@ cmd_validate_e2e_evidence() {
   fi
   [[ -d "$src" && ! -L "$src" ]] || fail "missing or unsafe source evidence directory: $src"
 
-  # Reject any symlinks inside the source evidence directory before streaming.
-  if find "$src" -mindepth 1 -maxdepth 1 -type l | grep -q .; then
-    fail "symlink detected in source evidence directory: $src"
+  # Host-side strict allowlist and regular-file pre-flight BEFORE packing any tar input.
+  # Never pack directories, symlinks, hidden files, or unapproved entries.
+  local actual_sorted expected_sorted entry path size
+  expected_sorted=$(printf '%s\n' "${approved_evidence_files[@]}")
+  actual_sorted=$(find "$src" -mindepth 1 -maxdepth 1 -printf '%f\n' | LC_ALL=C sort)
+  if [[ "$actual_sorted" != "$expected_sorted" ]]; then
+    for entry in "${approved_evidence_files[@]}"; do
+      if ! grep -Fxq "$entry" <<<"$actual_sorted"; then
+        fail "missing required evidence file before streaming: $entry"
+      fi
+    done
+    while IFS= read -r entry; do
+      [[ -z "$entry" ]] && continue
+      if ! grep -Fxq "$entry" <<<"$expected_sorted"; then
+        fail "unexpected unapproved entry in evidence directory: $entry"
+      fi
+    done <<<"$actual_sorted"
+    fail "evidence directory entries do not match strict allowlist"
   fi
+  for entry in "${approved_evidence_files[@]}"; do
+    path="$src/$entry"
+    [[ -f "$path" && ! -L "$path" && -r "$path" ]] ||
+      fail "evidence entry is not a readable regular file: $entry"
+    size=$(wc -c < "$path")
+    (( size > 0 && size <= 65536 )) ||
+      fail "evidence file size out of bounds ($size bytes): $entry"
+  done
 
   ensure_image
   dst_parent=$(dirname -- "$dst")
@@ -245,33 +286,41 @@ cmd_validate_e2e_evidence() {
   chmod 0700 "$tmp_out"
   trap 'rm -rf -- "${tmp_out:-}"' RETURN
 
-  printf '=== Validating E2E evidence inside pinned container (--network none, strict fail-closed schema) ===\n' >&2
-  local tar_in
+  printf '=== Validating E2E evidence inside pinned container (--network none, immutable in-image validator) ===\n' >&2
+  local tar_in tar_out
   tar_in=$(mktemp "$tmp_out/.in.XXXXXXXX")
-  tar -cf "$tar_in" \
-    -C "$root" scripts/ark/validate-e2e-evidence.sh \
-    -C "$src" .
-  local tar_out
+  # Stream ONLY the 6 allowlisted regular data files; never mix executable scripts with untrusted input.
+  tar -C "$src" -cf "$tar_in" -- "${approved_evidence_files[@]}"
   tar_out=$(mktemp "$tmp_out/.out.XXXXXXXX")
   if ! run_hardened 32m '
     umask 077
     mkdir -m 0700 -p /tmp/work/src
     tar --no-same-owner -C /tmp/work/src -xf -
-    mkdir -m 0700 -p /tmp/work/bin
-    mv /tmp/work/src/scripts/ark/validate-e2e-evidence.sh /tmp/work/bin/validate-e2e-evidence.sh
-    rmdir /tmp/work/src/scripts/ark /tmp/work/src/scripts
-    chmod 0444 /tmp/work/bin/validate-e2e-evidence.sh
-    summary=$(bash /tmp/work/bin/validate-e2e-evidence.sh /tmp/work/src /tmp/work/approved)
+    summary=$(bash "'"$container_validator"'" /tmp/work/src /tmp/work/approved)
     printf "%s\n" "$summary" >&2
-    tar -C /tmp/work/approved -cf - \
+    tar -C /tmp/work/approved -cf - -- \
       boarding.json matrix.json offboard.json renewal.json restart.json transfer.json
   ' < "$tar_in" > "$tar_out"; then
     fail "E2E evidence validation failed closed; no approved artifacts staged"
   fi
 
+  # Verify container stdout is a clean tar archive containing ONLY the 6 allowlisted regular files.
+  local out_entries out_types
+  out_entries=$(tar -tf "$tar_out" | LC_ALL=C sort) || fail "invalid tar stream from validator container"
+  [[ "$out_entries" == "$expected_sorted" ]] ||
+    fail "unexpected entries in approved tar stream"
+  out_types=$(tar -tvf "$tar_out") || fail "cannot inspect approved tar stream"
+  if grep -Ev '^-[rwx-]{9} ' <<<"$out_types" | grep -q .; then
+    fail "non-regular member detected in approved tar stream"
+  fi
+
   mkdir -m 0700 -p -- "$tmp_out/approved"
   tar --no-same-owner -C "$tmp_out/approved" -xf "$tar_out"
-  chmod 0600 "$tmp_out/approved"/*.json
+  for entry in "${approved_evidence_files[@]}"; do
+    [[ -f "$tmp_out/approved/$entry" && ! -L "$tmp_out/approved/$entry" ]] ||
+      fail "approved output is not a regular file: $entry"
+    chmod 0600 "$tmp_out/approved/$entry"
+  done
   mv -- "$tmp_out/approved" "$dst"
   rm -rf -- "$tmp_out"
   trap - RETURN

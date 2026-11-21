@@ -5,7 +5,7 @@ set -euo pipefail
 umask 077
 
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
-validator="$script_dir/validate-e2e-evidence.sh"
+validator="${ARK_EVIDENCE_VALIDATOR:-$script_dir/validate-e2e-evidence.sh}"
 [[ -f "$validator" ]] || { echo "missing $validator" >&2; exit 1; }
 
 work=$(mktemp -d)
@@ -309,10 +309,15 @@ jq '.source = "live isolated docker-e2e stack\n2026-11-21 INFO raw container log
 mv "$work/bad_raw_log/matrix.json.tmp" "$work/bad_raw_log/matrix.json"
 expect_fail "raw_multiline_log" "$work/bad_raw_log" "$work/out_bad_raw_log"
 
-# 4. Extra unapproved file, symlink, malformed JSON
+# 4. Extra unapproved file, extra benign directory, symlink, malformed JSON
 write_valid_fixture "$work/bad_extra_file"
 printf 'raw debug log\n' > "$work/bad_extra_file/debug.log"
 expect_fail "extra_unapproved_file" "$work/bad_extra_file" "$work/out_bad_extra_file"
+
+write_valid_fixture "$work/bad_extra_dir"
+mkdir -p "$work/bad_extra_dir/extra_dir"
+printf 'benign note\n' > "$work/bad_extra_dir/extra_dir/note.txt"
+expect_fail "extra_unapproved_dir" "$work/bad_extra_dir" "$work/out_bad_extra_dir"
 
 write_valid_fixture "$work/bad_symlink"
 mv "$work/bad_symlink/renewal.json" "$work/renewal-outside.json"
