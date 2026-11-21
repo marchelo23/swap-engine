@@ -14,6 +14,15 @@ import { isAbsolute } from 'node:path';
 import { checkedJSON } from './operator/OperatorFiles.js';
 import { createOwnedRuntimeFactory, ownedRuntimePolicySchema } from './operator/OwnedPreparationRuntime.js';
 import { createOwnedPreparation } from './api/ownedPreparation.js';
+import { createGuestRuntime, guestStartupPolicySchema, type GuestRuntime } from './guest/GuestStartup.js';
+
+export function guestStartupArguments(args: string[], mode: ApplicationMode) {
+  if (args[0] !== '--guest-regtest') return undefined;
+  if (mode !== 'regtest' || args.length < 5 || args[1] !== '--policy-path' || !isAbsolute(args[2] ?? '') ||
+    args[3] !== '--policy-sha256' || !/^[a-f0-9]{64}$/.test(args[4] ?? '')) throw new Error('GUEST_STARTUP_REJECTED');
+  if (args.length !== 5 && !(args.length === 6 && args[5] === '--guest-watch')) throw new Error('GUEST_STARTUP_REJECTED');
+  return { path: args[2]!, hash: args[4]!, watch: args[5] === '--guest-watch' };
+}
 
 export function ownedStartupArguments(args: string[], mode: ApplicationMode) {
   if (args[0] !== '--owned-regtest') return undefined;
@@ -40,8 +49,9 @@ type Dependencies = {
 
 /** Real app entrypoint, also exercised offline with mock node/operator adapters. */
 export async function startApplication(env: NodeJS.ProcessEnv = process.env, args: string[] = [], dependencies: Dependencies = {}) {
-  const c = config(env); const ownedArgs = ownedStartupArguments(args, c.mode);
-  const operatorArgs = ownedArgs ? undefined : controlledStartupArguments(args, c.mode);
+  const c = config(env); const guestArgs = guestStartupArguments(args, c.mode);
+  const ownedArgs = guestArgs ? undefined : ownedStartupArguments(args, c.mode);
+  const operatorArgs = guestArgs || ownedArgs ? undefined : controlledStartupArguments(args, c.mode);
   let liquidity: () => Promise<Balances>; let diagnostics: (() => ReturnType<typeof preflight>) | undefined;
   let operations: (() => Promise<OperationsBalances>) | undefined;
   if (dependencies.reads) ({ liquidity, diagnostics, operations } = dependencies.reads);
@@ -60,8 +70,17 @@ export async function startApplication(env: NodeJS.ProcessEnv = process.env, arg
   const store = await Store.open(c.directory);
   try {
     await recoverInterruptedReverseRuns(store);
+    let guestRuntime: GuestRuntime | undefined;
+    if (guestArgs) {
+      try {
+        const policy = guestStartupPolicySchema.parse(await checkedJSON(guestArgs.path, guestArgs.hash));
+        guestRuntime = createGuestRuntime(store, policy, { watchRequested: guestArgs.watch });
+      } catch {
+        console.error('GUEST_STARTUP_STOPPED: no guest request, invoice or claim capability installed');
+      }
+    }
     const server = createApi(new SwapManager(store), liquidity, diagnostics, c.mode,
-      { operations, auth: { storePath: env.AUTH_STORE_PATH, origin: env.AUTH_ORIGIN } });
+      { operations, auth: { storePath: env.AUTH_STORE_PATH, origin: env.AUTH_ORIGIN }, guestReverse: guestRuntime?.guestReverse });
     if (ownedArgs) {
       let factory: Awaited<ReturnType<typeof createOwnedRuntimeFactory>> | undefined;
       try {
@@ -77,13 +96,18 @@ export async function startApplication(env: NodeJS.ProcessEnv = process.env, arg
       }
     }
     await new Promise<void>((ready, reject) => { server.once('error', reject); server.listen(dependencies.port ?? c.port, '127.0.0.1', () => { server.off('error', reject); ready(); }); });
+    if (guestRuntime && guestArgs?.watch) {
+      try { guestRuntime.start(); }
+      catch { console.error('GUEST_WATCHER_STOPPED: guest request routes remain inert; reconcile without retry'); }
+    }
     // Failed readiness leaves the app usable with controlled execution closed; never retry.
     const runtime = operatorArgs ? (dependencies.operator ?? runOperatorCLI)(operatorArgs, server.controlled.operatorIO) : undefined;
     void runtime?.catch(() => { console.error('CONTROLLED_RUNTIME_STOPPED: preserve intents; reconcile without retry'); });
     let shutdown: Promise<void> | undefined;
-    return { server, store, runtime, mode: c.mode,
+    return { server, store, runtime, guestRuntime, mode: c.mode,
       close(): Promise<void> {
         return shutdown ??= (async () => {
+          guestRuntime?.stop();
           const stopped = new Promise<void>(done => server.close(() => done()));
           await server.controlled.close(); await runtime?.catch(() => {}); await stopped; await store.close();
         })();
