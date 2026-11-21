@@ -17,7 +17,7 @@ import { updateSwapRevision } from '../core/SwapStateMachine.js';
 import type { Invoice } from '../lightning/LndClient.js';
 import type { GuestExecution } from './GuestExecution.js';
 import { MiningLockBusyError, withMiningLock } from '../mining/MiningLock.js';
-import { minerPauseFile, updateActiveSwapPause, type ActiveSwap } from '../mining/ActiveSwapPolicy.js';
+import { MiningPauseCoordinator, guestActiveSwaps, markActiveSwap, minerPauseFile, ownedActiveSwaps } from '../mining/ActiveSwapPolicy.js';
 
 const hash = z.string().regex(/^[a-f0-9]{64}$/);
 const pubkey = z.string().regex(/^(02|03)[a-f0-9]{64}$/);
@@ -105,13 +105,15 @@ export class GuestReverse {
   private readonly execution?: GuestExecution;
   private readonly lock: <T>(work: () => Promise<T>) => Promise<T>;
   private readonly pauseFile: string;
+  private readonly pause: MiningPauseCoordinator;
   private readonly queues = new Map<string, Promise<unknown>>();
   private timer?: ReturnType<typeof setInterval>;
 
   constructor(private readonly store: Store, policy: unknown, clients: GuestReverseClients,
     options: { preparation?: GuestPreparationFactory; broadcast?: (hex: string) => Promise<string>;
       storeFactory?: GuestStoreFactory; execution?: GuestExecution;
-      lock?: <T>(work: () => Promise<T>) => Promise<T>; lockFile?: string; pauseFile?: string } = {}) {
+      lock?: <T>(work: () => Promise<T>) => Promise<T>; lockFile?: string; pauseFile?: string;
+      pause?: MiningPauseCoordinator; ownedRunsDirectory?: string } = {}) {
     this.policy = guestReversePolicySchema.parse(policy);
     if (this.policy.providerNode === this.policy.payerNode ||
       this.policy.routing.providerOrigin === this.policy.routing.payerOrigin ||
@@ -124,6 +126,11 @@ export class GuestReverse {
     this.execution = options.execution;
     this.lock = options.lock ?? (<T>(work: () => Promise<T>) => withMiningLock(work, { lockFile: options.lockFile }));
     this.pauseFile = options.pauseFile ?? minerPauseFile();
+    const scanners = [() => guestActiveSwaps(this.store,
+      row => this.withRun(row.id, row.runDirectory, async runStore => row.swapId ? runStore.read().swaps[row.swapId] : undefined),
+      hash => this.clients.invoices.lookup(hash))];
+    if (options.ownedRunsDirectory) scanners.push(() => ownedActiveSwaps(options.ownedRunsDirectory!, directory => StoreFile.open(directory)));
+    this.pause = options.pause ?? new MiningPauseCoordinator(this.pauseFile, this.lock, scanners);
     this.now = clients.now ?? Date.now; this.admission = new GuestAdmission(store, this.now);
   }
 
@@ -164,18 +171,25 @@ export class GuestReverse {
     });
     let prepared: GuestPrepared;
     try {
-      const tip = await this.clients.tip();
-      if (!Number.isSafeInteger(tip) || tip < 1 || tip > 499_999_969) throw new GuestReverseError(503, 'GUEST_CHAIN_UNAVAILABLE');
-      const spec = preparationSpecSchema.parse({ id: admissionId, isolationId: this.policy.isolationId, tipHeight: tip,
-        providerNode: this.policy.providerNode, payerNode: this.policy.payerNode, routing: this.policy.routing,
-        client: { paymentHash: admission.paymentHash, claimPublicKey: admission.claimPublicKey },
-        sourceAmountSats: admission.invoiceSats, refundPublicKey: this.policy.refundPublicKey,
-        claimDestination: admission.destination, refundDestination: this.policy.refundDestination, input: this.policy.funding });
-      const approval: PreparationApproval = { id: spec.id, specDigest: preparationDigest(spec),
-        scope: 'isolated-regtest-invoice-only', expiresAt: now + 120000 };
-      prepared = await this.withRun(admissionId, runDirectory, async runStore => {
-        const result = await this.preparation(runStore, spec, this.clients, approval).prepare();
-        this.assertPrepared(admission, result.plan);
+      prepared = await this.lock(async () => {
+        // Fail-closed marker exists before the invoice can become payable.
+        await markActiveSwap(this.pauseFile, { id: admissionId, state: 'PREPARING', timeoutHeight: 0, updatedAt: this.now() });
+        const tip = await this.clients.tip();
+        if (!Number.isSafeInteger(tip) || tip < 1 || tip > 499_999_969) throw new GuestReverseError(503, 'GUEST_CHAIN_UNAVAILABLE');
+        const spec = preparationSpecSchema.parse({ id: admissionId, isolationId: this.policy.isolationId, tipHeight: tip,
+          providerNode: this.policy.providerNode, payerNode: this.policy.payerNode, routing: this.policy.routing,
+          client: { paymentHash: admission.paymentHash, claimPublicKey: admission.claimPublicKey },
+          sourceAmountSats: admission.invoiceSats, refundPublicKey: this.policy.refundPublicKey,
+          claimDestination: admission.destination, refundDestination: this.policy.refundDestination, input: this.policy.funding });
+        const approval: PreparationApproval = { id: spec.id, specDigest: preparationDigest(spec),
+          scope: 'isolated-regtest-invoice-only', expiresAt: now + 120000 };
+        const result = await this.withRun(admissionId, runDirectory, async runStore => {
+          const value = await this.preparation(runStore, spec, this.clients, approval).prepare();
+          this.assertPrepared(admission, value.plan);
+          return value;
+        });
+        await markActiveSwap(this.pauseFile, { id: admissionId, state: 'INVOICE_CREATED',
+          timeoutHeight: result.plan.contract.timeoutHeight, updatedAt: this.now() });
         return result;
       });
     } catch (error) {
@@ -285,6 +299,8 @@ export class GuestReverse {
             value.clientClaimIntent.status = 'BROADCAST';
           });
           await this.recordClaim(row, requestKey, fingerprint, txid, admission, 'BROADCAST');
+          await markActiveSwap(this.pauseFile, { id: final.id, state: 'CLAIM_DETECTED',
+            timeoutHeight: final.contract.timeoutHeight, updatedAt: this.now() }).catch(() => {});
           return this.claimView(row, txid, final.revision);
         });
       } catch (error) {
@@ -292,7 +308,6 @@ export class GuestReverse {
         throw error;
       }
     });
-    await this.refreshMiningPause().catch(() => {});
     return result;
   }
 
@@ -411,35 +426,9 @@ export class GuestReverse {
     });
   }
 
-  /** Recompute the DS-02 timer pause marker from durable guest rows and live
-   * invoice evidence. It never overwrites an explicit operator pause. */
-  async refreshMiningPause() {
-    const active: ActiveSwap[] = [];
-    for (const row of Object.values(this.store.read().guestSwaps ?? {})) {
-      if (row.status !== 'INVOICE_CREATED') continue;
-      let swap: Swap | undefined;
-      try {
-        swap = await this.withRun(row.id, row.runDirectory, async runStore =>
-          row.swapId ? runStore.read().swaps[row.swapId] : undefined);
-      } catch { /* keep the conservative row deadline below */ }
-      if (!swap) {
-        active.push({ id: row.id, state: 'UNKNOWN', timeoutHeight: row.timeoutHeight ?? Number.MAX_SAFE_INTEGER, updatedAt: this.now() });
-        continue;
-      }
-      let invoiceState = 'UNKNOWN';
-      try {
-        const found = await this.clients.invoices.lookup(swap.contract.paymentHash);
-        invoiceState = found.status === 'PRESENT' ? found.invoice.state : 'ABSENT';
-      } catch { invoiceState = 'UNKNOWN'; }
-      const terminal = ['COMPLETED', 'REFUNDED', 'EXPIRED', 'FAILED'].includes(swap.state);
-      const heightRisk = !!swap.clientPayment || !!swap.lockup || !!swap.fundingIntent ||
-        ['INVOICE_ACCEPTED', 'LOCKUP_BROADCAST', 'LOCKUP_CONFIRMED', 'CLAIM_DETECTED', 'LIGHTNING_SETTLED',
-          'MANUAL_REVIEW', 'REFUND_PENDING'].includes(swap.state) || invoiceState === 'ACCEPTED' || invoiceState === 'UNKNOWN';
-      if (!terminal && heightRisk) active.push({ id: swap.id, state: swap.state,
-        timeoutHeight: swap.contract.timeoutHeight, updatedAt: this.now() });
-    }
-    await updateActiveSwapPause(this.pauseFile, active);
-  }
+  /** Full guest+optional-owned authoritative reconciliation under the mining
+   * lock. Uncertain evidence becomes a conservative marker; it is never removed. */
+  async refreshMiningPause() { return this.pause.reconcile(); }
 
   /** Disabled-by-default lifecycle watcher. With no injected execution this
    * only reads evidence; it never funds, settles, completes or expires. */
@@ -496,6 +485,7 @@ export class GuestReverse {
         });
       } catch { /* Keep the durable state for manual review; never retry here. */ }
     }
+    await this.refreshMiningPause();
     return { scanned, updated };
   }
 

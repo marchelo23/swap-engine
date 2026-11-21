@@ -21,7 +21,7 @@ const GUEST_INVOICE_SATS = 50000;
 
 async function fixture(options: { withExecution?: boolean } = {}) {
   const f = await setup(); const runsDirectory = await privateTestDirectory('guest-watch-runs'); const routing = routingFixture();
-  let invoiceState: Invoice['state'] = 'OPEN'; let calls = 0; let tip = 100;
+  let invoiceState: Invoice['state'] = 'OPEN'; let calls = 0; let tip = 100; let lookupFails = false; let lockCalls = 0;
   const ledger = new Map<string, { hex: string; confirmations: number }>(); const actions: string[] = [];
   const invoice = (): Invoice => ({ state: invoiceState, r_hash: Buffer.from(f.contract.paymentHash, 'hex').toString('base64'),
     value: String(GUEST_INVOICE_SATS), amt_paid_sat: invoiceState === 'SETTLED' ? String(GUEST_INVOICE_SATS) : '0',
@@ -35,7 +35,8 @@ async function fixture(options: { withExecution?: boolean } = {}) {
     payer: { origin: routing.payerOrigin, call: async () => { throw new Error('unexpected payer call'); },
       assertRegtest: async () => ({ chains: [{ chain: 'bitcoin', network: 'regtest' }], synced_to_chain: true }) },
     invoices: { origin: routing.providerOrigin, create: async () => { throw new Error('unexpected invoice create'); },
-      lookup: async () => ({ status: 'PRESENT' as const, invoice: invoice() }) },
+      lookup: async () => { if (lookupFails) throw new Error('synthetic invoice RPC unavailable');
+        return { status: 'PRESENT' as const, invoice: invoice() }; } },
     tip: async () => tip, now: () => 1000,
   };
   const execution: GuestExecution = {
@@ -74,12 +75,13 @@ async function fixture(options: { withExecution?: boolean } = {}) {
     refundDestination: f.destination, funding: { txid: 'ab'.repeat(32), vout: 0, valueSats: 100000 }, runsDirectory };
   const service = new GuestReverse(f.store, policy, clients, { preparation,
     broadcast: async hex => Transaction.fromHex(hex).getId(), pauseFile: join(runsDirectory, 'pause.json'),
-    execution: options.withExecution ? execution : undefined });
+    lock: async work => { lockCalls++; return work(); }, execution: options.withExecution ? execution : undefined });
   const token = randomBytes(32).toString('base64url'); const auth = `Bearer ${token}`;
   const quote = await service.quote(auth, 'guest-quote-key', { destination: f.destination, amountSats: GUEST_INVOICE_SATS,
     paymentHash: f.contract.paymentHash, claimPublicKey: f.contract.claimPublicKey });
   return { f, service, quote, auth, token, runsDirectory, ledger, actions, pauseFile: join(runsDirectory, 'pause.json'),
-    setTip: (value: number) => { tip = value; },
+    setTip: (value: number) => { tip = value; }, setLookupFails: (value: boolean) => { lookupFails = value; },
+    lockCalls: () => lockCalls,
     prepare: (key = 'guest-prepare-key') => service.prepare(quote.id, auth, key, { recoveryCommitment: 'ab'.repeat(32) }),
     setInvoice: (state: Invoice['state']) => { invoiceState = state; }, calls: () => calls,
     cleanup: async () => { await f.cleanup(); await rm(runsDirectory, { recursive: true, force: true }); } };
@@ -229,5 +231,17 @@ test('multiple pending swaps update one durable timer pause and terminal swaps r
     finally { await secondRun.close(); }
     await x.service.refreshMiningPause();
     await assert.rejects(readFile(x.pauseFile), { code: 'ENOENT' });
+  } finally { await x.cleanup(); }
+});
+
+test('RPC-unavailable reconciliation keeps a conservative pause marker and performs no actions', async () => {
+  const x = await fixture({ withExecution: true }); try {
+    await seedLockup(x, { claim: true });
+    x.setLookupFails(true);
+    await x.service.reconcile();
+    const paused = JSON.parse(await readFile(x.pauseFile, 'utf8')) as any;
+    const entries = Object.values(paused.activeSwapPolicy.swaps) as any[];
+    assert.ok(entries.some(entry => entry.state === 'UNKNOWN' || entry.state === 'LOCKUP_CONFIRMED' || entry.state === 'CLAIM_DETECTED'));
+    assert.deepEqual(x.actions, []);
   } finally { await x.cleanup(); }
 });

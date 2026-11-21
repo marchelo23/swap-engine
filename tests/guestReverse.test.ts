@@ -1,5 +1,5 @@
 import { randomBytes, randomUUID } from 'node:crypto';
-import { rm } from 'node:fs/promises';
+import { mkdir, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
@@ -20,8 +20,10 @@ import type { Invoice } from '../src/lightning/LndClient.js';
 const GUEST_INVOICE_SATS = 50000;
 const invoiceText = 'lnbcrt' + 'c'.repeat(30);
 
-async function fixture(options: { failAfterCreate?: boolean; noBroadcast?: boolean; broadcastFails?: boolean; tip?: number } = {}) {
+async function fixture(options: { failAfterCreate?: boolean; noBroadcast?: boolean; broadcastFails?: boolean;
+  tip?: number; pauseFile?: string; beforeInvoice?: (spec: any, pauseFile: string) => Promise<void> } = {}) {
   const f = await setup(); const runsDirectory = await privateTestDirectory('guest-runs'); const routing = routingFixture();
+  const pauseFile = options.pauseFile ?? join(runsDirectory, 'pause.json');
   let tip = options.tip ?? 100; let invoiceState: Invoice['state'] = 'OPEN'; let calls = 0; let broadcasts = 0; let lockCalls = 0;
   const ledger = new Map<string, { hex: string; confirmations: number }>();
   const invoice = (): Invoice => ({ state: invoiceState, r_hash: Buffer.from(f.contract.paymentHash, 'hex').toString('base64'),
@@ -39,6 +41,7 @@ async function fixture(options: { failAfterCreate?: boolean; noBroadcast?: boole
     tip: async () => tip, now: () => 1000,
   };
   const preparation: GuestPreparationFactory = (store, spec) => ({ async prepare() {
+    if (options.beforeInvoice) await options.beforeInvoice(spec, pauseFile);
     calls++;
     const manager = new SwapManager(store);
     const quote = await manager.quoteInvoice(spec.sourceAmountSats!, 1000);
@@ -64,12 +67,12 @@ async function fixture(options: { failAfterCreate?: boolean; noBroadcast?: boole
     refundDestination: f.destination, funding: { txid: 'ab'.repeat(32), vout: 0, valueSats: 100000 },
     runsDirectory };
   const service = new GuestReverse(f.store, policy, clients, { preparation,
-    broadcast: options.noBroadcast ? undefined : broadcast, pauseFile: join(runsDirectory, 'pause.json'),
+    broadcast: options.noBroadcast ? undefined : broadcast, pauseFile,
     lock: async work => { lockCalls++; return work(); } });
   const token = randomBytes(32).toString('base64url'); const auth = `Bearer ${token}`;
   const quote = await service.quote(auth, 'guest-quote-key', { destination: f.destination, amountSats: GUEST_INVOICE_SATS,
     paymentHash: f.contract.paymentHash, claimPublicKey: f.contract.claimPublicKey });
-  return { f, service, quote, auth, token, runsDirectory, ledger,
+  return { f, service, quote, auth, token, runsDirectory, ledger, pauseFile,
     prepare: (key = 'guest-prepare-key', commitment = 'ab'.repeat(32)) => service.prepare(quote.id, auth, key, { recoveryCommitment: commitment }),
     setInvoice: (state: Invoice['state']) => { invoiceState = state; }, setTip: (value: number) => { tip = value; },
     calls: () => calls, broadcasts: () => broadcasts, lockCalls: () => lockCalls,
@@ -129,6 +132,8 @@ test('an uncertain invoice RPC retains one attempt and never retries or creates 
     await assert.rejects(x.prepare(), (error: unknown) =>
       error instanceof GuestReverseError && error.code === 'GUEST_PREPARATION_UNCERTAIN');
     assert.equal(x.calls(), 1); assert.equal(x.f.store.read().guestSwaps![x.quote.id]!.status, 'PREPARATION_UNKNOWN');
+    const paused = JSON.parse(await readFile(x.pauseFile, 'utf8'));
+    assert.equal(paused.activeSwapPolicy.swaps[x.quote.id].state, 'PREPARING');
     await assert.rejects(x.prepare(), (error: unknown) =>
       error instanceof GuestReverseError && error.code === 'GUEST_PREPARATION_UNCERTAIN');
     await assert.rejects(x.prepare('new-key-123'), (error: unknown) =>
@@ -162,11 +167,11 @@ test('ACCEPTED is never SETTLED and COMPLETED requires a confirmed exact claim p
 
 test('client-signed claim is bound to the exact outpoint/destination/fee and broadcasts once', async () => {
   const x = await fixture(); try {
-    const seeded = await seedClaim(x);
+    const seeded = await seedClaim(x); const before = x.lockCalls();
     const result = await x.service.submitClaim(x.quote.id, x.auth, 'claim-key',
       { signedClaimHex: seeded.claim.toHex(), expectedRevision: seeded.expectedRevision }) as any;
     assert.equal(result.status, 'CLAIM_BROADCAST_PENDING_CONFIRMATION'); assert.equal(result.claimTxid, seeded.claim.getId());
-    assert.equal(x.broadcasts(), 1); assert.equal(x.lockCalls(), 1);
+    assert.equal(x.broadcasts(), 1); assert.equal(x.lockCalls(), before + 1);
     const replay = await x.service.submitClaim(x.quote.id, x.auth, 'claim-key',
       { signedClaimHex: seeded.claim.toHex(), expectedRevision: seeded.expectedRevision }) as any;
     assert.equal(replay.claimTxid, seeded.claim.getId()); assert.equal(x.broadcasts(), 1);
@@ -243,4 +248,32 @@ test('guest reverse HTTP routes are capability/origin bound and do not expose th
         { authorization, 'idempotency-key': 'api-prepare-key', origin: 'https://evil.invalid' })).status, 403);
     } finally { await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())); }
   } finally { await x.cleanup(); }
+});
+
+test('a durable PREPARING pause exists before the invoice and is updated with the real deadline', async () => {
+  let observed: any;
+  const x = await fixture({ beforeInvoice: async (spec, file) => {
+    observed = { id: spec.id, value: JSON.parse(await readFile(file, 'utf8')) };
+  } });
+  try {
+    const prepared = await x.prepare() as any;
+    assert.ok(observed.value.activeSwapPolicy.swaps[observed.id]);
+    assert.equal(observed.value.activeSwapPolicy.swaps[observed.id].state, 'PREPARING');
+    const after = JSON.parse(await readFile(x.pauseFile, 'utf8'));
+    assert.equal(after.activeSwapPolicy.swaps[x.quote.id].state, 'INVOICE_CREATED');
+    assert.equal(after.activeSwapPolicy.swaps[x.quote.id].timeoutHeight, 130);
+    assert.equal(typeof prepared.invoice, 'string');
+  } finally { await x.cleanup(); }
+});
+
+test('a pause-file failure blocks the invoice before any preparation', async () => {
+  const dir = await privateTestDirectory('guest-pause-fail'); const pauseFile = join(dir, 'pause-dir');
+  await mkdir(pauseFile, { recursive: true });
+  const x = await fixture({ pauseFile });
+  try {
+    await assert.rejects(x.prepare(), (error: unknown) =>
+      error instanceof GuestReverseError && error.code === 'GUEST_PREPARATION_UNCERTAIN');
+    assert.equal(x.calls(), 0);
+    assert.equal(x.f.store.read().guestSwaps![x.quote.id]!.status, 'PREPARATION_UNKNOWN');
+  } finally { await x.cleanup(); await rm(dir, { recursive: true, force: true }); }
 });
