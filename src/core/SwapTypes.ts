@@ -26,6 +26,10 @@ export type Swap = {
 export type ChainObservation = { fromHeight: number; height: number; blockHash: string;
   spend?: { txid: string; blockHash: string; height: number } };
 export type Database = { schema: 1; quotes: Record<string, Quote>; swaps: Record<string, Swap>;
+  guestAdmissions?: Record<string, { id: string; requestKey: string; fingerprint: string; tokenHash: string;
+    status: 'QUOTED'; createdAt: number; expiresAt: number;
+    terms: { network: 'regtest'; destination: string; paymentHash: string; claimPublicKey: string;
+      amountSats: number; invoiceSats: number; serviceFeeSats: number; claimFeeSats: number; fundingReserveSats: number } }>;
   ownedPreparations?: Record<string, { ownerId: string; fingerprint: string; attemptId: string; createdAt: number;
     sourceAmountSats?: number;
     status: 'INTENT' | 'READY' | 'UNKNOWN' | 'COMPLETED' | 'EXPIRED' | 'REJECTED'; swapId?: string;
