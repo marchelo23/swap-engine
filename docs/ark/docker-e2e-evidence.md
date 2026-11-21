@@ -2,27 +2,32 @@
 
 **Solo Bitcoin regtest — sin mainnet, sin fondos reales y sin servicios Core/LND compartidos.**
 
-Informe técnico reproducible de la implementación y ejecución desde estado limpio del laboratorio Docker aislado para el SDK oficial [`arkade-os/rust-sdk` v0.12.1](https://github.com/arkade-os/rust-sdk/tree/v0.12.1) (`352ca21bcaa01d3ddb535b0ebfb20cd9b028c357`).
+Informe técnico reproducible de la implementación y ejecución desde estado limpio del laboratorio Docker aislado para el SDK oficial [`arkade-os/rust-sdk` v0.12.1](https://github.com/arkade-os/rust-sdk/tree/v0.12.1) (`352ca21bcaa01d3ddb535b0ebfb20cd9b028c357`), incluyendo la encapsulación completa de las rutas auxiliares de CI (regresión Bash y escáner histórico de secretos) en contenedor fijado sin Node en el host.
 
-- **Informe PDF en español (con 9 capturas reales de terminal GUI):** [ark-docker-e2e-report-es.pdf](evidence/docker-e2e/ark-docker-e2e-report-es.pdf)
+- **Informe PDF en español (con 11 capturas reales de terminal GUI diferenciadas por fase y SHA):** [ark-docker-e2e-report-es.pdf](evidence/docker-e2e/ark-docker-e2e-report-es.pdf)
 - **Directorio estable de capturas PNG reales:** `docs/ark/evidence/docker-e2e/screenshots/`
 - **Guía reproducible del laboratorio Docker:** [docker-lab.md](docker-lab.md)
 
 ---
 
-## 1. Trazabilidad Git, Entorno y Versiones
+## 1. Trazabilidad Git por Fase, Entorno y Versiones
 
 | Campo | Valor verificado |
 | --- | --- |
-| Repositorio / Worktree aislado | `Truja503/swap-engine` — `/home/chelo/orca/workspaces/swap-engine/ark-docker-e2e` (rama `ark-docker-e2e`) |
+| Repositorio / Worktree aislado | `Truja503/swap-engine` — `/home/chelo/orca/workspaces/swap-engine/ark-docker-e2e` (rama local `ark-docker-e2e`, sin `push`) |
 | Base de partida (`ark-regtest-46-54`) | `70723afc66e95ac0c31bdea74b2a143f8bec668b` |
 | Commit 1 (destino PR `#61` / `#53` Docker/harness/CI) | `855ab01ded8bddbc2921aed583c36814fced0704` |
-| Commit 2 (destino PR `#63` / `#54` restauración `f5742b0`) | `21d3edb06d7b9ec59130ba61632540fd0dac6dd7` (**SHA de código probado en vivo**) |
-| Commit 3 (destino PR `#64` evidencia/PDF) | Solo documentación, PNGs saneados y PDF sobre `21d3edb` (`git diff 21d3edb..HEAD -- ark/ deploy/ scripts/ .github/` vacío) |
-| Fecha de ejecución en vivo | `2026-11-21` (`12:12` – `12:25 -06:00`) |
+| Commit 2 (destino PR `#63` / `#54` restauración `f5742b0`) | `21d3edb06d7b9ec59130ba61632540fd0dac6dd7` (**Fase 1 — SHA de código probado en vivo para `build`/`unit`/E2E/restart**) |
+| Commit 3 (destino PR `#64` evidencia inicial) | `5a9976bfe9f842eb9f8dd1451e8edf6f7d25efad` (añadió 11 archivos de evidencia + modificó `extra-regtest-validation.md`) |
+| Commit 4 (destino PR `#61` encapsulación CI sin host Node/Bash) | `167c120d09b18f7228aac50c50b6d1cde7e39206` (**Fase 2 — SHA probado para `docker-ci-checks.sh` y `ark-lab-unit.yml`**) |
+| Commit 5 (destino PR `#64` actualización evidencia/PNG/PDF) | Solo documentación, capturas nuevas `10`–`11` y PDF sobre `167c120` (`git diff 167c120..HEAD -- ark/ deploy/ scripts/ .github/` vacío) |
+| Invariancia del código de flujo Fase 1 (`21d3edb → 167c120`) | `git diff 21d3edb..167c120 -- ark/ deploy/ark/docker-compose.docker-e2e.yml scripts/ark/docker-e2e.sh` **vacío (0 archivos modificados)** |
+| Fechas de ejecución real | **Fase 1 (`21d3edb`):** `2026-11-21` (`12:12`–`12:25 -06:00`); **Fase 2 (`167c120`):** `2026-11-21` (`12:55`–`12:56 -06:00`) |
 | Sistema operativo host | `Linux 6.12.74+deb12-amd64 x86_64 GNU/Linux` (X11 `:0`, Qtile, `kitty` GUI real) |
-| Motor de contenedores / Compose | `podman 4.3.1` (wrapper CLI `docker`) / `podman-compose 1.6.0` |
+| Motor de contenedores validado localmente | `podman 4.3.1` (wrapper CLI `docker`) / `podman-compose 1.6.0` |
+| **Docker Engine + Docker Compose v2 nativos** | **`NO VALIDADO`** — `dockerd` no instalado, `/usr/libexec/docker/cli-plugins` ausente, `systemctl is-active docker` = `inactive`, `/run/docker.sock -> /run/podman/podman.sock` |
 | Toolchain Rust en imagen `ark-sdk` | `rustc 1.97.1 (8bab26f4f 2026-07-14)` / `cargo 1.97.1 (c980f4866 2026-06-30)` (`rust:1.97.1-slim-bookworm`) |
+| Imagen fijada de herramientas CI (`swap-engine-ark-ci-tools:local`) | `docker.io/library/node:24.22.3-bookworm-slim@sha256:dc26ae92c9fb15cf6b1d63e20f0944b2efe0f115b20e00be48fb23fceb061c54` + `bash 5.2.15`, `git 2.39.5`, `jq 1.6`, UID `1000` (`node`), contexto `deploy/ark/ci-tools/` (`.dockerignore`: solo `Dockerfile`) |
 | SDK Rust oficial fijado | `arkade-os/rust-sdk` v0.12.1 (`352ca21bcaa01d3ddb535b0ebfb20cd9b028c357`) |
 | Stack de servicios fijados | Bitcoin Core `31.0`, `arkd`/`arkd-wallet`/`arkd-signer` `v0.9.25`, PostgreSQL `16`, NBXplorer `2.6.7`, Fulcrum `v2.1.1`, Mempool Backend (Esplora) `v3.3.1`, Redis `7-alpine` |
 | Proyecto / Red / Volúmenes dedicados | Proyecto `swap-engine-ark-docker-e2e`, red privada `swap_engine_ark_e2e_net` (`internal: true`), 8 volúmenes activos (`swap_engine_ark_e2e_*`), 0 puertos publicados en host |
@@ -47,7 +52,7 @@ Verificación ejecutada vía `gh pr list` / `gh pr view` (solo lectura; sin modi
 | 8 | `#63` | OPEN | `ark/pr-54-adapter-and-fixes` | `09960c8` | `[ARK][08] #54 - ArkAdapter contract, SDK read verification and review fixes` | **Regresión crítica:** el cuerpo afirma incluir `f5742b0`, pero `f5742b0` fue omitido al reescribir el stack; `test-bootstrap-funding.sh` falla con `exit 1` en `09960c8`. |
 | 9 | `#64` | OPEN | `ark/pr-extra-security-validation` | `70723af` | `[ARK][EXTRA] Regtest validation evidence and security review` | Hereda la omisión de `f5742b0`; `docs/ark/security-review.md` replica la numeración intercambiada (`#57/#48`, `#59/#50`, `#61/#52`, `#62/#53`) y da por aplicadas defensas ausentes en `70723af` (`require_regtest()` en `lib.rs`, `test-bootstrap-funding.sh` en `--unit-only`). |
 
-> **Nota sobre `main` remoto:** `Truja503/swap-engine` ya tiene fusionado PR `#68` en `main` (`578a81b`), mientras el stack Ark parte de `d5e88ef` (`PR #55`). No se tocó motor, Node CI ni `package.json`.
+> **Nota sobre `main` remoto:** `Truja503/swap-engine` ya tiene fusionado PR `#68` en `main` (`578a81b`), mientras el stack Ark parte de `d5e88ef` (`PR #55`). No se tocó motor, Node CI (`.github/workflows/ci.yml`), `scripts/check-secrets.mjs` ni `package.json`.
 
 ### 2.2 Comparativa forense: publicado `70723af` vs `f5742b0` vs `backup/ark-full-0f17582` (`0f17582`)
 
@@ -59,7 +64,7 @@ Evidencia verificada con `git log`, `git diff 70723af backup/ark-full-0f17582`, 
   - Sin embargo, en `70723af`, `scripts/ark/bootstrap-funding.sh` quedó huérfano (no invocado por `bootstrap-regtest.sh`) y `bash scripts/ark/test-bootstrap-funding.sh` falló realmente con `exit 1` (`bootstrap-funding.sh: line 9: miner_history: command not found`).
 - **Correcciones perdidas en `70723af` (16 archivos de `f5742b0` + 1 hunk de `4fee198`, TODOS preservados en `backup/ark-full-0f17582` y restaurados en esta rama):**
 
-| Archivo | Qué se perdió en `70723af` (presente en `f5742b0` / `0f17582`) | Restaurado en |
+| Archivo | Qué se perdió en `70723af` (presente en `f5742b0` / `0f17582`) | Restaurado / actualizado en |
 | --- | --- | --- |
 | `deploy/ark/docker-compose.regtest.yml` | Red bridge `host_access` (`swap_engine_ark_host_net`) requerida por Docker Engine para publicar puertos loopback. | Commit 2 (`21d3edb`) |
 | `scripts/ark/common.sh` | `host_services`, `managed_services`, `assert_host_networks()`, `miner()`, `confirmed_utxo()`, `miner_history()`. | Commit 2 (`21d3edb`) |
@@ -74,34 +79,66 @@ Evidencia verificada con `git log`, `git diff 70723af backup/ark-full-0f17582`, 
 | `ark/ark-lab/src/transfer.rs` | `verify_spent` estrictamente de solo lectura (`list_vtxos` + `spendable_offchain`) sin invocar `send_selection`. | Commit 1 (`855ab01`) |
 | `ark/ark-lab/tests/adapter_contract.rs` | `reserved_inputs`, `original_ark_txids` y 6 casos negativos `ObservedTransfer` en recuperación incierta. | Commit 2 (`21d3edb`) |
 | `ark/rust-toolchain.toml` | Toolchain fijado `channel = "1.97.1"` (revertido a `"stable"` en `70723af`). | Commit 1 (`855ab01`) |
-| `.github/workflows/ark-lab-unit.yml` | Ejecución de `test-bootstrap-funding.sh` (actualizado ahora al flujo Dockerizado + guard condicional). | Commit 1 (`855ab01`) |
+| `.github/workflows/ark-lab-unit.yml` | Ejecución de `test-bootstrap-funding.sh` y `secrets:check` (encapsulados ahora en contenedor fijado sin `actions/setup-node` ni ejecución host). | Commit 1 (`855ab01`) + Commit 4 (`167c120`) |
 | `docs/ark/operator-regtest.md` | Documentación de migración de `host_access` y diario `data/ark/operator-funding/`. | Commit 2 (`21d3edb`) |
 | `docs/ark/regtest-runbook.md` | Documentación de `boarding_operator_outage`, descarte de acuse, `verify-spent` solo lectura, `scantxoutset` y `operator_restart`. | Commit 2 (`21d3edb`) |
 
 ### 2.3 Aplicabilidad y destino de commits locales (verificada sin alterar refs de PR)
 
-1. **Commit 1 (`855ab01`) → PR `#61` (`#53` harness/CI):** 12 de 13 archivos aplican limpiamente de forma directa sobre `a907fc8`. El único hunk que requiere contexto 3-way en `a907fc8` es `ark/ark-lab/src/lib.rs:107` porque PR `#63` extrajo `query_operator_info()`. **Dependencia con `#63`:** el laboratorio Docker y las etapas unitarias/E2E del CLI funcionan de forma autónoma sobre `#61`, pero la prueba de integración real `adapter_arkd_read`, las pruebas de contrato `adapter_contract` y `test-bootstrap-funding.sh` existen únicamente a partir de PR `#63` (`#54`); sin `#63`, `docker-e2e.sh e2e` marca `adapter_arkd_read` como `SKIPPED`.
+1. **Commit 1 (`855ab01`) + Commit 4 (`167c120`) → PR `#61` (`#53` harness/CI):** Commit 1 aplica limpio en 12/13 archivos sobre `a907fc8` (solo `ark/ark-lab/src/lib.rs:107` requiere contexto 3-way por `query_operator_info()` de `#63`). Commit 4 añade exclusivamente `deploy/ark/ci-tools/{Dockerfile,.dockerignore}`, `scripts/ark/docker-ci-checks.sh` y actualiza `.github/workflows/ark-lab-unit.yml` + `docs/ark/docker-lab.md` sobre Commit 1 sin tocar `ark/`, `deploy/ark/docker-compose.docker-e2e.yml` ni `scripts/ark/docker-e2e.sh`. En árboles previos a `#63`, `adapter_arkd_read` y `docker-ci-checks.sh bootstrap-regression --if-present` reportan explícitamente `SKIPPED`.
 2. **Commit 2 (`21d3edb`) → PR `#63` (`#54` adapter/fixes):** verificado `git apply --check` **100% limpio sin conflictos** directamente sobre `09960c8`.
-3. **Commit 3 → PR `#64` (`[EXTRA]` evidencia/PDF):** solo añade/actualiza archivos bajo `docs/ark/`, aplicable limpiamente sobre `70723af`.
+3. **Commit 3 (`5a9976b`) + Commit 5 → PR `#64` (`[EXTRA]` evidencia/PDF):** solo añade/actualiza archivos bajo `docs/ark/`, aplicable limpiamente sobre `70723af`.
 
 ---
 
-## 3. Resultados por Etapa (Ejecución Limpia sobre `21d3edb`)
+## 3. Resultados por Etapa (Distinción Explícita de SHA por Fase)
 
-| # | Etapa / Comprobación | Comando exacto | Exit code real | Estado | Captura real PNG |
-| ---: | --- | --- | ---: | --- | --- |
-| 1 | Build imagen SDK Rust (`--locked`, `rustfmt`, `clippy`) | `bash scripts/ark/docker-e2e.sh build` | `0` | **PASS** | `01-docker-build.png` |
-| 2 | Unitarias y contrato Rust offline (`--network none`) | `bash scripts/ark/docker-e2e.sh unit` | `0` | **PASS** (`lib`: 11/11, `main`: 1/1, `adapter_contract`: 5/5, `adapter_arkd_read`: 1 ignored) | `02-unit-rust-offline.png` |
-| 3 | Regresión Bash bootstrap + higiene de secretos | `bash scripts/ark/test-bootstrap-funding.sh && npm run secrets:check` | `0` | **PASS** (`PASS` + `findings: 0` en 162 archivos / 336 blobs) | `03-bash-regression-and-secrets.png` |
-| 4 | Arranque desde cero, salud y `chain=regtest` | `bash scripts/ark/docker-e2e.sh start && bash scripts/ark/docker-e2e.sh status` | `0` | **PASS** (`regtest`, génesis exacto, altura 102, indexadores/DB/Redis/signer/`arkd v0.9.25` OK, `21.00000000` BTC) | `04-start-health-regtest.png` |
-| 5 | Wallets persistentes A y B (normales, separadas del fixture) | `bash scripts/ark/docker-e2e.sh wallets` | `0` | **PASS** (`tark1`/`bcrt1p` verificadas, saldo 0, `restore` OK) | `05-wallets-ab.png` |
-| 6 | Matriz E2E en vivo (10 etapas live + 2 skip) | `bash scripts/ark/docker-e2e.sh e2e` | `0` | **PASS** (10/10 live `PASSED`, 2 `SKIPPED`) | `06-e2e-live-matrix.png`, `07-e2e-txids-evidence.png` |
-| 7 | Integración real SDK → `arkd` (`adapter_arkd_read`) | `bash scripts/ark/docker-e2e.sh integration` | `0` | **PASS** (`1 passed, 0 failed`, `dust=330`, Alice `125,000` sats, 3 VTXOs) | `08-integration-and-negative-guard.png` |
-| 8 | Negativo esperado: re-ejecución sobre fixture reclamado | `bash scripts/ark/docker-e2e.sh e2e` (2.ª invocación) | `1` *(esperado)* | **PASS (negativo esperado)** (`fixture already claimed; inspect original state, never repeat funding`) | `08-integration-and-negative-guard.png` |
-| 9 | Persistencia tras parada y reinicio completo del stack | `bash scripts/ark/docker-e2e.sh restart-check` | `0` | **PASS** (6/6 invariantes `true`, 10 container IDs y 8 volúmenes idénticos, altura 106) | `09-restart-persistence-and-stop.png` |
-| 10 | Parada final no destructiva | `bash scripts/ark/docker-e2e.sh stop` | `0` | **PASS** (`0` contenedores activos, `10` preservados en `Exited`, `8` volúmenes intactos) | `09-restart-persistence-and-stop.png` |
+> **Garantía de no reetiquetado:** ninguna captura de Fase 1 (`21d3edb`) se ha reetiquetado como ejecutada en `167c120`. La verificación `git diff --stat 21d3edb..167c120 -- ark/ deploy/ark/docker-compose.docker-e2e.yml scripts/ark/docker-e2e.sh` es **vacía (0 archivos modificados)**, probando que el código de flujo ejercido en las etapas 1, 2 y 4–10 es idéntico byte a byte al probado en `21d3edb`. La etapa 3 (ruta CI corregida) y la reconciliación/verificación de motor se ejecutaron y capturaron nuevamente en `167c120` (Figs. 10 y 11).
 
-### Desglose de sub-etapas de `matrix.json` y negativos esperados
+| # | Etapa / Comprobación | Fase / SHA probado | Comando exacto | Exit code real | Estado | Captura real PNG |
+| ---: | --- | --- | --- | ---: | --- | --- |
+| 1 | Build imagen SDK Rust (`--locked`, `rustfmt`, `clippy`) | Fase 1 (`21d3edb`, flujo inalterado en `167c120`) | `bash scripts/ark/docker-e2e.sh build` | `0` | **PASS** | `01-docker-build.png` |
+| 2 | Unitarias y contrato Rust offline (`--network none`) | Fase 1 (`21d3edb`, flujo inalterado en `167c120`) | `bash scripts/ark/docker-e2e.sh unit` | `0` | **PASS** (`lib`: 11/11, `main`: 1/1, `adapter_contract`: 5/5, `adapter_arkd_read`: 1 ignored) | `02-unit-rust-offline.png` |
+| 3 | **Regresión Bash bootstrap + escaneo histórico de secretos en contenedor fijado (sin Node/npm/jq en host)** | **Fase 2 (`167c120`)** | `bash scripts/ark/docker-ci-checks.sh all` *(probado con `PATH` sin `node`/`npm`/`jq`/`cargo`)* | `0` | **PASS** (`PASS` regresión + `findings: 0` en **176** archivos / **353** blobs; paridad 100% con host) | `10-docker-ci-checks-encapsulated.png` *(histórica `21d3edb` reemplazada: `03-bash-regression-and-secrets.png`)* |
+| 4 | Arranque desde cero, salud y `chain=regtest` | Fase 1 (`21d3edb`, flujo inalterado en `167c120`) | `bash scripts/ark/docker-e2e.sh start && bash scripts/ark/docker-e2e.sh status` | `0` | **PASS** (`regtest`, génesis exacto, altura 102, indexadores/DB/Redis/signer/`arkd v0.9.25` OK, `21.00000000` BTC) | `04-start-health-regtest.png` |
+| 5 | Wallets persistentes A y B (normales, separadas del fixture) | Fase 1 (`21d3edb`, flujo inalterado en `167c120`) | `bash scripts/ark/docker-e2e.sh wallets` | `0` | **PASS** (`tark1`/`bcrt1p` verificadas, saldo 0, `restore` OK) | `05-wallets-ab.png` |
+| 6 | Matriz E2E en vivo (10 etapas live + 2 skip) | Fase 1 (`21d3edb`, flujo inalterado en `167c120`) | `bash scripts/ark/docker-e2e.sh e2e` | `0` | **PASS** (10/10 live `PASSED`, 2 `SKIPPED`) | `06-e2e-live-matrix.png`, `07-e2e-txids-evidence.png` |
+| 7 | Integración real SDK → `arkd` (`adapter_arkd_read`) | Fase 1 (`21d3edb`, flujo inalterado en `167c120`) | `bash scripts/ark/docker-e2e.sh integration` | `0` | **PASS** (`1 passed, 0 failed`, `dust=330`, Alice `125,000` sats, 3 VTXOs) | `08-integration-and-negative-guard.png` |
+| 8 | Negativo esperado: re-ejecución sobre fixture reclamado | Fase 1 (`21d3edb`, flujo inalterado en `167c120`) | `bash scripts/ark/docker-e2e.sh e2e` (2.ª invocación) | `1` *(esperado)* | **PASS (negativo esperado)** (`fixture already claimed; inspect original state, never repeat funding`) | `08-integration-and-negative-guard.png` |
+| 9 | Persistencia tras parada y reinicio completo del stack | Fase 1 (`21d3edb`, flujo inalterado en `167c120`) | `bash scripts/ark/docker-e2e.sh restart-check` | `0` | **PASS** (6/6 invariantes `true`, 10 container IDs y 8 volúmenes idénticos, altura 106) | `09-restart-persistence-and-stop.png` |
+| 10 | Parada final no destructiva | Fase 1 (`21d3edb`, flujo inalterado en `167c120`) | `bash scripts/ark/docker-e2e.sh stop` | `0` | **PASS** (`0` contenedores activos, `10` preservados en `Exited`, `8` volúmenes intactos) | `09-restart-persistence-and-stop.png` |
+| 11 | Invariancia de flujo, reconciliación de escaneo y chequeo Docker Engine nativo | **Fase 2 (`167c120`)** | `git diff --stat 21d3edb..HEAD -- ark/ ...` + reconciliación + chequeo motor | `0` | **PASS** (diff vacío, reconciliación exacta, Docker Engine+Compose v2: **`NO VALIDADO`**) | `11-reconciliation-diff-and-engine-check.png` |
+
+### 3.1 Encapsulación de CI Ark (`167c120`) y Reconciliación del Escáner de Secretos (`162/336` vs `173/348` vs `176/353`)
+
+#### Diseño aislado de `scripts/ark/docker-ci-checks.sh` y `.github/workflows/ark-lab-unit.yml`
+
+- **Imagen fijada por digest (`deploy/ark/ci-tools/Dockerfile`):** `docker.io/library/node:24.22.3-bookworm-slim@sha256:dc26ae92c9fb15cf6b1d63e20f0944b2efe0f115b20e00be48fb23fceb061c54` + `bash`, `git`, `jq` (Debian bookworm, coreutils GNU con `stat -c` y `sync -f`), usuario no root `node` (UID `1000`).
+- **Contexto de build sin secretos:** `deploy/ark/ci-tools/.dockerignore` descarta `*` y permite únicamente `!Dockerfile`.
+- **Endurecimiento en ejecución:** `--rm -i --network none --read-only --tmpfs /tmp:rw,noexec,nosuid,nodev,mode=1777,size=<16m|512m> --user 1000:1000 --cap-drop ALL --security-opt no-new-privileges:true --pids-limit 128`, **cero bind mounts** y **cero `docker.sock`**.
+- **Entrada exclusivamente por stream `tar` en `stdin`:**
+  - `bootstrap-regression [--if-present]`: transmite solo `scripts/ark/{common.sh,bootstrap-funding.sh,test-bootstrap-funding.sh}` con permisos `0444` en `/tmp/work`.
+  - `secrets-check`: resuelve `--git-dir` y `--git-common-dir` (compatible con clones estándar y Git worktrees), falla cerrado ante `alternates` o formatos no soportados, y transmite únicamente `objects/`, `refs/`, `packed-refs` (si existe), `shallow` (si existe), `HEAD`, `index` y `scripts/check-secrets.mjs`. Excluye explícitamente `.git/config`, `.git/hooks`, el árbol de trabajo, `data/` y `.env*`.
+- **Workflow CI (`.github/workflows/ark-lab-unit.yml`):** eliminó `actions/setup-node`, `npm run secrets:check` y `bash scripts/ark/test-bootstrap-funding.sh` del host; ahora ejecuta `docker-e2e.sh build`, `docker-e2e.sh unit`, `docker-ci-checks.sh build`, `docker-ci-checks.sh bootstrap-regression --if-present` y `docker-ci-checks.sh secrets-check`.
+- **Pruebas negativas y de aislamiento verificadas en repositorio sintético efímero (`/tmp`):**
+  - Secretos no rastreados (`data/compose.env`, `.env`) y URL con credenciales en `.git/config`: excluidos del stream (`findings: 0`, exit `0`).
+  - Secreto histórico en rama distinta de `HEAD`: detectado (`Potential credential (history)`, exit `1`).
+  - Secreto en staging (no commiteado) dentro del índice de un worktree enlazado: detectado (`Potential credential (index)`, exit `1`).
+  - Guard `--if-present` con `test-bootstrap-funding.sh` ausente: reporta `SKIPPED:` (exit `0`); sin flag: falla cerrado (exit `1`).
+  - Ejecución en host sin `node`, `npm`, `npx`, `jq`, `curl`, `cargo` ni `rustc` en `PATH`: `PASS` completo (Fig. 10).
+
+#### Reconciliación exacta de conteos `secrets:check` por revisión Git
+
+La discrepancia observada entre **`162/336`** y **`173/348`** se debe exactamente a la revisión Git sobre la que se ejecutó cada escaneo:
+
+| Revisión Git (`HEAD`) | Descripción del commit | Delta de archivos / blobs respecto a la revisión previa | `indexedFiles` | `historicalBlobs` | `findings` | Modo de ejecución y evidencia |
+| --- | --- | --- | ---: | ---: | ---: | --- |
+| `21d3edb` | Commit 2 (`ark(pr-63)` restauración `f5742b0`) | Base de medición de Fase 1 (anterior a Commit 3) | **162** | **336** | **0** | Host (`npm run secrets:check`, histórico reemplazado — `03-bash-regression-and-secrets.png`) |
+| `5a9976b` | Commit 3 (`ark(pr-64)` evidencia inicial) | `+11` añadidos (`docker-e2e-evidence.md`, PDF, `01..09.png`) + `1` modificado (`extra-regtest-validation.md`) → **`+11` índice / `+12` blobs únicos** | **173** | **348** | **0** | Paridad verificada (`git ls-tree` + `docker-ci-checks.sh` + host — `11-reconciliation-diff-and-engine-check.png`) |
+| `167c120` | Commit 4 (`ark(pr-61)` encapsulación CI en contenedor fijado) | `+3` añadidos (`deploy/ark/ci-tools/{Dockerfile,.dockerignore}`, `scripts/ark/docker-ci-checks.sh`) + `2` modificados (`ark-lab-unit.yml`, `docker-lab.md`) → **`+3` índice / `+5` blobs únicos** | **176** | **353** | **0** | **Contenedor fijado sin Node en host** (`10-docker-ci-checks-encapsulated.png`) == paridad host (`11-reconciliation-diff-and-engine-check.png`) |
+| Commit 5 (`HEAD` final) | Commit 5 (`ark(pr-64)` actualización docs/PNG/PDF) | `+2` añadidos (`10..11.png`) + `3` modificados (`docker-e2e-evidence.md`, `extra-regtest-validation.md`, PDF) → **`+2` índice / `+5` blobs únicos** | **178** | **358** | **0** | Verificado post-commit vía `bash scripts/ark/docker-ci-checks.sh all` |
+
+### 3.2 Desglose de sub-etapas de `matrix.json` y negativos esperados (`21d3edb`, flujo inalterado)
 
 - **PASS (en vivo, 10 etapas):** `boarding`, `boarding_operator_outage`, `transfer_and_client_restart`, `cooperative_offboard`, `stale_vtxo_and_renewal`, `adapter_arkd_read`, `operator_unavailable`, `operator_restart`, `rpc_unavailable`, `indexer_unavailable`.
 - **Negativos esperados verificados (`exit 1` y error tipado antes de mutar):**
@@ -118,7 +155,7 @@ Evidencia verificada con `git log`, `git diff 70723af backup/ark-full-0f17582`, 
 
 ---
 
-## 4. Transacciones, VTXOs, Alturas, Balances y Fees Registrados (`21d3edb`)
+## 4. Transacciones, VTXOs, Alturas, Balances y Fees Registrados (Fase 1 · `21d3edb`, flujo inalterado)
 
 **Génesis regtest verificado:** `0f9188f13cb7b2c71f2a335e3a4fc328bf5beb436012afca590b1a11466e2206`  
 **Signer del operador (`arkd v0.9.25`):** `0277c640043d58d7d4f801f04afb502e15741878634d17a4b27c1d366ad19dbdca` (`dust: 330` sats, intent fees: `0.0`)
@@ -146,6 +183,7 @@ Evidencia verificada con `git log`, `git diff 70723af backup/ark-full-0f17582`, 
 
 ## 5. Límites y Exclusiones Declaradas
 
+- **Docker Engine + Docker Compose v2 nativos: `NO VALIDADO`.** Comprobación de solo lectura en el host (`11-reconciliation-diff-and-engine-check.png`): `dockerd` no está instalado, `/usr/libexec/docker/cli-plugins` no existe, `systemctl is-active docker` devuelve `inactive` y `/run/docker.sock` es symlink a `/run/podman/podman.sock`. Toda la validación local se ejecutó sobre `podman 4.3.1` + `podman-compose 1.6.0`.
+- **GitHub Actions Ubuntu (`ubuntu-latest`): `NO VALIDADO`** en remoto — los workflows `.github/workflows/ark-lab-unit.yml` y `.github/workflows/ark-lab-e2e.yml` no se han despachado en GitHub Actions desde este worktree aislado (prohibición explícita de publicación/push).
 - Sin pruebas de salida unilateral (`unilateral_exit: SKIPPED`) ni timeouts reales en medio de una mutación (`live_mutation_timeout: SKIPPED`, cubierto solo por simulación unitaria).
-- Ejecución validada localmente en Podman `4.3.1` + `podman-compose 1.6.0`; los workflows `.github/workflows/ark-lab-unit.yml` y `.github/workflows/ark-lab-e2e.yml` no han sido despachados en GitHub Actions Ubuntu desde este worktree aislado (prohibición explícita de publicación/push).
 - Ningún secreto, mnemónico, clave privada, `compose.env` ni log bruto de servicio fue capturado ni publicado.
