@@ -192,6 +192,15 @@ test('status exposes revision and only validated confirmed lockup evidence for l
     const unconfirmed = await x.service.status(x.quote.id, x.auth) as any;
     assert.equal(unconfirmed.fundingVout, null); assert.equal(unconfirmed.lockupHex, null);
     assert.equal(unconfirmed.fundingConfirmations, null);
+    const run = await Store.open(join(x.runsDirectory, x.quote.id));
+    try { await run.transaction(db => { db.swaps[seeded.prepared.swapId]!.state = 'LOCKUP_BROADCAST'; }); }
+    finally { await run.close(); }
+    x.ledger.get(seeded.lockup.getId())!.confirmations = 1;
+    assert.equal((await x.service.status(x.quote.id, x.auth)).status, 'PAYMENT_ACCEPTED_NOT_SETTLED');
+    await assert.rejects(x.service.submitClaim(x.quote.id, x.auth, 'claim-key',
+      { signedClaimHex: seeded.claim.toHex(), expectedRevision: seeded.expectedRevision }), (error: unknown) =>
+      error instanceof GuestReverseError && error.code === 'GUEST_CLAIM_NOT_READY');
+    assert.equal(x.broadcasts(), 0);
   } finally { await x.cleanup(); }
 });
 
@@ -201,6 +210,7 @@ test('client-signed claim is bound to the exact outpoint/destination/fee and bro
     const result = await x.service.submitClaim(x.quote.id, x.auth, 'claim-key',
       { signedClaimHex: seeded.claim.toHex(), expectedRevision: seeded.expectedRevision }) as any;
     assert.equal(result.status, 'CLAIM_BROADCAST_PENDING_CONFIRMATION'); assert.equal(result.claimTxid, seeded.claim.getId());
+    assert.equal((await x.service.status(x.quote.id, x.auth)).status, 'CLAIM_BROADCAST_PENDING_CONFIRMATION');
     assert.equal(x.broadcasts(), 1); assert.equal(x.lockCalls(), before + 1);
     const run = await Store.open(join(x.runsDirectory, x.quote.id));
     try { const disk = run.read().swaps[seeded.prepared.swapId]!;

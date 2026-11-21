@@ -291,7 +291,7 @@ export class GuestReverse {
       try {
         return await this.lock(async () => {
           const swap = runStore.read().swaps[row.swapId!];
-          if (!swap || !swap.lockup || !['LOCKUP_BROADCAST', 'LOCKUP_CONFIRMED'].includes(swap.state) || swap.revision !== input.expectedRevision)
+          if (!swap || !swap.lockup || swap.state !== 'LOCKUP_CONFIRMED' || swap.revision !== input.expectedRevision)
             throw new GuestReverseError(409, 'GUEST_CLAIM_NOT_READY');
           if (swap.clientClaimIntent) {
             if (swap.clientClaimIntent.txid === txid && swap.clientClaimIntent.status === 'BROADCAST') {
@@ -433,7 +433,9 @@ export class GuestReverse {
     }
     if (swap.state === 'LIGHTNING_SETTLED') return 'LIGHTNING_SETTLED_PENDING_CHAIN_EVIDENCE';
     if (swap.state === 'CLAIM_DETECTED') return 'CLAIM_DETECTED_NOT_SETTLED';
-    if (swap.state === 'LOCKUP_BROADCAST' || swap.state === 'LOCKUP_CONFIRMED') return 'FUNDED_AWAITING_CLAIM';
+    if (swap.state === 'LOCKUP_BROADCAST') return 'PAYMENT_ACCEPTED_NOT_SETTLED';
+    if (swap.state === 'LOCKUP_CONFIRMED') return swap.clientClaimIntent?.status === 'BROADCAST'
+      ? 'CLAIM_BROADCAST_PENDING_CONFIRMATION' : 'FUNDED_AWAITING_CLAIM';
     if (swap.state === 'INVOICE_ACCEPTED') return 'PAYMENT_ACCEPTED_NOT_SETTLED';
     if (swap.state === 'INVOICE_CREATED') {
       if (invoiceState === 'ACCEPTED') return 'PAYMENT_ACCEPTED_NOT_SETTLED';
