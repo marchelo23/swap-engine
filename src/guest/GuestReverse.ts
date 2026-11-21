@@ -15,6 +15,7 @@ import { verifyHtlcSpend } from '../bitcoin/SpendEvidence.js';
 import { HoldInvoiceManager } from '../lightning/HoldInvoiceManager.js';
 import { updateSwapRevision } from '../core/SwapStateMachine.js';
 import type { Invoice } from '../lightning/LndClient.js';
+import type { GuestExecution } from './GuestExecution.js';
 
 const hash = z.string().regex(/^[a-f0-9]{64}$/);
 const pubkey = z.string().regex(/^(02|03)[a-f0-9]{64}$/);
@@ -99,11 +100,13 @@ export class GuestReverse {
   private readonly broadcast?: (hex: string) => Promise<string>;
   private readonly storeFactory: GuestStoreFactory;
   private readonly now: () => number;
+  private readonly execution?: GuestExecution;
   private readonly queues = new Map<string, Promise<unknown>>();
+  private timer?: ReturnType<typeof setInterval>;
 
   constructor(private readonly store: Store, policy: unknown, clients: GuestReverseClients,
     options: { preparation?: GuestPreparationFactory; broadcast?: (hex: string) => Promise<string>;
-      storeFactory?: GuestStoreFactory } = {}) {
+      storeFactory?: GuestStoreFactory; execution?: GuestExecution } = {}) {
     this.policy = guestReversePolicySchema.parse(policy);
     if (this.policy.providerNode === this.policy.payerNode ||
       this.policy.routing.providerOrigin === this.policy.routing.payerOrigin ||
@@ -113,7 +116,7 @@ export class GuestReverse {
       this.policy.routing.providerOrigin !== clients.invoices.origin) throw new Error('Guest reverse endpoints or nodes differ');
     this.clients = clients; this.preparation = options.preparation ?? realPreparation;
     this.broadcast = options.broadcast; this.storeFactory = options.storeFactory ?? (directory => StoreFile.open(directory));
-    this.now = clients.now ?? Date.now; this.admission = new GuestAdmission(store, this.now);
+    this.execution = options.execution; this.now = clients.now ?? Date.now; this.admission = new GuestAdmission(store, this.now);
   }
 
   /** Step 1: capability-authenticated quote (existing admission primitive). */
@@ -389,6 +392,77 @@ export class GuestReverse {
       current.updatedAt = this.now();
     });
   }
+
+  /** Disabled-by-default lifecycle watcher. With no injected execution this
+   * only reads evidence; it never funds, settles, completes or expires. */
+  async runOnce() {
+    let scanned = 0; let updated = 0;
+    for (const row of Object.values(this.store.read().guestSwaps ?? {})) {
+      if (row.status !== 'INVOICE_CREATED' || !row.swapId) continue;
+      scanned++;
+      try {
+        updated += await this.withRun(row.id, row.runDirectory, async runStore => {
+          let swap = runStore.read().swaps[row.swapId!];
+          const plan = runStore.read().reversePreparations?.[row.id]?.plan;
+          if (!swap || !plan || !same(swap.contract, plan.contract) || !same(swap.quote, plan.quote)) return 0;
+          if (swap.state === 'MANUAL_REVIEW' || swap.pendingAction ||
+            swap.clientClaimIntent?.status === 'UNKNOWN' || swap.clientClaimIntent?.status === 'INTENT') return 0;
+          const found = await this.clients.invoices.lookup(plan.contract.paymentHash).catch(() => undefined);
+          if (!found || found.status !== 'PRESENT') return 0;
+          const invoice = found.invoice; let changes = 0;
+          const manager = new HoldInvoiceManager({ lookup: async () => invoice,
+            settle: async () => { throw new Error('Guest watcher cannot settle directly'); },
+            cancel: async () => { throw new Error('Guest watcher cannot cancel directly'); } });
+          if (invoice.state === 'CANCELED') {
+            if (!swap.lockup && !swap.fundingIntent && !swap.pendingAction && !swap.clientClaimIntent && this.execution) {
+              await this.execution.expire(runStore, swap); changes++;
+            }
+            return changes;
+          }
+          if (invoice.state === 'ACCEPTED' && swap.state === 'INVOICE_CREATED' &&
+              !swap.lockup && !swap.fundingIntent && !swap.pendingAction &&
+              (!swap.clientPayment || swap.clientPayment.status === 'IN_FLIGHT')) {
+            manager.assertAccepted(invoice, plan.contract.paymentHash, swap.quote.invoiceSats, swap.contract.timeoutHeight, 40);
+            if (this.execution) { swap = await this.execution.fund(runStore, swap, plan); changes++; }
+          }
+          if (swap.state === 'LOCKUP_BROADCAST' && this.execution) {
+            swap = await this.execution.confirm(runStore, swap, plan); changes++;
+          }
+          if (swap.lockup && swap.claimTxid && swap.clientClaimIntent?.status === 'BROADCAST' &&
+              (swap.state === 'LOCKUP_BROADCAST' || swap.state === 'LOCKUP_CONFIRMED')) {
+            const claim = await this.clients.bitcoin.confirmed(swap.claimTxid).catch(() => undefined);
+            if (claim && Number.isSafeInteger(claim.confirmations) && claim.confirmations >= 1) {
+              verifyHtlcSpend(claim.hex, swap.claimTxid, swap.lockup.hex, swap.lockup.vout, swap.contract);
+              const spend = Transaction.fromHex(claim.hex);
+              if (spend.outs.length !== 1 || spend.outs[0]!.value !== BigInt(swap.quote.amountSats - swap.quote.claimFeeSats) ||
+                !Buffer.from(spend.outs[0]!.script).equals(address.toOutputScript(plan.claimDestination, networks.regtest))) return changes;
+              if (this.execution) { swap = await this.execution.settle(runStore, swap, plan, swap.claimTxid); changes++; }
+            }
+          }
+          if (swap.state === 'LIGHTNING_SETTLED' && invoice.state === 'SETTLED' && this.execution) {
+            swap = await this.execution.markPaid(runStore, swap, invoice); changes++;
+            swap = await this.execution.complete(runStore, swap, plan); changes++;
+          }
+          return changes;
+        });
+      } catch { /* Keep the durable state for manual review; never retry here. */ }
+    }
+    return { scanned, updated };
+  }
+
+  /** Startup/restart reconciliation: same evidence checks and no-retry rule. */
+  reconcile() { return this.runOnce(); }
+
+  /** Explicit opt-in timer. The application does not call this by default. */
+  start(intervalMs = 5000) {
+    if (!this.execution) throw new GuestReverseError(503, 'GUEST_WATCHER_DISABLED');
+    if (!Number.isSafeInteger(intervalMs) || intervalMs < 1000 || intervalMs > 60000) throw new Error('Invalid guest watch interval');
+    if (this.timer) return;
+    this.timer = setInterval(() => { void this.runOnce().catch(() => {}); }, intervalMs);
+    this.timer.unref?.();
+  }
+
+  stop() { if (this.timer) clearInterval(this.timer); this.timer = undefined; }
 
   private withRun<T>(id: string, directory: string, work: (store: Store) => Promise<T>): Promise<T> {
     const previous = this.queues.get(id) ?? Promise.resolve();
