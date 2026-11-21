@@ -5,24 +5,45 @@ use serde::Deserialize;
 use std::time::Duration;
 
 pub const ESPLORA: &str = "http://127.0.0.1:33000/api";
+pub const DOCKER_ESPLORA: &str = "http://mempool_api:8999/api";
 const GENESIS: &str = "0f9188f13cb7b2c71f2a335e3a4fc328bf5beb436012afca590b1a11466e2206";
 
-pub struct RegtestBlockchain(reqwest::Client);
+pub fn esplora_url_for(mode: Option<&str>) -> Result<&'static str, Error> {
+    match mode {
+        None | Some("loopback") => Ok(ESPLORA),
+        Some("docker") => Ok(DOCKER_ESPLORA),
+        Some(_) => Err(network_mismatch()),
+    }
+}
+
+pub fn esplora_url() -> Result<&'static str, Error> {
+    match std::env::var("ARK_LAB_NETWORK_MODE") {
+        Ok(mode) => esplora_url_for(Some(mode.as_str())),
+        Err(std::env::VarError::NotPresent) => esplora_url_for(None),
+        Err(std::env::VarError::NotUnicode(_)) => Err(network_mismatch()),
+    }
+}
+
+pub struct RegtestBlockchain {
+    http: reqwest::Client,
+    esplora: &'static str,
+}
 
 impl RegtestBlockchain {
     pub fn new() -> Result<Self, Error> {
-        reqwest::Client::builder()
+        let esplora = esplora_url()?;
+        let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(5))
             .no_proxy()
             .redirect(reqwest::redirect::Policy::none())
             .build()
-            .map(Self)
-            .map_err(|_| unavailable())
+            .map_err(|_| unavailable())?;
+        Ok(Self { http, esplora })
     }
 
     async fn get(&self, path: &str) -> Result<reqwest::Response, Error> {
-        self.0
-            .get(format!("{ESPLORA}{path}"))
+        self.http
+            .get(format!("{}{path}", self.esplora))
             .send()
             .await
             .and_then(reqwest::Response::error_for_status)
@@ -134,5 +155,20 @@ impl Blockchain for RegtestBlockchain {
     }
     async fn broadcast_package(&self, _: &[&Transaction]) -> Result<(), Error> {
         Err(unsupported())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn esplora_endpoint_allowlists_loopback_and_docker_only() {
+        assert_eq!(esplora_url_for(None).unwrap(), ESPLORA);
+        assert_eq!(esplora_url_for(Some("loopback")).unwrap(), ESPLORA);
+        assert_eq!(esplora_url_for(Some("docker")).unwrap(), DOCKER_ESPLORA);
+        for bad in ["", "mainnet", "http://mempool.space/api", "DOCKER"] {
+            assert!(esplora_url_for(Some(bad)).is_err());
+        }
     }
 }

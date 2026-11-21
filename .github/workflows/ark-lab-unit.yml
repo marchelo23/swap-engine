@@ -17,21 +17,21 @@ permissions:
 jobs:
   ark-unit:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
-    defaults:
-      run:
-        working-directory: ark
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: '24'
-      - run: rustup show
-      - run: cargo fmt --all -- --check
-      - run: cargo clippy --locked --all-targets --all-features -- -D warnings
-      - run: cargo test --locked --lib --tests
-      - run: npm run secrets:check
-        working-directory: .
+      - name: Build Ark Rust SDK image (offline locked verification)
+        run: bash scripts/ark/docker-e2e.sh build
+      - name: Run unit and contract tests inside ark-sdk container (no live services)
+        run: bash scripts/ark/docker-e2e.sh unit
+      - name: Build pinned Ark CI tools container (no secrets in context)
+        run: bash scripts/ark/docker-ci-checks.sh build
+      - name: Run bootstrap funding bash regression inside pinned container (offline, streamed inputs)
+        run: bash scripts/ark/docker-ci-checks.sh bootstrap-regression --if-present
+      - name: Run E2E evidence validator regression inside pinned container (offline, synthetic fixtures)
+        run: bash scripts/ark/docker-ci-checks.sh evidence-validator-regression
+      - name: Run secret hygiene scan inside pinned container (offline, full history stream)
+        run: bash scripts/ark/docker-ci-checks.sh secrets-check
