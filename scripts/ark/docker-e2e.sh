@@ -7,9 +7,23 @@ set -euo pipefail
 umask 077
 
 root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)
-project=swap-engine-ark-docker-e2e
+instance=${ARK_E2E_INSTANCE:-}
+if [[ -n "$instance" ]]; then
+  [[ "$instance" =~ ^[a-z0-9]{1,12}$ ]] || {
+    printf 'Ark docker-e2e: invalid ARK_E2E_INSTANCE (expected ^[a-z0-9]{1,12}$)\n' >&2
+    exit 1
+  }
+  project="swap-engine-ark-docker-e2e-${instance}"
+  container_prefix="ark_e2e_${instance}"
+  res_prefix="swap_engine_ark_e2e_${instance}"
+  state="$root/data/ark/docker-e2e-${instance}"
+else
+  project=swap-engine-ark-docker-e2e
+  container_prefix=ark_e2e
+  res_prefix=swap_engine_ark_e2e
+  state="$root/data/ark/docker-e2e"
+fi
 compose_file="$root/deploy/ark/docker-compose.docker-e2e.yml"
-state="$root/data/ark/docker-e2e"
 env_file="$state/compose.env"
 export_dir="$state/evidence"
 owner_label=io.swap-engine.ark.worktree
@@ -95,13 +109,13 @@ assert_owner() {
 
 assert_resources() {
   local name members
-  assert_owner network swap_engine_ark_e2e_net
-  for name in "${services[@]}"; do assert_owner container "ark_e2e_$name"; done
-  for name in "${volumes[@]}"; do assert_owner volume "swap_engine_ark_e2e_$name"; done
+  assert_owner network "${res_prefix}_net"
+  for name in "${services[@]}"; do assert_owner container "${container_prefix}_$name"; done
+  for name in "${volumes[@]}"; do assert_owner volume "${res_prefix}_$name"; done
   members=$(docker ps -a --filter "label=com.docker.compose.project=$project" --format '{{.Names}}')
   while IFS= read -r name; do
     [[ -z "$name" ]] && continue
-    [[ " ${services[*]/#/ark_e2e_} " == *" $name "* ]] ||
+    [[ " ${services[*]/#/${container_prefix}_} " == *" $name "* ]] ||
       fail "unexpected container $name in project $project"
   done <<<"$members"
 }
@@ -138,10 +152,16 @@ require_env() {
 }
 
 compose() {
-  "${compose_prefix[@]}" -p "$project" -f "$compose_file" --env-file "$env_file" "$@"
+  ARK_E2E_PROJECT="$project" \
+  ARK_E2E_CONTAINER_PREFIX="$container_prefix" \
+  ARK_E2E_RES_PREFIX="$res_prefix" \
+    "${compose_prefix[@]}" -p "$project" -f "$compose_file" --env-file "$env_file" "$@"
 }
 
 compose_build_env() {
+  ARK_E2E_PROJECT="$project" \
+  ARK_E2E_CONTAINER_PREFIX="$container_prefix" \
+  ARK_E2E_RES_PREFIX="$res_prefix" \
   ARK_LAB_WORKTREE="$root" \
   ARK_LAB_RPC_PASSWORD="" \
   ARK_LAB_DB_PASSWORD="" \
@@ -152,21 +172,21 @@ compose_build_env() {
 
 require_running() {
   local name running
-  running=$(docker ps --filter "label=$owner_label=$root" --filter "label=$lab_label=docker-e2e" --format '{{.Names}}')
+  running=$(docker ps --filter "label=$owner_label=$root" --filter "label=$lab_label=docker-e2e" --filter "label=com.docker.compose.project=$project" --format '{{.Names}}')
   for name in "${services[@]}"; do
     [[ "$name" == mempool_mariadb ]] && continue
-    grep -Fxq "ark_e2e_$name" <<<"$running" || fail "ark_e2e_$name not running"
+    grep -Fxq "${container_prefix}_$name" <<<"$running" || fail "${container_prefix}_$name not running"
   done
 }
 
 # Internal container helpers: all execution happens inside the private lab network
 # against ownership-validated container names (avoids per-call Compose YAML startup overhead).
 sdk() {
-  docker exec -i ark_e2e_sdk /workspace/ark/scripts/sdk-entrypoint.sh "$@"
+  docker exec -i "${container_prefix}_sdk" /workspace/ark/scripts/sdk-entrypoint.sh "$@"
 }
 
 sdk_jq() {
-  docker exec -i ark_e2e_sdk /workspace/ark/scripts/sdk-entrypoint.sh jq "$@"
+  docker exec -i "${container_prefix}_sdk" /workspace/ark/scripts/sdk-entrypoint.sh jq "$@"
 }
 
 lab_normal() {
@@ -178,7 +198,7 @@ lab_e2e() {
 }
 
 core() {
-  docker exec -i ark_e2e_bitcoin sh -ec '
+  docker exec -i "${container_prefix}_bitcoin" sh -ec '
     password=$(printf "%s\n" "$BITCOIN_EXTRA_ARGS" | sed -n "s/^rpcpassword=//p")
     exec bitcoin-cli -regtest -rpcuser=ark-lab -rpcpassword="$password" "$@"
   ' sh "$@"
@@ -345,10 +365,10 @@ report_status() {
   require_running
   validate_chain
   validate_indexers || fail "NBXplorer or Esplora not synced"
-  db=$(docker exec -i ark_e2e_postgres psql -U postgres -Atc \
+  db=$(docker exec -i "${container_prefix}_postgres" psql -U postgres -Atc \
     "SELECT count(*) FROM pg_database WHERE datname IN ('nbxplorer','projection','event')")
   [[ "$db" == 3 ]] || fail "missing lab databases"
-  [[ $(docker exec -i ark_e2e_redis redis-cli --raw ping) == PONG ]] || fail "Redis unavailable"
+  [[ $(docker exec -i "${container_prefix}_redis" redis-cli --raw ping) == PONG ]] || fail "Redis unavailable"
   signer_ready || fail "signer is not healthy"
   valid_wallet || fail "operator wallet not ready"
   valid_operator || fail "operator unavailable or wrong network"
@@ -360,7 +380,7 @@ report_status() {
   sdk_info=$(sdk info)
   sdk_jq -n \
     --arg project "$project" \
-    --arg network "swap_engine_ark_e2e_net (internal)" \
+    --arg network "${res_prefix}_net (internal)" \
     --arg genesis "$genesis" \
     --arg tip "$tip" \
     --argjson height "$height" \
@@ -402,8 +422,8 @@ cmd_start() {
   assert_resources
 
   if [[ ! -e "$env_file" && ! -L "$env_file" ]]; then
-    [[ -z $(docker ps -a --filter "label=$owner_label=$root" --filter "label=$lab_label=docker-e2e" --format '{{.Names}}') &&
-       -z $(docker volume ls --filter "label=$owner_label=$root" --filter "label=$lab_label=docker-e2e" --format '{{.Name}}') ]] ||
+    [[ -z $(docker ps -a --filter "label=$owner_label=$root" --filter "label=$lab_label=docker-e2e" --filter "label=com.docker.compose.project=$project" --format '{{.Names}}') &&
+       -z $(docker volume ls --filter "label=$owner_label=$root" --filter "label=$lab_label=docker-e2e" --filter "label=com.docker.compose.project=$project" --format '{{.Name}}') ]] ||
       fail "restore $env_file from your private backup before starting"
     local tmp name value
     tmp=$(mktemp "$state/compose.env.XXXXXXXX")
@@ -438,7 +458,7 @@ cmd_start() {
     address=$(miner getnewaddress)
     miner generatetoaddress "$((101 - height))" "$address" >/dev/null
   fi
-  wait_for "PostgreSQL" docker exec -i ark_e2e_postgres pg_isready -h 127.0.0.1 -U postgres
+  wait_for "PostgreSQL" docker exec -i "${container_prefix}_postgres" pg_isready -h 127.0.0.1 -U postgres
 
   compose up -d --no-recreate nbxplorer fulcrum mempool_api >&2
   wait_for "regtest indexers" validate_indexers
@@ -656,7 +676,7 @@ cmd_e2e() {
   assert_only_boarding_funding "$addr" "$funding"
 
   e2e_stage=boarding_operator_outage
-  stop_service ark_e2e_arkd
+  stop_service "${container_prefix}_arkd"
   expect_lab_error ArkOperatorUnavailable board alice "$boarding_input"
   confirmed_utxo "$funding" "$vout" 200000 >/dev/null
   assert_only_boarding_funding "$addr" "$funding"
@@ -745,7 +765,7 @@ cmd_e2e() {
 
   # --- Stage 4: Cooperative offboarding confirmed on Bitcoin Core ---
   e2e_stage=cooperative_offboard
-  local ob_addr descriptor tx bitcoin_before bitcoin_after params ob_output ob_vout spent change
+  local ob_addr descriptor tx bitcoin_before bitcoin_after params ob_output ob_vout spent change bob_change
   ob_addr=$(lab_e2e addresses bob | sdk_jq -er '.wallets.bob.onchain')
   before=$(lab_e2e balance bob)
   sdk_jq -e '.wallets.bob.total_sats == 75000' <<<"$before" >/dev/null
@@ -779,6 +799,7 @@ cmd_e2e() {
     .wallets.bob[] | select(.outpoint == $input and .settled_by == $tx)' <<<"$rows")
   change=$(sdk_jq -ce --arg tx "$commitment" '.wallets.bob[] | select(.origin == "batch_leaf" and
     (.is_spent | not) and .amount_sats == 45000 and (.commitment_txids | index($tx)))' <<<"$rows")
+  bob_change=$(sdk_jq -er '.outpoint' <<<"$change")
   sdk_jq -n --arg address "$ob_addr" --argjson commitment "$(confirmed_tx "$commitment")" \
     --argjson output "$ob_output" --argjson spent "$spent" --argjson change "$change" \
     --argjson before "$before" --argjson after "$after" --argjson params "$params" \
@@ -838,7 +859,11 @@ cmd_e2e() {
   sdk_jq -e '.alice.recoverable_sats == 125000 and .alice.total_sats == 125000 and
     .bob.recoverable_sats == 45000 and .bob.total_sats == 45000' <<<"$balance_before" >/dev/null
   sdk_jq -e '(.alice | length) > 0 and (.bob | length) > 0' <<<"$rows_before" >/dev/null
-  stop_service ark_e2e_arkd
+  # Pre-mutation cooperative offboard eligibility checks live against arkd:
+  # both already-spent ($bob_input) and expired/recoverable ($bob_change) VTXOs fail closed.
+  expect_lab_error ArkInputNotSpendable offboard-coop "$bob_input" "$ob_addr" 30000
+  expect_lab_error ArkInputNotSpendable offboard-coop "$bob_change" "$ob_addr" 30000
+  stop_service "${container_prefix}_arkd"
   expect_lab_error ArkOperatorUnavailable offboard-coop "$bob_input" "$ob_addr" 30000
   mark_stage operator_unavailable PASSED
 
@@ -857,7 +882,7 @@ cmd_e2e() {
 
   # --- Stage 9: Core RPC outage ---
   e2e_stage=rpc_unavailable
-  stop_service ark_e2e_bitcoin
+  stop_service "${container_prefix}_bitcoin"
   if core getblockchaininfo >/dev/null 2>&1; then fail "expected dedicated Core RPC to fail"; fi
   resume_service
   wait_for "Core restart" core getblockchaininfo
@@ -867,7 +892,7 @@ cmd_e2e() {
 
   # --- Stage 10: Esplora indexer outage ---
   e2e_stage=indexer_unavailable
-  stop_service ark_e2e_mempool_api
+  stop_service "${container_prefix}_mempool_api"
   expect_lab_error ArkIndexerUnavailable offboard-coop "$bob_input" "$ob_addr" 30000
   resume_service
   wait_for "Esplora restart" validate_indexers
@@ -883,15 +908,15 @@ cmd_stop() {
   [[ -e "$env_file" ]] || exit 0
   require_env
   local existing i name
-  existing=$(docker ps --filter "label=$owner_label=$root" --filter "label=$lab_label=docker-e2e" --format '{{.Names}}')
+  existing=$(docker ps --filter "label=$owner_label=$root" --filter "label=$lab_label=docker-e2e" --filter "label=com.docker.compose.project=$project" --format '{{.Names}}')
   for ((i=${#services[@]}-1; i>=0; i--)); do
-    name="ark_e2e_${services[i]}"
+    name="${container_prefix}_${services[i]}"
     if grep -Fxq "$name" <<<"$existing"; then
       docker stop -t 30 "$name" >/dev/null
     fi
   done
   local remaining
-  remaining=$(docker ps --filter "label=$owner_label=$root" --filter "label=$lab_label=docker-e2e" --format '{{.Names}}')
+  remaining=$(docker ps --filter "label=$owner_label=$root" --filter "label=$lab_label=docker-e2e" --filter "label=com.docker.compose.project=$project" --format '{{.Names}}')
   [[ -z "$remaining" ]] || fail "owned containers still running after stop: $remaining"
   printf 'Stopped all owned containers for %s (non-destructive; containers and volumes preserved).\n' "$project"
 }
@@ -919,9 +944,9 @@ cmd_restart_check() {
     '{addresses:$addr.wallets, balance:$bal.wallets, vtxos:$vtxo.wallets}' | sdk_jq -ceS '.')
   e2e_bal_before=$(lab_e2e balance | sdk_jq -ceS '.wallets')
   e2e_vtxo_before=$(lab_e2e list-vtxos | sdk_jq -ceS '.wallets')
-  cids_before=$(docker ps -a --filter "label=$owner_label=$root" --filter "label=$lab_label=docker-e2e" \
+  cids_before=$(docker ps -a --filter "label=$owner_label=$root" --filter "label=$lab_label=docker-e2e" --filter "label=com.docker.compose.project=$project" \
     --format '{{.Names}}={{.ID}}' | sort)
-  vols_before=$(docker volume ls --filter "label=$owner_label=$root" --filter "label=$lab_label=docker-e2e" \
+  vols_before=$(docker volume ls --filter "label=$owner_label=$root" --filter "label=$lab_label=docker-e2e" --filter "label=com.docker.compose.project=$project" \
     --format '{{.Name}}' | sort)
 
   # Full non-destructive stack stop and restart via subshell calls so locks release cleanly.
@@ -936,9 +961,9 @@ cmd_restart_check() {
     '{addresses:$addr.wallets, balance:$bal.wallets, vtxos:$vtxo.wallets}' | sdk_jq -ceS '.')
   e2e_bal_after=$(lab_e2e balance | sdk_jq -ceS '.wallets')
   e2e_vtxo_after=$(lab_e2e list-vtxos | sdk_jq -ceS '.wallets')
-  cids_after=$(docker ps -a --filter "label=$owner_label=$root" --filter "label=$lab_label=docker-e2e" \
+  cids_after=$(docker ps -a --filter "label=$owner_label=$root" --filter "label=$lab_label=docker-e2e" --filter "label=com.docker.compose.project=$project" \
     --format '{{.Names}}={{.ID}}' | sort)
-  vols_after=$(docker volume ls --filter "label=$owner_label=$root" --filter "label=$lab_label=docker-e2e" \
+  vols_after=$(docker volume ls --filter "label=$owner_label=$root" --filter "label=$lab_label=docker-e2e" --filter "label=com.docker.compose.project=$project" \
     --format '{{.Name}}' | sort)
 
   [[ "$status_before" == "$status_after" ]] || fail "stack status changed across full restart"

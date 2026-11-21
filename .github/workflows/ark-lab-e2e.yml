@@ -36,29 +36,24 @@ jobs:
       - name: Stop stack without deleting state
         if: always()
         run: bash scripts/ark/docker-e2e.sh stop
-      - name: Validate public E2E evidence before upload
-        if: always()
-        run: |
-          for file in matrix.json boarding.json transfer.json offboard.json renewal.json restart.json; do
-            path="data/ark/docker-e2e/evidence/$file"
-            [ -f "$path" ] || continue
-            jq -e 'type == "object"' "$path" >/dev/null
-            if grep -Eqi '(mnemonic|xprv|private_key|rpcpassword|ark_lab_|-----begin)' "$path"; then
-              echo "Unexpected sensitive token in $path" >&2
-              exit 1
-            fi
-          done
-      - name: Upload only public evidence (no data directories or service logs)
-        if: always()
+      - name: Build pinned Ark CI tools container (no secrets in context)
+        if: ${{ success() }}
+        run: bash scripts/ark/docker-ci-checks.sh build
+      - name: Validate public E2E evidence (fail-closed strict schema)
+        id: validate_evidence
+        if: ${{ success() }}
+        run: bash scripts/ark/docker-ci-checks.sh validate-e2e-evidence data/ark/docker-e2e/evidence data/ark/docker-e2e/evidence-approved
+      - name: Upload only approved public evidence (no data directories or service logs)
+        if: ${{ steps.validate_evidence.outcome == 'success' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ark-regtest-public-evidence
           retention-days: 14
-          if-no-files-found: warn
+          if-no-files-found: error
           path: |
-            data/ark/docker-e2e/evidence/matrix.json
-            data/ark/docker-e2e/evidence/boarding.json
-            data/ark/docker-e2e/evidence/transfer.json
-            data/ark/docker-e2e/evidence/offboard.json
-            data/ark/docker-e2e/evidence/renewal.json
-            data/ark/docker-e2e/evidence/restart.json
+            data/ark/docker-e2e/evidence-approved/matrix.json
+            data/ark/docker-e2e/evidence-approved/boarding.json
+            data/ark/docker-e2e/evidence-approved/transfer.json
+            data/ark/docker-e2e/evidence-approved/offboard.json
+            data/ark/docker-e2e/evidence-approved/renewal.json
+            data/ark/docker-e2e/evidence-approved/restart.json

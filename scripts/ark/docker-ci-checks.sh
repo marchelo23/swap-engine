@@ -185,6 +185,98 @@ cmd_secrets_check() {
     '
 }
 
+cmd_evidence_validator_regression() {
+  [[ $# == 0 ]] || fail "usage: docker-ci-checks.sh evidence-validator-regression"
+
+  setup_engine
+  command -v tar >/dev/null || fail "missing tar CLI"
+  [[ ! -L "$root/scripts" && ! -L "$root/scripts/ark" ]] || fail "symlink in scripts/ark path"
+
+  local rel
+  for rel in scripts/ark/validate-e2e-evidence.sh scripts/ark/test-validate-e2e-evidence.sh; do
+    [[ -f "$root/$rel" && ! -L "$root/$rel" ]] || fail "missing or unsafe required file: $rel"
+  done
+
+  ensure_image
+  printf '=== Running E2E evidence validator regression in pinned container (--network none, synthetic fixtures) ===\n'
+  tar -C "$root" -cf - \
+    scripts/ark/validate-e2e-evidence.sh \
+    scripts/ark/test-validate-e2e-evidence.sh |
+    run_hardened 32m '
+      umask 077
+      mkdir -m 0700 -p /tmp/work
+      tar --no-same-owner -C /tmp/work -xf -
+      chmod 0444 /tmp/work/scripts/ark/validate-e2e-evidence.sh \
+        /tmp/work/scripts/ark/test-validate-e2e-evidence.sh
+      exec bash /tmp/work/scripts/ark/test-validate-e2e-evidence.sh
+    '
+}
+
+cmd_validate_e2e_evidence() {
+  [[ $# == 2 ]] || fail "usage: docker-ci-checks.sh validate-e2e-evidence <source_dir> <approved_dir>"
+  local src_arg=$1 dst_arg=$2 src dst dst_parent tmp_out
+  case "$src_arg" in /*) src=$src_arg ;; *) src="$root/$src_arg" ;; esac
+  case "$dst_arg" in /*) dst=$dst_arg ;; *) dst="$root/$dst_arg" ;; esac
+
+  setup_engine
+  command -v tar >/dev/null || fail "missing tar CLI"
+  [[ ! -L "$root/scripts" && ! -L "$root/scripts/ark" ]] || fail "symlink in scripts/ark path"
+  [[ -f "$root/scripts/ark/validate-e2e-evidence.sh" && ! -L "$root/scripts/ark/validate-e2e-evidence.sh" ]] ||
+    fail "missing or unsafe scripts/ark/validate-e2e-evidence.sh"
+  [[ ! -L "$dst" ]] || fail "refusing symlink approved directory: $dst"
+
+  # Fail closed: clear stale approved dir even if source is missing or validation fails.
+  if [[ -e "$dst" ]]; then
+    [[ -d "$dst" && ! -L "$dst" ]] || fail "approved path exists and is not a directory: $dst"
+    rm -rf -- "$dst"
+  fi
+  [[ -d "$src" && ! -L "$src" ]] || fail "missing or unsafe source evidence directory: $src"
+
+  # Reject any symlinks inside the source evidence directory before streaming.
+  if find "$src" -mindepth 1 -maxdepth 1 -type l | grep -q .; then
+    fail "symlink detected in source evidence directory: $src"
+  fi
+
+  ensure_image
+  dst_parent=$(dirname -- "$dst")
+  mkdir -p -- "$dst_parent"
+  [[ ! -L "$dst_parent" ]] || fail "refusing symlink parent for approved directory"
+  tmp_out=$(mktemp -d "$dst_parent/.ark-approved-out.XXXXXXXX")
+  chmod 0700 "$tmp_out"
+  trap 'rm -rf -- "${tmp_out:-}"' RETURN
+
+  printf '=== Validating E2E evidence inside pinned container (--network none, strict fail-closed schema) ===\n' >&2
+  local tar_in
+  tar_in=$(mktemp "$tmp_out/.in.XXXXXXXX")
+  tar -cf "$tar_in" \
+    -C "$root" scripts/ark/validate-e2e-evidence.sh \
+    -C "$src" .
+  local tar_out
+  tar_out=$(mktemp "$tmp_out/.out.XXXXXXXX")
+  if ! run_hardened 32m '
+    umask 077
+    mkdir -m 0700 -p /tmp/work/src
+    tar --no-same-owner -C /tmp/work/src -xf -
+    mkdir -m 0700 -p /tmp/work/bin
+    mv /tmp/work/src/scripts/ark/validate-e2e-evidence.sh /tmp/work/bin/validate-e2e-evidence.sh
+    rmdir /tmp/work/src/scripts/ark /tmp/work/src/scripts
+    chmod 0444 /tmp/work/bin/validate-e2e-evidence.sh
+    summary=$(bash /tmp/work/bin/validate-e2e-evidence.sh /tmp/work/src /tmp/work/approved)
+    printf "%s\n" "$summary" >&2
+    tar -C /tmp/work/approved -cf - \
+      boarding.json matrix.json offboard.json renewal.json restart.json transfer.json
+  ' < "$tar_in" > "$tar_out"; then
+    fail "E2E evidence validation failed closed; no approved artifacts staged"
+  fi
+
+  mkdir -m 0700 -p -- "$tmp_out/approved"
+  tar --no-same-owner -C "$tmp_out/approved" -xf "$tar_out"
+  chmod 0600 "$tmp_out/approved"/*.json
+  mv -- "$tmp_out/approved" "$dst"
+  rm -rf -- "$tmp_out"
+  trap - RETURN
+}
+
 cmd_all() {
   local if_present_arg=()
   if [[ "${1:-}" == "--if-present" ]]; then
@@ -194,15 +286,18 @@ cmd_all() {
   [[ $# == 0 ]] || fail "usage: docker-ci-checks.sh all [--if-present]"
   cmd_build
   cmd_bootstrap_regression "${if_present_arg[@]}"
+  cmd_evidence_validator_regression
   cmd_secrets_check
 }
 
 case "${1:-}" in
   build) shift; [[ $# == 0 ]] || fail "usage: docker-ci-checks.sh build"; cmd_build ;;
   bootstrap-regression) shift; cmd_bootstrap_regression "$@" ;;
+  evidence-validator-regression) shift; cmd_evidence_validator_regression "$@" ;;
+  validate-e2e-evidence) shift; cmd_validate_e2e_evidence "$@" ;;
   secrets-check) shift; cmd_secrets_check "$@" ;;
   all) shift; cmd_all "$@" ;;
   *)
-    fail "usage: docker-ci-checks.sh <build|bootstrap-regression [--if-present]|secrets-check|all [--if-present]>"
+    fail "usage: docker-ci-checks.sh <build|bootstrap-regression [--if-present]|evidence-validator-regression|validate-e2e-evidence <src> <dst>|secrets-check|all [--if-present]>"
     ;;
 esac

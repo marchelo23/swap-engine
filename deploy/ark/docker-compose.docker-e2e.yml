@@ -1,4 +1,4 @@
-name: swap-engine-ark-docker-e2e
+name: ${ARK_E2E_PROJECT:-swap-engine-ark-docker-e2e}
 
 x-owner: &owner
   io.swap-engine.ark.worktree: "${ARK_LAB_WORKTREE}"
@@ -7,7 +7,7 @@ x-owner: &owner
 services:
   bitcoin:
     image: docker.io/btcpayserver/bitcoin:31.0
-    container_name: ark_e2e_bitcoin
+    container_name: ${ARK_E2E_CONTAINER_PREFIX:-ark_e2e}_bitcoin
     labels: *owner
     stop_grace_period: 30s
     environment:
@@ -33,7 +33,7 @@ services:
 
   postgres:
     image: docker.io/library/postgres:16
-    container_name: ark_e2e_postgres
+    container_name: ${ARK_E2E_CONTAINER_PREFIX:-ark_e2e}_postgres
     labels: *owner
     environment:
       # Internal-only lab DB; no host ports are published.
@@ -43,7 +43,7 @@ services:
 
   nbxplorer:
     image: docker.io/nicolasdorier/nbxplorer:2.6.7
-    container_name: ark_e2e_nbxplorer
+    container_name: ${ARK_E2E_CONTAINER_PREFIX:-ark_e2e}_nbxplorer
     labels: *owner
     restart: on-failure
     environment:
@@ -62,7 +62,7 @@ services:
 
   fulcrum:
     image: docker.io/cculianu/fulcrum:v2.1.1
-    container_name: ark_e2e_fulcrum
+    container_name: ${ARK_E2E_CONTAINER_PREFIX:-ark_e2e}_fulcrum
     labels: *owner
     restart: on-failure
     command:
@@ -80,7 +80,7 @@ services:
 
   mempool_mariadb:
     image: docker.io/library/mariadb:10.5
-    container_name: ark_e2e_mempool_mariadb
+    container_name: ${ARK_E2E_CONTAINER_PREFIX:-ark_e2e}_mempool_mariadb
     labels: *owner
     profiles: [debug-mempool-db]
     environment:
@@ -93,7 +93,7 @@ services:
 
   mempool_api:
     image: docker.io/mempool/backend:v3.3.1
-    container_name: ark_e2e_mempool_api
+    container_name: ${ARK_E2E_CONTAINER_PREFIX:-ark_e2e}_mempool_api
     labels: *owner
     user: "1000:1000"
     init: true
@@ -124,12 +124,12 @@ services:
 
   redis:
     image: docker.io/library/redis:7-alpine
-    container_name: ark_e2e_redis
+    container_name: ${ARK_E2E_CONTAINER_PREFIX:-ark_e2e}_redis
     labels: *owner
 
   arkd-wallet:
     image: ghcr.io/arkade-os/arkd-wallet:v0.9.25
-    container_name: ark_e2e_arkd_wallet
+    container_name: ${ARK_E2E_CONTAINER_PREFIX:-ark_e2e}_arkd_wallet
     labels: *owner
     restart: on-failure
     environment:
@@ -140,7 +140,7 @@ services:
 
   arkd-signer:
     image: ghcr.io/arkade-os/arkd-signer:v0.9.25
-    container_name: ark_e2e_arkd_signer
+    container_name: ${ARK_E2E_CONTAINER_PREFIX:-ark_e2e}_arkd_signer
     labels: *owner
     expose: ["6061"]
     environment:
@@ -149,7 +149,7 @@ services:
 
   arkd:
     image: ghcr.io/arkade-os/arkd:v0.9.25
-    container_name: ark_e2e_arkd
+    container_name: ${ARK_E2E_CONTAINER_PREFIX:-ark_e2e}_arkd
     labels: *owner
     restart: on-failure
     environment:
@@ -185,7 +185,7 @@ services:
       context: ../../ark
       dockerfile: Dockerfile
     image: swap-engine-ark-sdk:local
-    container_name: ark_e2e_sdk
+    container_name: ${ARK_E2E_CONTAINER_PREFIX:-ark_e2e}_sdk
     labels: *owner
     user: "1000:1000"
     init: true
@@ -201,35 +201,35 @@ services:
 
 networks:
   default:
-    name: swap_engine_ark_e2e_net
+    name: ${ARK_E2E_RES_PREFIX:-swap_engine_ark_e2e}_net
     internal: true
     labels: *owner
 
 volumes:
   bitcoin_data:
-    name: swap_engine_ark_e2e_bitcoin_data
+    name: ${ARK_E2E_RES_PREFIX:-swap_engine_ark_e2e}_bitcoin_data
     labels: *owner
   postgres_data:
-    name: swap_engine_ark_e2e_postgres_data
+    name: ${ARK_E2E_RES_PREFIX:-swap_engine_ark_e2e}_postgres_data
     labels: *owner
   nbxplorer_data:
-    name: swap_engine_ark_e2e_nbxplorer_data
+    name: ${ARK_E2E_RES_PREFIX:-swap_engine_ark_e2e}_nbxplorer_data
     labels: *owner
   fulcrum_data:
-    name: swap_engine_ark_e2e_fulcrum_data
+    name: ${ARK_E2E_RES_PREFIX:-swap_engine_ark_e2e}_fulcrum_data
     labels: *owner
   mariadb_data:
-    name: swap_engine_ark_e2e_mariadb_data
+    name: ${ARK_E2E_RES_PREFIX:-swap_engine_ark_e2e}_mariadb_data
     labels: *owner
   mempool_cache:
-    name: swap_engine_ark_e2e_mempool_cache
+    name: ${ARK_E2E_RES_PREFIX:-swap_engine_ark_e2e}_mempool_cache
     labels: *owner
   wallet_data:
-    name: swap_engine_ark_e2e_wallet_data
+    name: ${ARK_E2E_RES_PREFIX:-swap_engine_ark_e2e}_wallet_data
     labels: *owner
   arkd_data:
-    name: swap_engine_ark_e2e_arkd_data
+    name: ${ARK_E2E_RES_PREFIX:-swap_engine_ark_e2e}_arkd_data
     labels: *owner
   sdk_state:
-    name: swap_engine_ark_e2e_sdk_state
+    name: ${ARK_E2E_RES_PREFIX:-swap_engine_ark_e2e}_sdk_state
     labels: *owner
