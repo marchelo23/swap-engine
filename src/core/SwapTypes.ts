@@ -28,7 +28,7 @@ export type ChainObservation = { fromHeight: number; height: number; blockHash: 
 export type Database = { schema: 1; quotes: Record<string, Quote>; swaps: Record<string, Swap>;
   guestAdmissions?: Record<string, { id: string; requestKey: string; fingerprint: string; tokenHash: string;
     status: 'QUOTED'; createdAt: number; expiresAt: number;
-    terms: { network: 'regtest'; destination: string; paymentHash: string; claimPublicKey: string;
+    terms: { network: 'regtest'; liquidity: 'UNRESERVED'; destination: string; paymentHash: string; claimPublicKey: string;
       amountSats: number; invoiceSats: number; serviceFeeSats: number; claimFeeSats: number; fundingReserveSats: number } }>;
   ownedPreparations?: Record<string, { ownerId: string; fingerprint: string; attemptId: string; createdAt: number;
     sourceAmountSats?: number;

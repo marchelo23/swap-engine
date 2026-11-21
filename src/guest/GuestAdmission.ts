@@ -36,6 +36,14 @@ function validateDestination(value: string) {
   return value.toLowerCase();
 }
 
+/** Validate all guest-controlled values before any node I/O. */
+export function validateGuestQuote(authorization: string | undefined, idempotencyKey: string, raw: unknown) {
+  readToken(authorization);
+  if (!/^[A-Za-z0-9_-]{8,128}$/.test(idempotencyKey)) throw new Error('Invalid idempotency key');
+  const input = requestSchema.parse(raw); validateDestination(input.destination);
+  return invoiceBudget(input.amountSats);
+}
+
 /** Admission only: no invoice, payment, signing, funding or broadcast capability. */
 export class GuestAdmission {
   constructor(private readonly store: Store, private readonly clock: () => number = Date.now) {}
@@ -59,8 +67,9 @@ export class GuestAdmission {
         return { id: existing.id, status: existing.status, expiresAt: existing.expiresAt, ...existing.terms };
       }
       if (Object.values(records).some(row => row.tokenHash === tokenHash)) throw new Error('Guest capability already used');
+      if (Object.keys(records).length >= 1000) throw new Error('Guest admission capacity reached');
       const id = randomUUID();
-      const terms = { network: 'regtest' as const, destination, paymentHash: input.paymentHash,
+      const terms = { network: 'regtest' as const, liquidity: 'UNRESERVED' as const, destination, paymentHash: input.paymentHash,
         claimPublicKey: input.claimPublicKey, ...budget };
       const row = { id, requestKey, fingerprint, tokenHash, status: 'QUOTED' as const, createdAt: now, expiresAt: now + 120000, terms };
       records[id] = row;

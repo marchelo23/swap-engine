@@ -1,5 +1,5 @@
 import { createServer, type IncomingMessage } from 'node:http';
-import { available, type Balances } from '../liquidity/LiquidityManager.js';
+import { available, assertLiquidity, type Balances } from '../liquidity/LiquidityManager.js';
 import type { SwapManager } from '../core/SwapManager.js';
 import { Sessions, roleDenial, sessionResponse, type AuthOptions } from '../auth/session.js';
 import type { OperationsBalances } from '../operations/Balances.js';
@@ -10,6 +10,7 @@ import type { preflight } from '../diagnostics/preflight.js';
 import type { ApplicationMode } from '../config.js';
 import { createOwnedReverseGateway } from './ownedReverseGateway.js';
 import { historicalSwaps, HistoricalSwapResponse } from './historicalSwaps.js';
+import { GuestAdmission, validateGuestQuote } from '../guest/GuestAdmission.js';
 
 const webAssets = new Map([
   ['/', ['index.html', 'text/html; charset=utf-8']],
@@ -35,13 +36,17 @@ export function createApi(
   liquidity: () => Promise<Balances>,
   diagnostics?: () => ReturnType<typeof preflight>,
   mode: ApplicationMode = 'simulation',
-  { auth: authOptions = {}, operations, history = historicalSwaps }: {
+  { auth: authOptions = {}, operations, history = historicalSwaps, guestQuotes = false }: {
     auth?: AuthOptions;
     operations?: () => Promise<OperationsBalances>;
     history?: () => unknown | Promise<unknown>;
+    guestQuotes?: boolean;
   } = {},
 ) {
   const auth = new Sessions(authOptions, mode);
+  if (guestQuotes && mode !== 'regtest') throw new Error('Guest quote admission requires regtest');
+  const guests = guestQuotes ? new GuestAdmission(manager.store) : undefined;
+  const guestAttempts = new Map<string, { until: number; count: number }>();
   const controlled = createOwnedReverseGateway(auth, { enabled: mode === 'regtest', delegateWhenInactive: true });
   const server = createServer(async (req, res) => {
     const send = (status: number, value: unknown) => { res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store' }); res.end(JSON.stringify(value)); };
@@ -49,7 +54,33 @@ export function createApi(
     const deny = (status: 401 | 403) => send(status, { error: status === 401 ? 'AUTH_REQUIRED' : 'FORBIDDEN' });
     try {
       if (await controlled.handle(req, res)) return;
-      const path = new URL(req.url ?? '/', 'http://localhost').pathname;
+      const url = new URL(req.url ?? '/', 'http://localhost'); const path = url.pathname;
+      if (path === '/v1/guest/quotes' || /^\/v1\/guest\/quotes\/[a-f0-9-]{36}$/.test(path)) {
+        if (!guests) return send(503, { error: 'GUEST_QUOTES_NOT_CONFIGURED' });
+        if (url.search || (req.headers.origin !== undefined && !auth.sameOrigin(req))) return send(403, { error: 'FORBIDDEN' });
+        if (req.method === 'POST' && path === '/v1/guest/quotes') {
+          if (!auth.sameOrigin(req)) return send(403, { error: 'FORBIDDEN' });
+          const now = Date.now(); const peer = req.socket.remoteAddress ?? '';
+          for (const [key, record] of guestAttempts) if (record.until <= now) guestAttempts.delete(key);
+          const previous = guestAttempts.get(peer);
+          if ((!previous && guestAttempts.size >= 256) || (previous && previous.count >= 10)) return send(429, { error: 'RATE_LIMITED' });
+          guestAttempts.set(peer, previous ? { ...previous, count: previous.count + 1 } : { until: now + 60000, count: 1 });
+          try {
+            const input = await body(req);
+            const key = String(req.headers['idempotency-key'] ?? '');
+            const budget = validateGuestQuote(req.headers.authorization, key, input);
+            try { assertLiquidity(manager.store.read(), await liquidity(), budget.amountSats, budget.invoiceSats, budget.fundingReserveSats); }
+            catch { return send(503, { error: 'GUEST_LIQUIDITY_UNAVAILABLE' }); }
+            return send(201, await guests.reserve(req.headers.authorization, key, input));
+          }
+          catch { return send(400, { error: 'GUEST_QUOTE_REJECTED' }); }
+        }
+        if (req.method === 'GET' && path !== '/v1/guest/quotes') {
+          const result = guests.status(path.split('/').at(-1)!, req.headers.authorization);
+          return result ? send(200, result) : send(404, { error: 'NOT_FOUND' });
+        }
+        return send(404, { error: 'NOT_FOUND' });
+      }
       if (req.method === 'OPTIONS') return noContent();
       const asset = webAssets.get(path);
       if (req.method === 'GET' && asset) {
