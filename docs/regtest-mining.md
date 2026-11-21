@@ -46,6 +46,8 @@ holder. The kernel releases the lock when the process exits or crashes.
   actions. Pending integration is the deployment blocker.
 - Pause/resume: temporary `pause.json` controls for expiration tests; the timer
   must be restored explicitly.
+- State initialization and every state mutation occur only after the flock is
+  held; `--status` reads a default in memory when no state file exists.
 
 ## Persistent state
 
@@ -62,17 +64,22 @@ Default data directory: `/home/truja/.local/share/lqwd-regtest-miner` (mode 700)
 ## Ambiguous generate reconciliation
 
 Before `generatetoaddress`, the script writes `pending.json` with the pre-height
-and pre-hash. If the RPC reply is lost or malformed:
+and pre-hash, fsyncs the temporary file and the data directory, then renames it
+into place before the RPC. If the reply is lost or malformed:
 
 - Next invocation first reconciles the pending attempt.
-- Exactly +1 height and changed tip: record the ambiguous block, clear pending,
-  and do **not** mine another block on that invocation.
-- Unchanged height: record `AMBIGUOUS_UNRECONCILED`, keep pending and mine
-  nothing.
-- Any larger delta/change: record an ambiguity/height alert and mine nothing.
+- Exactly +1 height, `getblockhash(preHeight) == preHash`, the block header
+  `previousblockhash`, and a coinbase output paying the persistent mining address
+  are all mandatory. Only then is the ambiguous block recorded and pending
+  cleared; no second block is mined on that invocation.
+- Unchanged height, a different parent/reorg, a non-matching coinbase, or any
+  larger delta: record `AMBIGUOUS_UNRECONCILED` / `AMBIGUOUS_PARENT_MISMATCH` /
+  `AMBIGUOUS_COINBASE_MISMATCH` / `AMBIGUOUS_HEIGHT_CHANGED`, keep pending and
+  mine nothing.
 
-This prevents future ticks from mining again before an ambiguous generation is
-understood.
+This prevents an external miner or reorg from being misattributed to this
+miner, and prevents future ticks from mining again before an ambiguous
+generation is understood.
 
 ## Commands
 
@@ -120,6 +127,7 @@ operator action, not an automatic confirmation loop.
 `tests/regtestMiner.sh` uses a mock `bitcoin-cli` and real kernel `flock` to
 cover: one address/two ticks, wrong chain/wallet rejection before generation,
 shared-lock exclusion with a slow holder, concurrent acquisition, pause vs
-on-demand, ambiguous generation reconciliation and unit/script hardening.
-`tests/regtestMiner.test.ts` runs it on Linux. No VM service, timer, wallet or
-real node was changed by this task.
+on-demand, ambiguous generation reconciliation, unrelated block/coinbase,
+parent/reorg mismatch and crash-boundary pending retention. `tests/
+regtestMiner.test.ts` runs it on Linux. No VM service, timer, wallet or real
+node was changed by this task.

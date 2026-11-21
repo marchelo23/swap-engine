@@ -12,6 +12,11 @@ test('regtest miner deployment uses kernel flock and existing release path', asy
   assert.doesNotMatch(script, /rm -f "\$LOCK_FILE"/);
   assert.match(script, /generatetoaddress 1/);
   assert.match(script, /pending\.json/);
+  assert.match(script, /getblockhash "\$pre_height"/);
+  assert.match(script, /previousblockhash/);
+  assert.match(script, /scriptPubKey\.address/);
+  assert.match(script, /sync_path "\$tmp"/);
+  assert.match(script, /sync_path "\$DATA_DIR"/);
   assert.match(service, /Type=oneshot/);
   assert.match(service, /%h\/deployments\/lqwd-swap-engine-434f519\/scripts\/regtest-block-miner\.sh/);
   assert.match(timer, /OnUnitActiveSec=10min/);

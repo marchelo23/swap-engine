@@ -21,6 +21,7 @@ ADDRESS_LABEL="${MINER_ADDRESS_LABEL:-lqwd-regtest-miner}"
 now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 core() { "$CLI" -regtest -datadir="$CORE_DATADIR" "$@"; }
 core_wallet() { "$CLI" -regtest -datadir="$CORE_DATADIR" -rpcwallet="$WALLET" "$@"; }
+sync_path() { sync -f "$1"; }
 
 log_event() {
   local event="$1"; shift
@@ -28,11 +29,15 @@ log_event() {
   chmod 600 "$LOG_FILE" 2>/dev/null || true
 }
 
+default_state() {
+  jq -n --arg wallet "$WALLET" '{chain:null,wallet:$wallet,address:null,lastAttemptAt:null,lastSuccessAt:null,lastHeight:null,lastBlockHash:null,blocksMined:0,coinbaseMaturityHeight:null,failures:0,lastFailureAt:null,lastFailureReason:null,paused:false,pausedAt:null,pausedReason:null}'
+}
+
 ensure_state() {
   if [[ ! -s "$STATE_FILE" ]]; then
     local tmp; tmp=$(mktemp "$STATE_FILE.XXXXXX")
-    jq -n --arg wallet "$WALLET" '{chain:null,wallet:$wallet,address:null,lastAttemptAt:null,lastSuccessAt:null,lastHeight:null,lastBlockHash:null,blocksMined:0,coinbaseMaturityHeight:null,failures:0,lastFailureAt:null,lastFailureReason:null,paused:false,pausedAt:null,pausedReason:null}' > "$tmp"
-    chmod 600 "$tmp"; mv "$tmp" "$STATE_FILE"
+    default_state > "$tmp"
+    chmod 600 "$tmp"; sync_path "$tmp"; mv "$tmp" "$STATE_FILE"; sync_path "$DATA_DIR"
   fi
 }
 
@@ -40,7 +45,7 @@ record_failure() {
   local reason="$1" at; at=$(now)
   local tmp; tmp=$(mktemp "$STATE_FILE.XXXXXX")
   jq --arg at "$at" --arg reason "$reason" '.lastAttemptAt=$at | .failures += 1 | .lastFailureAt=$at | .lastFailureReason=$reason' "$STATE_FILE" > "$tmp"
-  chmod 600 "$tmp"; mv "$tmp" "$STATE_FILE"
+  chmod 600 "$tmp"; sync_path "$tmp"; mv "$tmp" "$STATE_FILE"; sync_path "$DATA_DIR"
   log_event failed --arg reason "$reason" --argjson failures "$(jq -r '.failures' "$STATE_FILE")"
 }
 
@@ -50,19 +55,22 @@ record_success() {
   jq --arg at "$at" --argjson height "$height" --arg hash "$hash" --arg address "$address" --arg wallet "$WALLET" \
     '.chain="regtest" | .wallet=$wallet | .address=$address | .lastAttemptAt=$at | .lastSuccessAt=$at | .lastHeight=$height | .lastBlockHash=$hash | .blocksMined += 1 | .coinbaseMaturityHeight=($height+100) | .paused=false | .pausedAt=null | .pausedReason=null' \
     "$STATE_FILE" > "$tmp"
-  chmod 600 "$tmp"; mv "$tmp" "$STATE_FILE"
+  chmod 600 "$tmp"; sync_path "$tmp"; mv "$tmp" "$STATE_FILE"; sync_path "$DATA_DIR"
 }
 
 write_pending() {
   local height="$1" hash="$2" at; at=$(now)
   local tmp; tmp=$(mktemp "$PENDING_FILE.XXXXXX")
   jq -n --argjson preHeight "$height" --arg preHash "$hash" --arg at "$at" '{preHeight:$preHeight,preHash:$preHash,attemptedAt:$at}' > "$tmp"
-  chmod 600 "$tmp"; mv "$tmp" "$PENDING_FILE"
+  chmod 600 "$tmp"
+  sync_path "$tmp"
+  mv "$tmp" "$PENDING_FILE"
+  sync_path "$DATA_DIR"
 }
 
 reconcile_pending() {
   [[ -f "$PENDING_FILE" ]] || return 0
-  local pre_height pre_hash chain height hash address
+  local pre_height pre_hash chain height hash address parent header block
   pre_height=$(jq -r '.preHeight // empty' "$PENDING_FILE" 2>/dev/null || true)
   pre_hash=$(jq -r '.preHash // empty' "$PENDING_FILE" 2>/dev/null || true)
   if [[ ! "$pre_height" =~ ^[0-9]+$ || ! "$pre_hash" =~ ^[0-9a-f]{64}$ ]]; then
@@ -77,27 +85,56 @@ reconcile_pending() {
     exit 1
   fi
   height=$(jq -r '.blocks' <<< "$chain"); hash=$(jq -r '.bestblockhash' <<< "$chain")
-  address=$(jq -r '.address // empty' "$STATE_FILE" 2>/dev/null || true)
   if [[ "$height" -eq $((pre_height + 1)) ]]; then
+    address=$(jq -r '.address // empty' "$STATE_FILE" 2>/dev/null || true)
     [[ -n "$address" ]] || address=$(tr -d '\r\n' < "$ADDRESS_FILE" 2>/dev/null || true)
+    if [[ -z "$address" ]]; then
+      record_failure AMBIGUOUS_ADDRESS_UNAVAILABLE
+      printf '%s\n' '{"status":"failed","failure":"AMBIGUOUS_ADDRESS_UNAVAILABLE"}'
+      exit 1
+    fi
+    parent=$(core getblockhash "$pre_height" 2>/dev/null || true)
+    if [[ "$parent" != "$pre_hash" ]]; then
+      record_failure AMBIGUOUS_PARENT_MISMATCH
+      printf '%s\n' '{"status":"failed","failure":"AMBIGUOUS_PARENT_MISMATCH"}'
+      exit 1
+    fi
+    header=$(core getblock "$hash" 1 2>/dev/null || true)
+    if ! jq -e --arg prev "$pre_hash" --argjson height "$((pre_height + 1))" \
+      '.height == $height and .previousblockhash == $prev' <<< "$header" >/dev/null 2>&1; then
+      record_failure AMBIGUOUS_PARENT_MISMATCH
+      printf '%s\n' '{"status":"failed","failure":"AMBIGUOUS_PARENT_MISMATCH"}'
+      exit 1
+    fi
+    block=$(core getblock "$hash" 2 2>/dev/null || true)
+    if ! jq -e --arg addr "$address" 'any(.tx[0].vout[]; (.scriptPubKey.address? // "") == $addr)' <<< "$block" >/dev/null 2>&1; then
+      record_failure AMBIGUOUS_COINBASE_MISMATCH
+      printf '%s\n' '{"status":"failed","failure":"AMBIGUOUS_COINBASE_MISMATCH"}'
+      exit 1
+    fi
     record_success "$height" "$hash" "$address"
     rm -f "$PENDING_FILE"
-    log_event reconciled --argjson height "$height" --arg hash "$hash" --arg reason 'ambiguous-generate'
+    log_event reconciled --argjson height "$height" --arg hash "$hash" --arg reason 'ambiguous-generate-verified'
     printf '%s\n' "{\"status\":\"reconciled\",\"height\":$height,\"blockHash\":\"$hash\"}"
     exit 0
   fi
-  if [[ "$height" -eq "$pre_height" ]]; then record_failure AMBIGUOUS_UNRECONCILED
-  else record_failure AMBIGUOUS_HEIGHT_CHANGED; fi
-  printf '%s\n' "{\"status\":\"failed\",\"failure\":\"AMBIGUOUS\",\"height\":$height}"
+  local reason
+  if [[ "$height" -eq "$pre_height" ]]; then reason=AMBIGUOUS_UNRECONCILED
+  else reason=AMBIGUOUS_HEIGHT_CHANGED; fi
+  record_failure "$reason"
+  printf '%s\n' "{\"status\":\"failed\",\"failure\":\"$reason\",\"height\":$height}"
   exit 1
 }
 
 print_status() {
   mkdir -p "$DATA_DIR"
   chmod 700 "$DATA_DIR"
-  ensure_state
   local state pause='null'
-  state=$(cat "$STATE_FILE")
+  if [[ -s "$STATE_FILE" ]]; then
+    state=$(cat "$STATE_FILE")
+  else
+    state=$(default_state)
+  fi
   [[ -f "$PAUSE_FILE" ]] && pause=$(cat "$PAUSE_FILE")
   jq -n --argjson state "$state" --argjson pause "$pause" '{status:$state,paused:($pause != null),pause:$pause}'
 }
@@ -117,13 +154,12 @@ if [[ "$CMD" == "--help" ]]; then show_help; exit 0; fi
 if [[ "$CMD" == "--status" ]]; then print_status; exit 0; fi
 case "$CMD" in --once|--on-demand|--pause|--resume) ;; *) echo '{"status":"failed","failure":"INVALID_COMMAND"}'; exit 2;; esac
 
-for required in "$CLI" jq flock mktemp date; do
+for required in "$CLI" jq flock mktemp date sync; do
   command -v "$required" >/dev/null 2>&1 || { echo "{\"status\":\"failed\",\"failure\":\"MISSING_COMMAND\"}"; exit 2; }
 done
 
 mkdir -p "$DATA_DIR"
 chmod 700 "$DATA_DIR"
-ensure_state
 
 # Kernel-held lock: no timeout, no stale-file eviction, no unlink of a live lock.
 exec 9>>"$LOCK_FILE"
@@ -133,6 +169,9 @@ if ! flock -n 9; then
   printf '%s\n' '{"status":"locked"}'
   case "$CMD" in --once) exit 0;; *) exit 1;; esac
 fi
+
+# All state mutation occurs only after the kernel flock is held.
+ensure_state
 
 if [[ "$CMD" == "--pause" ]]; then
   reason="${2:-operator-pause}"
