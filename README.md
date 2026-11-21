@@ -1,293 +1,195 @@
-# LQWD Swap Engine v0.1
+# Swap Engine
 
-Experimental TypeScript components for non-custodial Lightning-to-Bitcoin reverse
-submarine swaps on Bitcoin regtest. **This milestone is incomplete: live swap
-creation is disabled. It is neither audited nor production-ready.**
+**Experimental Bitcoin payment-rail swap engine, developed and tested on regtest.**
 
-## Project overview and business motivation
+Swap Engine is a TypeScript project for exchanging value between Bitcoin on-chain and Lightning without requiring a Lightning channel to be closed. It combines a Bitcoin HTLC, Lightning hold invoices, a durable swap state machine, and an authenticated web interface.
 
-A reverse swap lets a user move Lightning liquidity to a Bitcoin output while
-keeping their channel open. A held Lightning payment and an on-chain P2WSH HTLC
-share the same SHA-256 payment hash. The user generates the secret locally. The
-provider learns the secret only when the user claims the on-chain output, then
-uses it to settle the held Lightning payment. This implementation does not accept
-custodial deposits or forward ordinary payments as a substitute for a swap.
+> **Regtest only. Not audited for production. Do not deposit mainnet funds.** The normal application starts with financial execution disabled. Controlled reverse-swap execution is a separately configured, owner-bound laboratory capability, **not** an unrestricted public payment service.
 
-## Architecture
+## Current status — November 2026
+
+| Capability | Status | Evidence / limitation |
+| --- | --- | --- |
+| Bitcoin regtest + LND connectivity | Implemented | Read-only node diagnostics, balances and liquidity inspection; requires existing configured nodes |
+| Lightning → Bitcoin on-chain (reverse swap) | **Verified in a controlled regtest run** | Funding and claim TXIDs, confirmed output, and LND payment/invoice settlement recorded in [the test report](docs/fresh-reverse-success.md) |
+| Authenticated reverse-swap application | **Merged into `main`** | [PR #68](https://github.com/Truja503/swap-engine/pull/68): owner-bound preparation, execution, status and conservative recovery. Explicit private runtime policy required; default is closed |
+| Standard quote + web experience | Available | Three-cube interface, live quote requests, Account and ADMIN Operations; unsupported routes do not execute |
+| Guest reverse swap (no account) | **In progress, not released** | [#66](https://github.com/Truja503/swap-engine/issues/66): Bitcoin destination → BOLT11 invoice/QR → safe claim → receipt. A guest quote/capability prototype was reported in a **local** worktree; it is not verified as merged or deployed |
+| Bitcoin on-chain → Lightning (forward swap) | Not implemented end-to-end | [#12](https://github.com/Truja503/swap-engine/issues/12), [#13](https://github.com/Truja503/swap-engine/issues/13) |
+| Automatic regtest block generation | Planned / not confirmed deployed | [#67](https://github.com/Truja503/swap-engine/issues/67); coordinate with HTLC/CLTV deadlines |
+| Liquid / L-BTC | Planned | Elements regtest and adapters not yet validated in this application's deployed backend |
+| Arkade | Independent regtest lab under review | [Ark epic #46](https://github.com/Truja503/swap-engine/issues/46); external lab PRs do not imply an integrated Ark swap route |
+| RGB and other rails | Research / future work | No verified cross-rail execution exposed by this app |
+
+**What has actually been demonstrated?** The controlled reverse-swap report documents a **50,000-sat** HTLC, **50,750 sats** paid by Lightning, **49,500 sats** received on-chain, funding fee **306 sats**, claim fee **500 sats**, routing fee **0 sats**, and independent Core/LND checks. The successful test is specific to its approved profile. The newer **exact-Lightning-debit** quote mode in PR #68 passed synthetic-node tests; a new real payment with that precise quote profile has **not** been claimed.
+
+The PR #68 report lists **387 passing tests, one platform skip, zero failures**, with a successful `Verify components` workflow. Browser tests with synthetic node adapters are not substitutes for a live regtest payment. A merge to `main` is also not proof that the VM is running that commit.
+
+## What the application does
+
+For a **reverse submarine swap** (Lightning → Bitcoin):
+
+1. A quote determines invoice amount, on-chain principal, fees, and limits.
+2. The provider creates a Lightning hold invoice sharing a payment hash with the Bitcoin HTLC.
+3. A bounded, journaled execution accepts the Lightning payment and verifies the appropriate Bitcoin funding.
+4. The client claims the HTLC to its on-chain destination, revealing the preimage.
+5. The provider settles the hold invoice only after validated on-chain evidence.
+6. The system reconciles confirmed transactions and Lightning states; uncertain results remain pending or require manual review.
+
+A hold invoice marked `ACCEPTED` is **not** `SETTLED`. An HTTP response, quote, test fixture, or animated success state is not proof of financial completion.
+
+### High-level architecture
 
 ```mermaid
 flowchart LR
-  U[User: secret and claim key] --> API[Loopback HTTP API]
-  API --> M[Quotes and reservations]
-  M --> DB[Atomic persistent store]
-  C[Coordinator component] --> DB
-  C --> P[Verified adapter ports]
-  P -. pending live wiring .-> L[LND hold invoices]
-  P -. pending observer .-> B[Bitcoin Core regtest]
-  U --> H[P2WSH HTLC claim]
-  H --> B
-  L --> LC[LND REST client component]
-  B --> BC[Bitcoin RPC component]
+  UI[Web UI: Swap / Account / Operations] --> API[Authenticated HTTP API]
+  API --> Q[Quotes and controlled admission]
+  API --> S[Durable swap state / operation journal]
+  Q --> R[Owner-bound reverse runtime]
+  R --> S
+  R --> L[LND Provider / payer]
+  R --> B[Bitcoin Core regtest]
+  L --> E[Invoice and payment evidence]
+  B --> E2[Funding / claim / confirmations]
+  E --> S
+  E2 --> S
 ```
 
-See [protocol invariants and architecture](docs/architecture.md),
-[security limitations](docs/security.md), and [verification results](docs/results.md).
+The generic HTTP server does **not** accept unrestricted spending instructions. The execution runtime relies on local, protected operator configuration and wallet credentials outside the repository. Owner identity is obtained from server-side sessions, not client-submitted JSON fields.
 
-## Supported rails and development status
+## Tech stack
 
-Bitcoin regtest and Lightning regtest have implemented protocol components.
-There is no working live service yet. Liquid, Rootstock, Arkade and RGB are
-**planned only**; no adapters for those rails exist.
+- **TypeScript / Node.js 22+**; ESM and `tsx`.
+- Bitcoin transactions and HTLC components using `bitcoinjs-lib`, `ecpair`, and `tiny-secp256k1`.
+- **Bitcoin Core** JSON-RPC and **LND** HTTPS REST, with TLS certificate and macaroon verification.
+- Zod schemas, a persistent single-writer store, and idempotent execution/reconciliation.
+- A monochrome 3D-inspired web interface, with browser integration tests.
+- Ubuntu VM / systemd user services for the isolated regtest laboratory.
 
-| Component | Implemented | Still required |
-| --- | --- | --- |
-| LND | Local TLS REST client, hold/create/lookup/cancel/settle, subscription, balance inspection | Live v0.21.6-beta compatibility tests, reconnect worker |
-| Bitcoin | P2WSH construction and verification, signed claim/refund, PSBT lockup preparation, broadcasting, active-chain confirmation lookup | Live consensus tests, spending-transaction discovery, reorg tracking |
-| Coordinator | Durable action intents, accepted-HTLC checks, confirmation gates, settlement recheck, conservative recovery | Production adapter wiring, deterministic action reconciliation, automatic refund orchestration |
-| Liquidity | Amount limits, fee budgets, monetary reservations under one writer | Outpoint journal, reconciliation against external wallet activity |
-| API | Explicit schemas and all five routes | Live reverse-swap creation intentionally returns 503 |
-| Keys | User and provider keys are separate; offline builders accept caller keys | Secure persistent provider refund-key manager and client wallet |
-
-## Regtest setup
-
-Use Node.js 22 or later (validated here with Node.js 24.19.0). Run inside the
-existing Ubuntu VM so loopback addresses refer to the existing nodes. Do not reset
-chain data, create replacement wallets, overwrite LND configuration, or close channels.
+## Quick start: safe offline preview
 
 ```bash
+git clone https://github.com/Truja503/swap-engine.git
+cd swap-engine
 npm ci
 npm run build
 npm test
+cp deploy/simulation.env.example .env.simulation
+node --env-file=.env.simulation --import tsx src/main.ts
+```
+
+Open **http://127.0.0.1:3000/** (or the configured `PORT`).
+
+This starts a **simulation/component preview**. It can show quotes, UI and component status. **It does not pay invoices, sign claims, broadcast transactions or execute real swaps.** No node credentials are needed for simulation.
+
+Additional checks:
+
+```bash
+npm run test:web
+npm run demo
+npm run secrets:check
+```
+
+The offline demo uses simulated Bitcoin/LND evidence and must not be presented as a real payment.
+
+## Read-only Bitcoin + Lightning regtest
+
+Use an **existing isolated lab** with Bitcoin Core, the `lqwd-lab` wallet and both LND nodes already configured. Do not reset the blockchain, replace wallets, destroy channels or copy macaroon/password material into the repository.
+
+```bash
 cp deploy/regtest.env.example .env.regtest
-# Review paths locally; .env.regtest contains file paths, never copied credentials.
-# Node does not automatically load .env.regtest:
+# Review local RPC URLs and certificate/cookie/macaroon file paths.
 node --env-file=.env.regtest --import tsx scripts/inspect.ts
 node --env-file=.env.regtest --import tsx src/main.ts
 ```
 
-For offline simulation with no node connectivity, copy
-`deploy/simulation.env.example` to `.env.simulation` and use
-`node --env-file=.env.simulation --import tsx src/main.ts` instead.
+- `APP_MODE=regtest` selects actual **read-only** local node diagnostics.
+- Keep `ENABLE_LIVE_SWAPS=false`. Setting it to `true` does **not** safely activate the controlled runner.
+- The LND gRPC port is **not** its HTTPS REST endpoint.
+- `GET /v1/health` is a liveness check; `GET /v1/preflight` evaluates node readiness. **Neither authorizes execution.**
+- The default listener binds to loopback. Connect to a VM using a reviewed SSH tunnel rather than exposing wallet RPCs.
 
-The sample uses Bitcoin cookie authentication with the existing `lqwd-lab` wallet.
-LND must already have a **local HTTPS REST listener** (usually 8080), a matching
-TLS certificate and a readable macaroon. The supplied gRPC port 10009 is not a
-REST endpoint. Discovery and configuration are manual; this project never edits
-LND configuration. The example uses a read-only macaroon. For an optional Alice
-balance source, set `ALICE_LND_REST_URL`, `ALICE_LND_TLS_CERT_PATH`, and
-`ALICE_LND_MACAROON_PATH` together to use Alice's loopback HTTPS listener,
-certificate, and read-only macaroon.
-Node credentials stay on the VM and are never copied into the repository.
+See [Ubuntu deployment](docs/ubuntu-deployment.md), [regtest runbook](docs/regtest-runbook.md), and [runtime verification](docs/vm-controlled-runtime-verification.md).
 
-The API binds only to `127.0.0.1:3000`. `ENABLE_LIVE_SWAPS=true` causes startup to
-fail, rather than bypassing the incomplete observer/recovery boundary. The explicit
-`APP_MODE` selects `simulation` (default; no node connectivity, clearly labeled in
-health and startup output) or `regtest` (read-only deployment; loopback-only
-Core/LND clients and real preflight diagnostics). `mainnet` and other modes are
-rejected. Health reports component mode; it does not claim the nodes are ready. For
-live preflight and exact next steps see [the VM runbook](docs/regtest-runbook.md).
+### Controlled owner-bound reverse swaps
 
-### Provision a local account
+[PR #68](https://github.com/Truja503/swap-engine/pull/68) integrates a separate, **explicitly enabled** regtest runtime with owner-bound authorization, durable preparation/admission, status and read-only reconciliation. It requires existing approved identities, custody, inputs, destinations, fee limits and local policy files. A normal `npm start` does not supply those authorizations.
 
-Run the provisioning script in an interactive terminal from the repository root.
+Start from these documents rather than guessing environment flags or removing an HTTP 503 gate:
 
-```bash
-npm exec -- tsx scripts/provision-auth.ts
-```
+- [Owned regtest self-service](docs/owned-regtest-self-service.md)
+- [Controlled reverse HTTP contract](docs/owned-regtest-api.md)
+- [Integrated gateway and startup](docs/integrated-owned-reverse.md)
+- [Execution and recovery boundaries](docs/controlled-execution.md)
+- [Verified internal reverse-swap evidence](docs/fresh-reverse-success.md)
 
-Enter your chosen username, the `ADMIN` role, and a password of at least 12
-characters. The password prompt hides input. Repeat with the `USER` role if you
-need an account without access to operational liquidity. The script saves salted
-scrypt hashes in `data/auth/users.json` by default. If you set `AUTH_STORE_PATH`,
-use the same path when provisioning and starting the server. When the override is
-in `.env`, provision with `node --env-file=.env --import tsx scripts/provision-auth.ts`.
+**Do not reuse** the historical paid invoice, spent funding outpoint or expired approval for a new operation. Unexpected RPC outcomes must be reconciled, not retried blindly.
 
-For an isolated simulation or read-only regtest lab, the explicit
-`--allow-short-lab-password` option accepts at least four characters for an
-`ADMIN` account. Use the same hidden prompt and keep the preview on direct
-loopback HTTP, without a proxy or tunnel. Accounts provisioned with this option
-are restricted to direct loopback requests. The default remains 12 characters.
+## HTTP API: selected endpoints
 
-```bash
-npm exec -- tsx scripts/provision-auth.ts --allow-short-lab-password
-```
+| Route | Access | Purpose |
+| --- | --- | --- |
+| `POST /v1/quotes` | Public | Estimate Lightning/on-chain amounts and fees; not execution |
+| `POST /v1/auth/login`, `GET /v1/auth/session`, `POST /v1/auth/logout` | Session APIs | USER/ADMIN authentication; protected writes require origin + CSRF |
+| `GET /v1/health` | Public | Process/component liveness |
+| `GET /v1/preflight` | Public | Regtest readiness diagnostics when configured |
+| `GET /v1/operations/balances` | ADMIN | Read-only Core and LND balances/channel liquidity |
+| `GET /v1/admin/swaps/historical` | ADMIN | Historical report transcription; **not a live chain-verification endpoint** |
+| `GET /v1/reverse/availability` | Authenticated | Whether a controlled owner-bound runtime is actually mounted and available |
+| `GET /v1/swaps`, `GET /v1/swaps/:id` | Bound owner, when configured | Prepared swap status and evidence |
+| `POST /v1/reverse/preparations` | Approved owner, when configured | Durable preparation admission; not a payment |
+| `POST /v1/swaps/reverse` | Approved owner + prepared swap, when configured | Explicit, idempotent controlled execution |
+| `POST /v1/swaps/:id/reconcile` | Bound owner, when configured | Read-only conservative recovery lookup |
 
-The API loads local accounts on sign-in. Sessions last one hour and expire on
-server restart. Keep the API on the isolated regtest loopback interface and use
-the same origin for the application and API requests.
+The controlled endpoints are **not necessarily mounted on every deployment**. Where the runtime is unavailable, the operation remains gated. Follow [the canonical API contract](docs/owned-regtest-api.md) and [self-service preparation contract](docs/owned-regtest-self-service.md) for exact bodies, security headers, state transitions and response codes.
 
-## API documentation
+The historical ADMIN record intentionally shows `UNVERIFIED` because that endpoint transcribes a report rather than independently querying current Core/LND state, even though the [original run report](docs/fresh-reverse-success.md) documents independent verification at test time.
 
-For the existing Ubuntu VM, see [regtest read-only deployment instructions](docs/ubuntu-deployment.md)
-and the uninstalled [systemd service template](deploy/swap-engine.service).
-`GET /v1/preflight` reports read-only node/wallet/channel diagnostics in `regtest`
-mode; it returns 503 while prerequisites are unresolved, and 503 with
-`DIAGNOSTICS_NOT_CONFIGURED` in offline `simulation` mode. UI, quote and component
-health endpoints remain available. Runtime clients deny all node mutations, even
-after sync. `POST /v1/swaps/reverse` remains 503 in both modes.
+## Interface and operational monitoring
 
-### Local estimate interface
+The web app contains:
 
-Run `npm start` and open **http://127.0.0.1:3000/**. The responsive three-panel
-interface shows Lightning input, swap calculation, and Bitcoin on-chain output.
-It is regtest simulation only and calls `POST /v1/quotes`; it never creates a
-swap, payment invoice, address, or transaction. Quote generation does not require
-running Bitcoin/LND nodes. The server still binds only to loopback.
+- **Swap:** a minimalist three-cube send / fee / receive flow, route selectors and quotes.
+- **Account:** session management, signed-in user state and role-specific views.
+- **Operations (ADMIN):** balances and channel liquidity from the configured Bitcoin Core/LND sources. Four indicators distinguish provider on-chain, provider Lightning, Alice Lightning and Alice on-chain balances.
+- **Prepared swap / history views:** status, actual transaction IDs and conservative execution/recovery states where the backend has trustworthy evidence.
 
-The input is the HTLC principal in whole sats (10,000–1,000,000). Fees and the
-Lightning invoice total come from the API. Net received is `amountSats - claimFeeSats`;
-net sats lost is `invoiceSats - net received`. For 50,000 sats these are 49,500
-received and 1,250 lost. Funding reserve is not an additional client fee. Estimates
-clear on input changes and expiry; request errors require a fresh estimate.
-On-chain to Lightning is visibly **NOT IMPLEMENTED**. Live swaps remain disabled.
-No frontend build step or additional dependencies are required.
+Channel **local** and **remote** balances are liquidity distribution, not separate Bitcoin reserves. Coinbase mining rewards, channel movements and swap principal must not be conflated when reconciling before/after balance changes.
 
-Pure satoshi accounting helpers, implemented by Qwen and independently reviewed,
-are in `src/utils/satoshiMath.ts`. They validate monetary quote fields and invoice
-consistency, calculate net received and total user cost, and exclude the provider's
-funding reserve from that cost. They consume quote values without changing the
-API's fee policy or enabling execution. Tests cover both helper boundaries and
-actual quote endpoint responses.
+## Guest swap — highest-priority work in progress
 
-All amounts are integer satoshis; timestamps are Unix milliseconds. Requests use
-`Content-Type: application/json`, strict object schemas, and an 8 KiB body limit.
-Schemas are in `src/api/schemas.ts`. Responses never contain private keys or a
-preimage. Quotes are estimates; they do not reserve liquidity.
+See [Issue #66](https://github.com/Truja503/swap-engine/issues/66). Intended guest UX:
 
-| Method and route | Access | Request | Response |
-| --- | --- | --- | --- |
-| `POST /v1/auth/login` | Public and rate-limited | JSON fields `username` and `password` | 200 with session fields and a session cookie, or generic 401 |
-| `GET /v1/auth/session` | Signed in | Session cookie | 200 with session fields, or 401 |
-| `POST /v1/auth/logout` | Signed in | Session cookie, origin, and CSRF token | 204, revokes the session and clears the cookie |
-| `POST /v1/quotes` | Public | `{ "amountSats": 50000 }` | 201 with the quote below |
-| `POST /v1/swaps/reverse` | `USER` or `ADMIN` | `{ "quoteId": "UUID", "paymentHash": "64 lowercase hex", "claimPublicKey": "compressed hex key" }` and the `Idempotency-Key` header | 503 `LIVE_SWAPS_DISABLED_OBSERVER_AND_RECOVERY_NOT_VERIFIED` for a valid request |
-| `GET /v1/swaps/:id` | Disabled | UUID path | 404 until swap ownership is persisted |
-| `GET /v1/health` | Public | None | 200 with `{ "status": "components-only", "liveSwapsEnabled": false, "readOnly": true, "network": "regtest", "mode": "simulation" }` (or `"mode": "regtest"`) |
-| `GET /v1/preflight` | Public | None | 200 if read-only regtest prerequisites are met, or 503 |
-| `GET /v1/liquidity` | `ADMIN` | Session cookie | 200 with available `onchainSats` and `incomingSats` after reservations, or 503 if nodes are unavailable |
-| `GET /v1/operations/balances` | `ADMIN` | Session cookie | 200 with a read-only regtest snapshot of Core, provider LND, and optional Alice LND |
-| `/v1/admin/*` | `ADMIN` | Session cookie | 503 until an admin handler is available |
+1. Enter a regtest Bitcoin receiving address and amount, without signing in.
+2. Review exact expected receipt, fees and expiry.
+3. Receive a real BOLT11 Lightning invoice and a QR code.
+4. Pay using a Lightning wallet; observe pending/accepted/settled states.
+5. Claim and confirm the Bitcoin output securely.
+6. Refresh or recover the swap and inspect verified TXIDs and fee reconciliation.
 
-Sign-in and session inspection return `{ user: { id, username, role }, csrfToken, expiresAt }`.
-The browser stores the session cookie with `HttpOnly` and `SameSite=Strict`.
-Send the cookie with protected requests and include `x-csrf-token` with the
-returned token on protected POSTs. Those requests also require an exact
-same-origin `Origin` header, which the browser sends on POSTs. Protected
-routes return 401 for missing or expired sessions and 403 for insufficient
-roles or failed CSRF checks.
+**This flow is not finished or released.** A reported local DeepSeek branch (`review/guest-capability-admission`, checkpoint `cd2920b`) added a disabled-by-default guest quote/capability prototype with 14 tests, but **that local checkpoint must be recovered, compared with current `main`, and reviewed**. Do not infer that it is published from the merged reverse-swap PR.
 
-The operations snapshot includes `network`, the UTC timestamp `capturedAt`,
-and separate `core`, `provider`, and `alice` entries. Each wallet entry has
-`confirmedSats` and `unconfirmedSats`. LND entries also have `localSats` and
-`remoteSats` across all channels. Missing values are `null`, and a fully
-unavailable LND entry is `null`. Each source must identify as Bitcoin regtest
-before the server requests its balances.
-
-```bash
-curl -s http://127.0.0.1:3000/v1/health
-```
-
-The 50,000-sat quote has `serviceFeeSats: 750`, `invoiceSats: 50750`,
-`fundingReserveSats: 1000`, and `claimFeeSats: 500`, plus a random `id` and
-`expiresAt` two minutes ahead. The HTLC principal is 50,000 sats; a claim using
-the suggested fee pays the destination **49,500 sats**. The provider pays the
-funding miner fee from its service proceeds. The claim fee is an estimate that
-the client must independently assess. Amount limits are 10,000–1,000,000 sats.
-
-Core swap creation is idempotent: the same key and request return the existing
-operation, including after quote expiry. Reusing a key with different parameters
-fails. A quote and a payment hash can each be used only once. No public request
-currently creates a swap or invoice; component tests populate operations directly.
-
-## Swap lifecycle
-
-The happy path is `CREATED → QUOTED → INVOICE_CREATED → INVOICE_ACCEPTED →
-LOCKUP_BROADCAST → LOCKUP_CONFIRMED → CLAIM_DETECTED → LIGHTNING_SETTLED → COMPLETED`.
-
-Unfunded operations can become `EXPIRED` or `FAILED` only without an uncertain
-action. Funded operations retain reservations and may enter `REFUND_PENDING`.
-`REFUNDED` is reserved for a future verified refund observer; it is not currently
-automatically reachable. Ambiguous outcomes enter `MANUAL_REVIEW` on recovery;
-that state retains reservations and cannot automatically resume.
-
-An RPC acknowledgement cannot complete a swap. The coordinator requires a
-confirmed claim spending the precise outpoint, extracts and hashes its preimage,
-settles the held invoice, observes `SETTLED`, and checks confirmation again before
-completion. The adapter's consensus evidence is a trust boundary; offline tests
-use explicitly fake ledger/invoice ports, not real consensus.
-
-## Liquidity requirements
-
-The provider needs confirmed, safe, spendable on-chain UTXOs and active inbound
-Lightning capacity. The reservation calculation subtracts a 10,000-sat wallet
-reserve, each active swap's principal plus 1,000-sat funding budget, and each
-active invoice's full value. Failed liquidity checks reject creation. Reservations
-are persisted within the same serialized transaction as swap creation.
-
-This is conservative monetary accounting, not an outpoint allocator. Core's
-`lockUnspents` additionally locks selected inputs during funding preparation. A
-dedicated wallet-use policy and durable outpoint reconciliation are required
-before live orchestration. Pending HTLCs may be conservatively counted twice.
-Channel totals do not guarantee a route or sufficient capacity on one path.
-
-## Automated tests and reproducible offline demo
-
-```bash
-npm run build
-npm test
-npm run demo
-npm run secrets:check  # after git init and staging
-```
-
-The demo is a named test using a real signed 50,000-sat Bitcoin HTLC transaction
-and fake Bitcoin/LND ledger adapters. It verifies cryptographic linkage and the
-coordinator lifecycle. **It neither sends a Lightning payment nor broadcasts a
-Bitcoin transaction.** A live regtest demo is not delivered in this milestone;
-the missing work is itemized in the runbook.
-
-Actual results on November 12, 2026: TypeScript validation passed; **27/27 tests
-passed**. Coverage includes claim/refund signatures, wrong preimages/keys, fee and
-timeout limits, insufficient liquidity, concurrent reservations, duplicate events
-and requests, failed payment/broadcast/claim cases, unconfirmed transactions,
-restart handling, corrupt state, HTTP schemas and the live funding gate.
-Node preflight failed because the Ubuntu VM and local credential paths are
-unavailable in this Windows workspace. No live-node test succeeded. See
-[the complete results and phase status](docs/results.md).
-
-## Security and known limitations
-
-This software is experimental and unaudited. Do not fund it with mainnet BTC.
-There is no reorg-aware chain observer, durable provider key service, automatic
-refund sender, fee bumping, client payment tracker, or automatic reconciliation
-of uncertain external actions. Restart recovery stops affected swaps for manual
-review. The API has no authentication or rate limiting and must remain local.
-The state database is single-host and is not suitable for multiple replicas.
-See [all currently known security limitations](docs/security.md).
+The no-account workflow must solve claim-key/preimage custody and backup/recovery before presenting a payable invoice. A receiving address alone is insufficient to provide a trustless claim key. Guest access must use scoped capability authorization, keep secrets out of logs and URLs, and preserve existing ADMIN/USER separation.
 
 ## Roadmap
 
-1. Validate Core/LND adapters inside the existing VM and add real consensus tests
-   for correct and invalid claim/refund witnesses and timelocks.
-2. Add secure refund-key persistence and independently verifiable client tooling.
-3. Add block/mempool spend discovery, disconnect/reorg handling, and deadline worker.
-4. Journal exact UTXOs and external actions; implement deterministic restart recovery.
-5. Automate confirmed refunds and cancellation; implement fee bumping and budgeting.
-6. Wire adapters into the API, then execute and record an actual 50,000-sat
-   reverse swap and failure/restart runs without closing the existing channel.
-7. Obtain independent protocol/security review before considering any broader network.
-8. Evaluate Liquid, Rootstock, Arkade and RGB as separate future designs.
+1. **P0 — Guest reverse swap:** [#66](https://github.com/Truja503/swap-engine/issues/66). Recover DeepSeek's existing local work, complete secure invoice/QR/claim/recovery, and prove a full browser-initiated regtest payment.
+2. **P0 — Regtest block automation:** [#67](https://github.com/Truja503/swap-engine/issues/67). One Bitcoin regtest block around every 10 minutes, with pause/on-demand controls and HTLC/CLTV-safe coordination. Not confirmed installed.
+3. **Reverse execution hardening:** remaining refund/fee-bump, reorg, journal recovery and security coverage; [#11](https://github.com/Truja503/swap-engine/issues/11) and [security audit PR #65](https://github.com/Truja503/swap-engine/pull/65).
+4. **Forward swap:** Bitcoin on-chain → Lightning, independently specified and verified; [#12](https://github.com/Truja503/swap-engine/issues/12) and [#13](https://github.com/Truja503/swap-engine/issues/13).
+5. **Liquid L-BTC:** isolated Elements regtest, balance adapter and verified transfer before any cross-rail execution.
+6. **Arkade:** review the contributor's isolated regtest work and define an adapter only after validating its actual behavior; [#46](https://github.com/Truja503/swap-engine/issues/46).
+7. **Other rails:** RGB and related designs only after the core execution/recovery model has credible test coverage.
 
-## GitHub publication, ownership and licensing
+Follow the [project issue tracker](https://github.com/Truja503/swap-engine/issues/43). New routes must distinguish **implemented**, **tested offline**, **verified on regtest**, and **enabled in the deployed app**.
 
-The repository target is [Truja503/swap-engine](https://github.com/Truja503/swap-engine).
-The commissioning user explicitly authorized keeping this repository public,
-superseding the original private-repository requirement. Future pushes use:
+## Safety, contributing and license
 
-```bash
-npm run secrets:check
-git push -u origin main
-```
+- **Never use this code for mainnet funds.** It has not undergone a production security audit.
+- RPC credentials, TLS certificates, macaroons, vault keys, wallet seeds and preimages must not be committed, copied into tickets or exposed in HTTP responses.
+- Preserve local worktrees and existing wallet/channel data. Do not blindly merge old execution branches into authenticated `main`.
+- Run `npm run build`, `npm test`, `npm run secrets:check`, and applicable browser/regtest tests before submitting a PR.
+- Document the exact Git commit, environment, evidence type, TXIDs and remaining limitations. Do not equate mocked-node tests with real settlement.
+- `LICENSE` reserves all rights. **Public availability does not make this repository open source**; reuse and contributions are subject to applicable written permissions and agreements.
 
-`LICENSE` reserves all rights; public visibility does not grant an open-source
-license. Ownership and assignment require the
-applicable written agreement. Dependencies retain their own licenses.
+Project: [Truja503/swap-engine](https://github.com/Truja503/swap-engine).
