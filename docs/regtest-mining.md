@@ -1,49 +1,85 @@
 # Regtest block miner (DS-02)
 
-Status: implemented and tested offline; **not deployed or activated**. The
-systemd timer must not be enabled until the shared mining/deadline protection is
-reviewed by swap execution/recovery and Codex.
+Status: revised Bash implementation and tests prepared; **not deployed or
+activated**. The systemd timer must remain disabled until swap execution/recovery
+uses the same kernel `flock` and this change is reviewed.
 
-## Scope
+## Scope and current evidence
 
 - Bitcoin **regtest only**. The script rejects any chain other than the exact
   literal `regtest`; it never touches mainnet, testnet, signet, Ark or
   Elements/Liquid.
-- Existing Bitcoin Core RPC and existing `lqwd-lab` wallet only. No second
-  daemon, no daemon restart, no wallet creation/reset and no wallet deletion.
-- One persistent wallet-owned address. The address is created once and stored in
-  a mode-600 file; it is never regenerated per tick.
-- One RPC `generatetoaddress` call with exactly one block per execution. No CPU
-  or GPU proof-of-work mining.
+- Existing Core RPC and existing `lqwd-lab` wallet only. No second daemon, no
+  wallet creation/reset, no daemon restart.
+- Read-only Core state at review time: height **165**, `initialblockdownload=false`;
+  `getblockhash` 140/141/142 returned the expected hashes, so the earlier
+  index/block-file mismatch is no longer present.
+- Existing app release path is
+  `/home/truja/deployments/lqwd-swap-engine-434f519`; unit templates use that
+  deployment path, not the source checkout.
+- One persistent wallet-owned address; one `generatetoaddress` block per
+  invocation. No CPU/GPU mining.
 
 ## Files
 
-- `scripts/regtest-block-miner.ts` — CLI.
-- `src/regtest-mining/RegtestMiner.ts` — validated mining, state and pause logic.
-- `src/regtest-mining/MiningLock.ts` — shared advisory lock.
-- `src/regtest-mining/Config.ts` — environment/path configuration.
-- `deploy/regtest-block-miner.service` — `Type=oneshot`, no retry loop.
-- `deploy/regtest-block-miner.timer` — boot + 10-minute timer, persistent.
-- `deploy/regtest-miner.env.example` — paths only; no credential contents.
+- `scripts/regtest-block-miner.sh` — minimal Bash miner and controls.
+- `deploy/regtest-block-miner.service` — oneshot, no retry loop.
+- `deploy/regtest-block-miner.timer` — 10-minute persistent user timer.
+- `deploy/regtest-miner.env.example` — paths only.
+- `tests/regtestMiner.sh` — adversarial kernel-flock/mock-RPC regression tests.
+- `tests/regtestMiner.test.ts` — runs the shell regression test on Linux and
+  skips where Bash/flock are unavailable.
+
+## Kernel-held shared lock
+
+The miner opens `MINER_LOCK_FILE` (default
+`/home/truja/.local/share/lqwd-regtest-miner/miner.lock`) and calls
+`flock -n 9` for the lifetime of the process. There is no TTL, no lock-file JSON
+read/unlink, no stale-lock eviction and no timeout-based removal of a live
+holder. The kernel releases the lock when the process exits or crashes.
+
+- Timer `--once`: if the flock is held, logs `locked` and exits without mining.
+- `--on-demand`: uses the same flock. It ignores a pause marker but **cannot**
+  bypass a holder, so it cannot defeat CLTV/swap protection.
+- Swap execution/recovery: must use the same lock path and hold a kernel flock
+  around funding, claim, settlement and other block-sensitive irreversible
+  actions. Pending integration is the deployment blocker.
+- Pause/resume: temporary `pause.json` controls for expiration tests; the timer
+  must be restored explicitly.
 
 ## Persistent state
 
 Default data directory: `/home/truja/.local/share/lqwd-regtest-miner` (mode 700).
 
-- `mining-address` (mode 600): one wallet-owned `bcrt1…` address.
-- `status.json` (mode 600): chain, wallet, address, last height/hash/timestamp,
+- `mining-address` (600): one persistent owned `bcrt1…` address.
+- `status.json` (600): chain, wallet, address, last height/hash/timestamps,
   blocks mined, failures, pause state and `coinbaseMaturityHeight`.
-- `miner.log` (mode 600): sanitized JSON events only; never RPC bodies or
-  credentials.
-- `miner.lock` (mode 600): shared coordination lock.
-- `pause.json` (mode 600): temporary pause marker for deadline/expiration tests.
+- `miner.log` (600): sanitized JSON events; no RPC bodies or credentials.
+- `miner.lock`: kernel flock target; contents are not lock state.
+- `pause.json` (600): temporary pause marker.
+- `pending.json` (600): pre-generation height/hash for ambiguous RPC recovery.
+
+## Ambiguous generate reconciliation
+
+Before `generatetoaddress`, the script writes `pending.json` with the pre-height
+and pre-hash. If the RPC reply is lost or malformed:
+
+- Next invocation first reconciles the pending attempt.
+- Exactly +1 height and changed tip: record the ambiguous block, clear pending,
+  and do **not** mine another block on that invocation.
+- Unchanged height: record `AMBIGUOUS_UNRECONCILED`, keep pending and mine
+  nothing.
+- Any larger delta/change: record an ambiguity/height alert and mine nothing.
+
+This prevents future ticks from mining again before an ambiguous generation is
+understood.
 
 ## Commands
 
-These are prepared commands, **not executed in this task**:
+Prepared commands, not executed in this task:
 
 ```bash
-# From the repository root, after installing the release and env file:
+# After the release has this script at scripts/regtest-block-miner.sh:
 install -d -m 700 "$HOME/.config" "$HOME/.local/share/lqwd-regtest-miner"
 install -m 600 deploy/regtest-miner.env.example "$HOME/.config/lqwd-regtest-miner.env"
 install -m 644 deploy/regtest-block-miner.service deploy/regtest-block-miner.timer "$HOME/.config/systemd/user/"
@@ -53,73 +89,37 @@ systemctl --user enable --now regtest-block-miner.timer
 
 systemctl --user list-timers regtest-block-miner.timer
 systemctl --user status regtest-block-miner.service
-node --import tsx scripts/regtest-block-miner.ts --status
+/home/truja/deployments/lqwd-swap-engine-434f519/scripts/regtest-block-miner.sh --status
 
-# Timer respects pause. On-demand is explicit and ignores pause but still uses
-# the shared lock.
-node --import tsx scripts/regtest-block-miner.ts --pause "expiry-test"
-node --import tsx scripts/regtest-block-miner.ts --resume
-node --import tsx scripts/regtest-block-miner.ts --on-demand
+# Temporary CLTV/expiry controls:
+/home/truja/deployments/lqwd-swap-engine-434f519/scripts/regtest-block-miner.sh --pause "expiry-test"
+/home/truja/deployments/lqwd-swap-engine-434f519/scripts/regtest-block-miner.sh --resume
+/home/truja/deployments/lqwd-swap-engine-434f519/scripts/regtest-block-miner.sh --on-demand
 
 # Rollback/disable:
 systemctl --user stop regtest-block-miner.timer
 systemctl --user disable regtest-block-miner.timer
 ```
 
-The service uses `%h/projects/swap-engine` as its working directory. Adjust only
-the release path after an independently reviewed deployment; do not alter
-existing `bitcoin-regtest.service`, LND units or wallets.
+The timer is not enabled and no real two-tick/list-timers evidence exists yet.
 
-## Shared lock and HTLC/CLTV coordination
+## Coinbase and HTLC/CLTV notes
 
-The timer, on-demand control, swap execution and recovery must use the **same**
-lock file (`MINER_LOCK_FILE`, default
-`/home/truja/.local/share/lqwd-regtest-miner/miner.lock`).
+Blocks are generated to the persistent `lqwd-lab` address. Coinbase rewards are
+wallet rewards, not swap deltas, and are immature for **100 blocks**; Operations
+must not count immature coinbase as spendable swap liquidity. The status records
+`coinbaseMaturityHeight`.
 
-- Timer path: `--once` takes the lock non-blocking; if a swap/recovery owner holds
-  it, the timer logs `locked` and exits without mining.
-- Swap execution/recovery: import `withMiningLock` or `acquireMiningLock` from
-  `src/regtest-mining/MiningLock.ts` and hold the lock around funding, claim
-  publication, settlement and other block-sensitive irreversible actions. Use a
-  bounded TTL covering only the critical action; never hold it across a human
-  wait.
-- On-demand confirmation after funding/claim: `--on-demand` performs exactly one
-  block, ignores a pause marker, and still respects the shared lock. It must be
-  called deliberately by the operator/coordinator; the timer is not an automatic
-  confirmation loop.
-- Pause: `--pause` and `--resume` are temporary controls for CLTV/expiration
-  tests. A pause prevents timer mining; it does not cancel the timer. Restore
-  timer operation explicitly after the test.
-- Mining advances block height and therefore consumes script/HTLC block-based
-  deadlines. Never batch-mine; do not mine while a swap action owns the lock;
-  re-run current CLTV checks after any mined block.
-
-The timer is **not activated** and no real two-tick evidence exists in this
-worktree task. Mock tests below prove the script contract; live enablement and
-two-tick/`list-timers` evidence require the reviewed deployment step.
-
-## Coinbase maturity and Operations
-
-Blocks are generated to the existing persistent `lqwd-lab` address. Coinbase
-rewards are wallet rewards, not swap deltas, and are **immature for 100 blocks**.
-They must not be counted as spendable swap/on-chain liquidity in Operations while
-immature. `status.json` records `coinbaseMaturityHeight = minedHeight + 100` for
-operator visibility. No Operations backend file is changed here; integration
-must keep coinbase rewards separate from swap balance deltas.
+Each mined block advances block height and consumes block-based HTLC/CLTV
+margins. Never batch-mine; do not mine while a swap/recovery owner holds the
+flock; re-run current CLTV checks after any block. On-demand is an explicit
+operator action, not an automatic confirmation loop.
 
 ## Tests
 
-`tests/regtestMiner.test.ts` uses a mock Core RPC and temporary private
-directories. It covers:
-
-- one address persisted across two ticks and exactly one block per tick;
-- wrong chain, IBD/header readiness, missing wallet and wrong-wallet rejection
-  before `generatetoaddress`;
-- existing address not owned by the wallet (no replacement address);
-- ambiguous mining evidence recorded once with no retry;
-- pause blocks timer mining while explicit on-demand mines one block;
-- shared lock blocks a second miner and stale dead-PID locks are recovered;
-- deploy units are oneshot, 10-minute, persistent and regtest-only.
-
-`npm run build` and the focused test file pass locally. No VM service, timer or
-wallet was changed by this task.
+`tests/regtestMiner.sh` uses a mock `bitcoin-cli` and real kernel `flock` to
+cover: one address/two ticks, wrong chain/wallet rejection before generation,
+shared-lock exclusion with a slow holder, concurrent acquisition, pause vs
+on-demand, ambiguous generation reconciliation and unit/script hardening.
+`tests/regtestMiner.test.ts` runs it on Linux. No VM service, timer, wallet or
+real node was changed by this task.

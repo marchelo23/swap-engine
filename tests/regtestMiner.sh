@@ -1,0 +1,132 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Linux-only adversarial regression tests for scripts/regtest-block-miner.sh.
+# A mock bitcoin-cli is used; no real node, wallet, mining or credentials.
+
+ROOT=$(cd "$(dirname "$0")/.." && pwd)
+SCRIPT="$ROOT/scripts/regtest-block-miner.sh"
+TMP=$(mktemp -d)
+DATA="$TMP/data"
+STATE="$TMP/mock-state.json"
+MOCK="$TMP/bin/bitcoin-cli"
+OUT=''
+RC=0
+MOCK_MODE=normal
+MOCK_DELAY=0
+cleanup() { rm -rf "$TMP"; }
+trap cleanup EXIT
+
+for c in bash jq flock mktemp date; do command -v "$c" >/dev/null || { echo "missing $c" >&2; exit 2; }; done
+[[ -x "$SCRIPT" || -f "$SCRIPT" ]] || { echo "missing miner script" >&2; exit 2; }
+
+mkdir -p "$TMP/bin"
+hash_for() { printf '%064x' "$1"; }
+reset_state() {
+  MOCK_MODE=normal; MOCK_DELAY=0
+  rm -rf "$DATA"; mkdir -p "$DATA"; chmod 700 "$DATA"
+  jq -n --arg hash "$(hash_for 139)" --arg address 'bcrt1qmockaddress000000000000000000000000' \
+    '{chain:"regtest",blocks:139,headers:139,bestblockhash:$hash,initialblockdownload:false,wallet:"lqwd-lab",address:$address,addressCalls:0,owned:true,mineCalls:0}' > "$STATE"
+}
+fail() { echo "FAIL: $*" >&2; exit 1; }
+
+cat > "$MOCK" <<'MOCKEOF'
+#!/usr/bin/env bash
+set -euo pipefail
+method=''
+for a in "$@"; do
+  case "$a" in
+    getblockchaininfo|listwallets|getwalletinfo|getaddressinfo|getnewaddress|generatetoaddress) method="$a"; break;;
+  esac
+done
+state="${MOCK_STATE_FILE:?}"
+write_state() { local tmp; tmp=$(mktemp "$state.XXXXXX"); jq "$@" "$state" > "$tmp"; chmod 600 "$tmp"; mv "$tmp" "$state"; }
+case "$method" in
+  getblockchaininfo) jq -c '{chain,blocks,headers,bestblockhash,initialblockdownload}' "$state";;
+  listwallets) jq -c '[.wallet]' "$state";;
+  getwalletinfo) jq -c '{walletname:.wallet}' "$state";;
+  getaddressinfo) jq -c '{address:.address,ismine:.owned,iswatchonly:false}' "$state";;
+  getnewaddress) write_state '.addressCalls += 1'; jq -r '.address' "$state";;
+  generatetoaddress)
+    mode="${MOCK_MODE:-normal}"
+    [[ "$mode" == "fail" ]] && exit 1
+    [[ "$mode" == "slow" ]] && sleep "${MOCK_DELAY:-1}"
+    height=$(( $(jq -r '.blocks' "$state") + 1 ))
+    hash=$(printf '%064x' "$height")
+    if [[ "$mode" == "ambiguous" ]]; then
+      state_hash=$(printf '%064x' "$((height + 100))")
+      returned_hash=$(printf '%064x' "$((height + 200))")
+      write_state --arg h "$state_hash" --argjson height "$height" '.blocks=$height | .headers=([.headers,$height]|max) | .bestblockhash=$h | .mineCalls += 1'
+      printf '["%s"]\n' "$returned_hash"
+      exit 0
+    fi
+    write_state --arg h "$hash" --argjson height "$height" '.blocks=$height | .headers=([.headers,$height]|max) | .bestblockhash=$h | .mineCalls += 1'
+    printf '["%s"]\n' "$hash";;
+  *) exit 2;;
+esac
+MOCKEOF
+chmod +x "$MOCK"
+
+run_miner() {
+  set +e
+  OUT=$(MINER_DATA_DIR="$DATA" BITCOIN_CLI="$MOCK" BITCOIN_DATADIR="$TMP/core" BITCOIN_WALLET=lqwd-lab \
+    MOCK_STATE_FILE="$STATE" MOCK_MODE="$MOCK_MODE" MOCK_DELAY="$MOCK_DELAY" \
+    bash "$SCRIPT" "$@" 2>&1)
+  RC=$?
+  set -e
+}
+state_value() { jq -r "$1" "$STATE"; }
+assert_mined() { [[ "$RC" -eq 0 && "$OUT" == *'"status":"mined"'* ]] || fail "expected mined, rc=$RC out=$OUT"; }
+assert_failed() { [[ "$RC" -ne 0 && "$OUT" == *"\"failure\":\"$1\""* ]] || fail "expected $1, rc=$RC out=$OUT"; }
+
+test_one_address_two_ticks() {
+  reset_state
+  run_miner --once; assert_mined; [[ "$(state_value .blocks)" -eq 140 ]] || fail 'height 140'; [[ "$(state_value .addressCalls)" -eq 1 ]] || fail 'address calls 1'
+  run_miner --once; assert_mined; [[ "$(state_value .blocks)" -eq 141 ]] || fail 'height 141'; [[ "$(state_value .addressCalls)" -eq 1 ]] || fail 'address reused'
+  run_miner --status; [[ "$(jq -r '.status.blocksMined' <<< "$OUT")" -eq 2 ]] || fail "status blocksMined: $OUT"
+}
+
+test_wrong_chain_and_wallet() {
+  reset_state; jq '.chain="main"' "$STATE" > "$TMP/s" && mv "$TMP/s" "$STATE"; run_miner --once; assert_failed CORE_WRONG_CHAIN; [[ "$(state_value .mineCalls)" -eq 0 ]] || fail 'mined wrong chain'
+  reset_state; jq '.wallet="other"' "$STATE" > "$TMP/s" && mv "$TMP/s" "$STATE"; run_miner --once; assert_failed WALLET_NOT_LOADED; [[ "$(state_value .mineCalls)" -eq 0 ]] || fail 'mined without wallet'
+}
+
+test_address_ownership() {
+  reset_state; jq '.owned=false' "$STATE" > "$TMP/s" && mv "$TMP/s" "$STATE"; run_miner --once; assert_failed ADDRESS_NOT_OWNED; [[ "$(state_value .mineCalls)" -eq 0 ]] || fail 'mined unowned address'
+}
+
+test_pause_and_on_demand() {
+  reset_state; run_miner --pause expiry-test; [[ "$OUT" == *'"paused":true'* ]] || fail 'pause'
+  run_miner --once; [[ "$OUT" == *'"status":"paused"'* ]] || fail 'timer did not pause'; [[ "$(state_value .mineCalls)" -eq 0 ]] || fail 'mined while paused'
+  run_miner --on-demand; assert_mined; [[ "$(state_value .mineCalls)" -eq 1 ]] || fail 'on-demand'
+  run_miner --resume; run_miner --status; [[ "$(jq -r '.paused' <<< "$OUT")" == "false" ]] || fail "resume: $OUT"
+}
+
+test_slow_holder_and_concurrent_lock() {
+  reset_state; mkdir -p "$DATA"
+  flock -n "$DATA/miner.lock" -c 'sleep 2' & holder=$!
+  sleep 0.3
+  run_miner --on-demand; [[ "$RC" -ne 0 && "$OUT" == *'"status":"locked"'* ]] || fail "slow holder: rc=$RC out=$OUT"
+  [[ "$(state_value .mineCalls)" -eq 0 ]] || fail 'mined under slow holder'
+  wait "$holder"; run_miner --once; assert_mined
+
+  reset_state; MOCK_MODE=slow; MOCK_DELAY=1
+  MINER_DATA_DIR="$DATA" BITCOIN_CLI="$MOCK" BITCOIN_DATADIR="$TMP/core" BITCOIN_WALLET=lqwd-lab MOCK_STATE_FILE="$STATE" MOCK_MODE="$MOCK_MODE" MOCK_DELAY="$MOCK_DELAY" bash "$SCRIPT" --on-demand > "$TMP/a" 2>&1 & p1=$!
+  MINER_DATA_DIR="$DATA" BITCOIN_CLI="$MOCK" BITCOIN_DATADIR="$TMP/core" BITCOIN_WALLET=lqwd-lab MOCK_STATE_FILE="$STATE" MOCK_MODE="$MOCK_MODE" MOCK_DELAY="$MOCK_DELAY" bash "$SCRIPT" --on-demand > "$TMP/b" 2>&1 & p2=$!
+  set +e; wait "$p1"; r1=$?; wait "$p2"; r2=$?; set -e
+  [[ $(( (r1 == 0) + (r2 == 0) )) -eq 1 ]] || fail "concurrent owners: $r1/$r2"
+  [[ "$(state_value .mineCalls)" -eq 1 ]] || fail 'concurrent mined more than once'
+}
+
+test_ambiguous_reconcile() {
+  reset_state; MOCK_MODE=ambiguous; run_miner --on-demand; assert_failed AMBIGUOUS_MINE; [[ -f "$DATA/pending.json" ]] || fail 'pending missing'; [[ "$(state_value .mineCalls)" -eq 1 ]] || fail 'ambiguous mine count'
+  MOCK_MODE=normal; run_miner --once; [[ "$OUT" == *'"status":"reconciled"'* ]] || fail "reconcile: $OUT"; [[ "$(state_value .mineCalls)" -eq 1 ]] || fail 'ambiguous retried'; [[ ! -e "$DATA/pending.json" ]] || fail 'pending not cleared'
+}
+
+test_one_address_two_ticks
+test_wrong_chain_and_wallet
+test_address_ownership
+test_pause_and_on_demand
+test_slow_holder_and_concurrent_lock
+test_ambiguous_reconcile
+echo "regtest miner shell tests: PASS"

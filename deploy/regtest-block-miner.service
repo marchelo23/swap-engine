@@ -1,13 +1,13 @@
 [Unit]
 Description=Regtest block miner (one block per timer tick)
-ConditionPathExists=%h/projects/swap-engine/scripts/regtest-block-miner.ts
+ConditionPathExists=%h/deployments/lqwd-swap-engine-434f519/scripts/regtest-block-miner.sh
 After=network.target
 
 [Service]
 Type=oneshot
-WorkingDirectory=%h/projects/swap-engine
+WorkingDirectory=%h/deployments/lqwd-swap-engine-434f519
 EnvironmentFile=-%h/.config/lqwd-regtest-miner.env
-ExecStart=/usr/bin/node --import tsx scripts/regtest-block-miner.ts --once
+ExecStart=/bin/bash %h/deployments/lqwd-swap-engine-434f519/scripts/regtest-block-miner.sh --once
 Restart=no
 UMask=0077
 NoNewPrivileges=true
