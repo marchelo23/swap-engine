@@ -26,7 +26,7 @@ test('guest admission binds exact public terms, stores only a capability hash an
     assert.equal(disk.includes(token), false); assert.equal(disk.includes(f.preimage), false);
     await f.store.close(); originalClosed = true;
     const { Store } = await import('../src/persistence/Store.js'); const reopened = await Store.open(f.directory);
-    try { assert.deepEqual(new GuestAdmission(reopened).status(result.id, auth), result); }
+    try { assert.deepEqual(new GuestAdmission(reopened, () => 1000).status(result.id, auth), result); }
     finally { await reopened.close(); }
   } finally { if (originalClosed) await rm(f.directory, { recursive: true, force: true }); else await f.cleanup(); }
 });
@@ -57,5 +57,25 @@ test('competing amounts for the same capability and idempotency key cannot both 
     assert.equal(outcomes.filter(result => result.status === 'fulfilled').length, 1);
     assert.equal(outcomes.filter(result => result.status === 'rejected').length, 1);
     assert.equal(Object.keys(f.store.read().guestAdmissions ?? {}).length, 1);
+  } finally { await f.cleanup(); }
+});
+
+test('expired guest quote remains expired on retrieval and idempotent replay', async () => {
+  const f = await setup();
+  try {
+    let now = 1000;
+    const service = new GuestAdmission(f.store, () => now);
+    const auth = `Bearer ${randomBytes(32).toString('base64url')}`;
+    const input = { destination: f.destination, amountSats: 25000, paymentHash: f.contract.paymentHash, claimPublicKey: f.contract.claimPublicKey };
+    const quote = await service.reserve(auth, 'guest-expiry-test', input);
+    now = quote.expiresAt - 1;
+    assert.equal(service.status(quote.id, auth)?.status, 'QUOTED');
+    now = quote.expiresAt;
+    assert.equal(service.status(quote.id, auth)?.status, 'EXPIRED');
+    assert.equal((await service.reserve(auth, 'guest-expiry-test', input)).status, 'EXPIRED');
+    assert.equal(Object.keys(f.store.read().guestAdmissions ?? {}).length, 1);
+    now = Number.NaN;
+    assert.throws(() => service.status(quote.id, auth), /Invalid clock/);
+    await assert.rejects(service.reserve(auth, 'guest-expiry-test', input), /Invalid clock/);
   } finally { await f.cleanup(); }
 });

@@ -48,6 +48,17 @@ export function validateGuestQuote(authorization: string | undefined, idempotenc
 export class GuestAdmission {
   constructor(private readonly store: Store, private readonly clock: () => number = Date.now) {}
 
+  private now() {
+    const now = this.clock();
+    if (!Number.isSafeInteger(now) || now < 0 || !Number.isSafeInteger(now + 120000)) throw new Error('Invalid clock');
+    return now;
+  }
+
+  private view(row: NonNullable<ReturnType<Store['read']>['guestAdmissions']>[string], now: number) {
+    return { id: row.id, status: row.status === 'QUOTED' && now >= row.expiresAt ? 'EXPIRED' as const : row.status,
+      expiresAt: row.expiresAt, ...row.terms };
+  }
+
   async reserve(authorization: string | undefined, idempotencyKey: string, raw: unknown) {
     const token = readToken(authorization);
     if (!/^[A-Za-z0-9_-]{8,128}$/.test(idempotencyKey)) throw new Error('Invalid idempotency key');
@@ -57,14 +68,13 @@ export class GuestAdmission {
     const tokenHash = digest('guest-capability-v1', token);
     const requestKey = digest('guest-idempotency-v1', token, idempotencyKey);
     const fingerprint = digest('guest-terms-v1', JSON.stringify({ ...input, destination }));
-    const now = this.clock();
-    if (!Number.isSafeInteger(now) || now < 0 || !Number.isSafeInteger(now + 120000)) throw new Error('Invalid clock');
+    const now = this.now();
     return this.store.transaction(db => {
       const records = db.guestAdmissions ??= {};
       const existing = Object.values(records).find(row => row.requestKey === requestKey);
       if (existing) {
         if (existing.fingerprint !== fingerprint || existing.tokenHash !== tokenHash) throw new Error('Guest idempotency conflict');
-        return { id: existing.id, status: existing.status, expiresAt: existing.expiresAt, ...existing.terms };
+        return this.view(existing, now);
       }
       if (Object.values(records).some(row => row.tokenHash === tokenHash)) throw new Error('Guest capability already used');
       if (Object.keys(records).length >= 1000) throw new Error('Guest admission capacity reached');
@@ -73,7 +83,7 @@ export class GuestAdmission {
         claimPublicKey: input.claimPublicKey, ...budget };
       const row = { id, requestKey, fingerprint, tokenHash, status: 'QUOTED' as const, createdAt: now, expiresAt: now + 120000, terms };
       records[id] = row;
-      return { id, status: row.status, expiresAt: row.expiresAt, ...terms };
+      return this.view(row, now);
     });
   }
 
@@ -83,6 +93,6 @@ export class GuestAdmission {
     try { provided = digest('guest-capability-v1', readToken(authorization)); } catch { return undefined; }
     if (!row || !/^[a-f0-9]{64}$/.test(row.tokenHash)) return undefined;
     if (!timingSafeEqual(Buffer.from(row.tokenHash, 'hex'), Buffer.from(provided, 'hex'))) return undefined;
-    return { id: row.id, status: row.status, expiresAt: row.expiresAt, ...row.terms };
+    return this.view(row, this.now());
   }
 }
