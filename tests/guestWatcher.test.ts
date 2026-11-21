@@ -21,7 +21,7 @@ const GUEST_INVOICE_SATS = 50000;
 
 async function fixture(options: { withExecution?: boolean } = {}) {
   const f = await setup(); const runsDirectory = await privateTestDirectory('guest-watch-runs'); const routing = routingFixture();
-  let invoiceState: Invoice['state'] = 'OPEN'; let calls = 0; let tip = 100; let lookupFails = false; let lockCalls = 0;
+  let invoiceState: Invoice['state'] = 'OPEN'; let calls = 0; let tip = 100; let lookupFails = false; let lockCalls = 0; let now = 1000;
   const ledger = new Map<string, { hex: string; confirmations: number }>(); const actions: string[] = [];
   const invoice = (): Invoice => ({ state: invoiceState, r_hash: Buffer.from(f.contract.paymentHash, 'hex').toString('base64'),
     value: String(GUEST_INVOICE_SATS), amt_paid_sat: invoiceState === 'SETTLED' ? String(GUEST_INVOICE_SATS) : '0',
@@ -37,7 +37,7 @@ async function fixture(options: { withExecution?: boolean } = {}) {
     invoices: { origin: routing.providerOrigin, create: async () => { throw new Error('unexpected invoice create'); },
       lookup: async () => { if (lookupFails) throw new Error('synthetic invoice RPC unavailable');
         return { status: 'PRESENT' as const, invoice: invoice() }; } },
-    tip: async () => tip, now: () => 1000,
+    tip: async () => tip, now: () => now,
   };
   const execution: GuestExecution = {
     async fund(store, swap) { actions.push('fund'); return updateSwapRevision(store, swap.id, swap.revision, value => {
@@ -81,11 +81,35 @@ async function fixture(options: { withExecution?: boolean } = {}) {
     paymentHash: f.contract.paymentHash, claimPublicKey: f.contract.claimPublicKey });
   return { f, service, quote, auth, token, runsDirectory, ledger, actions, pauseFile: join(runsDirectory, 'pause.json'),
     setTip: (value: number) => { tip = value; }, setLookupFails: (value: boolean) => { lookupFails = value; },
+    setNow: (value: number) => { now = value; },
     lockCalls: () => lockCalls,
     prepare: (key = 'guest-prepare-key') => service.prepare(quote.id, auth, key, { recoveryCommitment: 'ab'.repeat(32) }),
     setInvoice: (state: Invoice['state']) => { invoiceState = state; }, calls: () => calls,
     cleanup: async () => { await f.cleanup(); await rm(runsDirectory, { recursive: true, force: true }); } };
 }
+
+test('expired uncertain preparation releases its input only after unpaid cancellation is observed', async () => {
+  const x = await fixture({ withExecution: true });
+  try {
+    await x.prepare();
+    await x.f.store.transaction(db => {
+      const row = db.guestSwaps![x.quote.id]!;
+      row.swapId = undefined;
+      row.status = 'PREPARATION_UNKNOWN';
+      delete row.funding; // Older records only retained the reservation.
+    });
+    x.setNow(x.quote.expiresAt + 1);
+    await x.service.runOnce();
+    assert.equal(x.f.store.read().guestSwaps![x.quote.id]!.status, 'PREPARATION_UNKNOWN');
+    assert.equal(Object.values(x.f.store.read().guestFundingReservations!)[0]!.status, 'RESERVED');
+    x.setInvoice('CANCELED');
+    await x.service.runOnce();
+    assert.equal(x.f.store.read().guestSwaps![x.quote.id]!.status, 'EXPIRED');
+    assert.equal(Object.values(x.f.store.read().guestFundingReservations!)[0]!.status, 'RELEASED');
+    assert.deepEqual(x.actions, []);
+    await assert.rejects(readFile(x.pauseFile), { code: 'ENOENT' });
+  } finally { await x.cleanup(); }
+});
 
 async function seedLockup(x: Awaited<ReturnType<typeof fixture>>, options: { claim?: boolean; pending?: string } = {}) {
   const prepared = await x.prepare() as any;

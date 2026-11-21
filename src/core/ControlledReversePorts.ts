@@ -12,7 +12,7 @@ import { HoldInvoiceManager } from '../lightning/HoldInvoiceManager.js';
 /** Explicit controlled-test capability, never constructed by the HTTP service. */
 export function controlledReversePorts(bitcoin: Pick<BitcoinRpcClient, 'call' | 'confirmed'>,
   provider: Pick<LndClient, 'call' | 'lookup' | 'settle' | 'cancel'>, payer: Pick<LndClient, 'call'>,
-  store: Store, id: string, approved: ReverseTestPlan, input: ApprovedFundingInput): SwapPorts {
+  store: Store, id: string, approved: ReverseTestPlan, input?: ApprovedFundingInput): SwapPorts {
   const plan = verifyReverseTestPlan(approved);
   const current = () => {
     const swap = store.read().swaps[id];
@@ -41,7 +41,10 @@ export function controlledReversePorts(bitcoin: Pick<BitcoinRpcClient, 'call' | 
     invoice: hash => { if (hash !== plan.contract.paymentHash) throw new Error('Invoice hash differs from plan'); return provider.lookup(hash); },
     confirmed: txid => bitcoin.confirmed(txid),
     createInvoice: async () => { throw new Error('Controlled reverse run cannot create another invoice'); },
-    prepareLockup: swap => prepareControlledFunding(bitcoin, store, swap, input, plan.refundDestination, assertAccepted),
+    prepareLockup: async swap => {
+      if (!input) throw new Error('No approved funding input');
+      return prepareControlledFunding(bitcoin, store, swap, input, plan.refundDestination, assertAccepted);
+    },
     broadcast: async hex => {
       const s = current();
       if (s.pendingAction !== 'BROADCAST_LOCKUP' || !s.lockup || s.lockup.hex !== hex || s.fundingIntent?.signedHex !== hex ||

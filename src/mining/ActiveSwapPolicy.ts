@@ -96,6 +96,7 @@ export async function guestActiveSwaps(store: Store, scan: (row: NonNullable<Dat
   lookup: (hash: string) => Promise<{ status: 'ABSENT' } | { status: 'PRESENT'; invoice: { state: string } }>): Promise<ActiveSwap[]> {
   const active: ActiveSwap[] = [];
   for (const row of Object.values(store.read().guestSwaps ?? {})) {
+    if (row.terminal) continue;
     if (row.status === 'PREPARING' || row.status === 'PREPARATION_UNKNOWN') {
       active.push({ id: row.id, state: row.status, timeoutHeight: row.timeoutHeight ?? 0, updatedAt: Date.now() });
       continue;

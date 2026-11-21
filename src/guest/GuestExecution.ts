@@ -14,23 +14,23 @@ import { withMiningLock } from '../mining/MiningLock.js';
 /** Trusted execution seam for the guest watcher. It is constructed only by an
  * explicit operator wiring; the HTTP service and environment never install it. */
 export type GuestExecution = {
-  fund(store: Store, swap: Swap, plan: ReverseTestPlan): Promise<Swap>;
+  fund(store: Store, swap: Swap, plan: ReverseTestPlan, input?: ApprovedFundingInput): Promise<Swap>;
   confirm(store: Store, swap: Swap, plan: ReverseTestPlan): Promise<Swap>;
   settle(store: Store, swap: Swap, plan: ReverseTestPlan, claimTxid: string): Promise<Swap>;
   markPaid(store: Store, swap: Swap, invoice: Invoice): Promise<Swap>;
   complete(store: Store, swap: Swap, plan: ReverseTestPlan): Promise<Swap>;
   expire(store: Store, swap: Swap): Promise<Swap>;
 };
-export type GuestPortsFactory = (store: Store, swap: Swap, plan: ReverseTestPlan) => SwapPorts;
+export type GuestPortsFactory = (store: Store, swap: Swap, plan: ReverseTestPlan, input?: ApprovedFundingInput) => SwapPorts;
 type ControlledDeps = { bitcoin: Pick<BitcoinRpcClient, 'call' | 'confirmed'>;
-  provider: Pick<LndClient, 'call' | 'lookup' | 'settle' | 'cancel'>; payer: Pick<LndClient, 'call'>;
-  input: ApprovedFundingInput };
+  provider: Pick<LndClient, 'call' | 'lookup' | 'settle' | 'cancel'>; payer: Pick<LndClient, 'call'> };
 const stopped = () => new Error('Guest execution state changed; reconcile without retry');
 
 /** Production wiring seam: the caller supplies dedicated write-capable clients.
  * The HTTP service never constructs this. */
 export function controlledPortsFactory(deps: ControlledDeps): GuestPortsFactory {
-  return (store, swap, plan) => controlledReversePorts(deps.bitcoin, deps.provider, deps.payer, store, swap.id, plan, deps.input);
+  return (store, swap, plan, input) => controlledReversePorts(deps.bitcoin, deps.provider, deps.payer, store, swap.id, plan,
+    input && { txid: input.txid, vout: input.vout });
 }
 
 type ExecutionOptions = { lockFile?: string; lock?: <T>(work: () => Promise<T>) => Promise<T> };
@@ -39,18 +39,18 @@ type ExecutionOptions = { lockFile?: string; lock?: <T>(work: () => Promise<T>) 
  * completion hold the same kernel flock as the DS-02 miner; ambiguous outcomes
  * become MANUAL_REVIEW and are never retried by this execution helper. */
 export function controlledGuestExecution(portsFactory: GuestPortsFactory, options: ExecutionOptions = {}): GuestExecution {
-  const coordinator = (store: Store, swap: Swap, plan: ReverseTestPlan) =>
-    new SwapCoordinator(store, portsFactory(store, swap, plan));
+  const coordinator = (store: Store, swap: Swap, plan: ReverseTestPlan, input?: ApprovedFundingInput) =>
+    new SwapCoordinator(store, portsFactory(store, swap, plan, input));
   const lock = options.lock ?? (<T>(work: () => Promise<T>) => withMiningLock(work, { lockFile: options.lockFile }));
   return {
-    async fund(store, swap, plan) { return lock(async () => {
+    async fund(store, swap, plan, input) { return lock(async () => {
       let current = swap;
       if (!current.clientPayment) current = await updateSwapRevision(store, current.id, current.revision, value => {
         if (value.state !== 'INVOICE_CREATED' || value.clientPayment) throw stopped();
         value.clientPayment = { hash: value.contract.paymentHash, status: 'IN_FLIGHT', feeLimitSats: 0 };
       });
       if (current.state !== 'INVOICE_CREATED' || current.pendingAction || current.lockup || current.fundingIntent) throw stopped();
-      return coordinator(store, current, plan).fundAccepted(current.id, current.revision);
+      return coordinator(store, current, plan, input).fundAccepted(current.id, current.revision);
     }); },
     async confirm(store, swap, plan) { return coordinator(store, swap, plan).confirmLockup(swap.id); },
     async settle(store, swap, plan, claimTxid) { return lock(() =>

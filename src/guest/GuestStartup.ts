@@ -8,8 +8,8 @@ import { HttpsLndInvoiceTransport } from '../lightning/LndInvoiceTransport.js';
 import { reverseRoutingSchema } from '../core/ReverseTestPlan.js';
 import { controlledGuestExecution, controlledPortsFactory, type GuestExecution } from './GuestExecution.js';
 import { GuestReverse, guestReversePolicySchema, type GuestReverseClients } from './GuestReverse.js';
+import { guestFundingPolicySchema } from './GuestFunding.js';
 
-const hash = z.string().regex(/^[a-f0-9]{64}$/);
 const pubkey = z.string().regex(/^(02|03)[a-f0-9]{64}$/);
 const absolute = z.string().refine(isAbsolute);
 const loopback = (protocol: 'http:' | 'https:') => z.string().refine(value => {
@@ -32,8 +32,7 @@ export const guestStartupPolicySchema = z.object({
   refundDestination: z.string().refine(value => {
     try { return value.startsWith('bcrt1') && address.toOutputScript(value, networks.regtest).length > 0; } catch { return false; }
   }),
-  funding: z.object({ txid: hash, vout: z.number().int().nonnegative().max(0xffffffff),
-    valueSats: z.number().int().min(61000).max(Number.MAX_SAFE_INTEGER) }).strict(),
+  funding: guestFundingPolicySchema,
   runsDirectory: absolute,
   ownedRunsDirectory: absolute.optional(),
   watcherIntervalMs: z.number().int().min(1000).max(60000).optional(),
@@ -97,9 +96,7 @@ function buildClients(policy: GuestStartupPolicy) {
       return chain.blocks;
     },
   };
-  const execution = controlledGuestExecution(controlledPortsFactory({
-    bitcoin, provider, payer, input: { txid: policy.funding.txid, vout: policy.funding.vout },
-  }));
+  const execution = controlledGuestExecution(controlledPortsFactory({ bitcoin, provider, payer }));
   return { clients, bitcoin, execution };
 }
 

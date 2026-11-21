@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import type { AddressInfo } from 'node:net';
 import { test } from 'node:test';
-import { Transaction, payments, networks } from 'bitcoinjs-lib';
+import { Transaction, address, payments, networks } from 'bitcoinjs-lib';
 import { setup, privateTestDirectory, routingFixture } from './helpers.js';
 import { GuestReverse, GuestReverseError, type GuestPreparationFactory, type GuestReverseClients } from '../src/guest/GuestReverse.js';
 import { SwapManager } from '../src/core/SwapManager.js';
@@ -21,11 +21,14 @@ const GUEST_INVOICE_SATS = 50000;
 const invoiceText = 'lnbcrt' + 'c'.repeat(30);
 
 async function fixture(options: { failAfterCreate?: boolean; noBroadcast?: boolean; broadcastFails?: boolean;
-  tip?: number; pauseFile?: string; beforeInvoice?: (spec: any, pauseFile: string) => Promise<void> } = {}) {
+  tip?: number; pauseFile?: string; walletFunding?: boolean;
+  beforeInvoice?: (spec: any, pauseFile: string) => Promise<void> } = {}) {
   const f = await setup(); const runsDirectory = await privateTestDirectory('guest-runs'); const routing = routingFixture();
   const pauseFile = options.pauseFile ?? join(runsDirectory, 'pause.json');
   let tip = options.tip ?? 100; let invoiceState: Invoice['state'] = 'OPEN'; let calls = 0; let broadcasts = 0; let lockCalls = 0;
   const ledger = new Map<string, { hex: string; confirmations: number }>();
+  const inventory: Array<{ txid: string; vout: number; amount: number; confirmations: number;
+    safe: boolean; spendable: boolean; solvable: boolean; scriptPubKey: string }> = [];
   const invoice = (): Invoice => ({ state: invoiceState, r_hash: Buffer.from(f.contract.paymentHash, 'hex').toString('base64'),
     value: String(GUEST_INVOICE_SATS), amt_paid_sat: invoiceState === 'SETTLED' ? String(GUEST_INVOICE_SATS) : '0', payment_request: invoiceText,
     htlcs: invoiceState === 'ACCEPTED' ? [{ state: 'ACCEPTED', expiration_height: 210, amt_msat: String(GUEST_INVOICE_SATS * 1000) }] : [] });
@@ -33,10 +36,12 @@ async function fixture(options: { failAfterCreate?: boolean; noBroadcast?: boole
     bitcoin: { origin: routing.bitcoinOrigin, call: async (method, params) => {
       if (method === 'getblockchaininfo') return { chain: 'regtest', initialblockdownload: false, blocks: tip,
         bestblockhash: '11'.repeat(32) } as any;
+      if (method === 'listunspent') return inventory as any;
+      if (method === 'listlockunspent') return [] as any;
       if (method === 'gettxout') { const [txid, vout] = (params ?? []) as [string, number];
         const entry = ledger.get(txid); if (!entry || entry.confirmations < 1) return null as any;
         const tx = Transaction.fromHex(entry.hex); const output = tx.outs[vout]; if (!output) return null as any;
-        return { bestblock: '11'.repeat(32), confirmations: entry.confirmations, value: Number(output.value) / 1e8,
+        return { bestblock: '11'.repeat(32), confirmations: entry.confirmations, coinbase: false, value: Number(output.value) / 1e8,
           scriptPubKey: { hex: Buffer.from(output.script).toString('hex') } } as any;
       }
       throw new Error('unexpected Core call');
@@ -73,7 +78,7 @@ async function fixture(options: { failAfterCreate?: boolean; noBroadcast?: boole
   };
   const policy = { mode: 'regtest' as const, isolationId: randomUUID(), providerNode: '02' + '11'.repeat(32),
     payerNode: '03' + '22'.repeat(32), routing, refundPublicKey: f.contract.refundPublicKey,
-    refundDestination: f.destination, funding: { txid: 'ab'.repeat(32), vout: 0, valueSats: 100000 },
+    refundDestination: f.destination, funding: options.walletFunding ? { mode: 'wallet' } : { txid: 'ab'.repeat(32), vout: 0, valueSats: 100000 },
     runsDirectory };
   const service = new GuestReverse(f.store, policy, clients, { preparation,
     broadcast: options.noBroadcast ? undefined : broadcast, pauseFile,
@@ -81,7 +86,7 @@ async function fixture(options: { failAfterCreate?: boolean; noBroadcast?: boole
   const token = randomBytes(32).toString('base64url'); const auth = `Bearer ${token}`;
   const quote = await service.quote(auth, 'guest-quote-key', { destination: f.destination, amountSats: GUEST_INVOICE_SATS,
     paymentHash: f.contract.paymentHash, claimPublicKey: f.contract.claimPublicKey });
-  return { f, service, quote, auth, token, runsDirectory, ledger, clients, pauseFile,
+  return { f, service, quote, auth, token, runsDirectory, ledger, clients, pauseFile, inventory,
     prepare: (key = 'guest-prepare-key', commitment = 'ab'.repeat(32)) => service.prepare(quote.id, auth, key, { recoveryCommitment: commitment }),
     setInvoice: (state: Invoice['state']) => { invoiceState = state; }, setTip: (value: number) => { tip = value; },
     calls: () => calls, broadcasts: () => broadcasts, lockCalls: () => lockCalls,
@@ -337,5 +342,48 @@ test('the shared funding outpoint is reserved atomically across guest admissions
     await assert.rejects(x.service.prepare(quote2.id, auth2, 'guest-prepare-key-2', { recoveryCommitment: 'cd'.repeat(32) }),
       (error: unknown) => error instanceof GuestReverseError && error.code === 'GUEST_FUNDING_INPUT_BUSY');
     assert.equal(x.calls(), calls);
+  } finally { await x.cleanup(); }
+});
+
+test('wallet funding skips spent and reserved inputs and prepares another swap without changing policy', async () => {
+  const inputs: string[] = [];
+  const x = await fixture({ walletFunding: true, beforeInvoice: async spec => { inputs.push(spec.input.txid); } });
+  try {
+    const addCoin = (valueSats: number) => {
+      const tx = new Transaction();
+      tx.addInput(randomBytes(32), 0);
+      const script = address.toOutputScript(x.f.destination, networks.regtest);
+      tx.addOutput(script, BigInt(valueSats));
+      const txid = tx.getId();
+      x.inventory.push({ txid, vout: 0, amount: valueSats / 1e8, confirmations: 1,
+        safe: true, spendable: true, solvable: true, scriptPubKey: Buffer.from(script).toString('hex') });
+      x.ledger.set(txid, { hex: tx.toHex(), confirmations: 1 });
+      return txid;
+    };
+    await assert.rejects(x.prepare(), (error: unknown) =>
+      error instanceof GuestReverseError && error.code === 'GUEST_FUNDING_UNAVAILABLE');
+    assert.equal(x.f.store.read().guestSwaps?.[x.quote.id], undefined);
+    const first = addCoin(61000);
+    const second = addCoin(62000);
+    const third = addCoin(63000);
+    await x.prepare();
+    const prepared = x.f.store.read().guestSwaps?.[x.quote.id];
+    assert.equal(prepared?.funding?.txid, first);
+    assert.ok(prepared?.swapId);
+    const prepareNext = async () => {
+      const auth = `Bearer ${randomBytes(32).toString('base64url')}`;
+      const quote = await x.service.quote(auth, 'another-guest-key', { destination: x.f.destination,
+        amountSats: GUEST_INVOICE_SATS, paymentHash: randomBytes(32).toString('hex'), claimPublicKey: x.f.contract.claimPublicKey });
+      await x.service.prepare(quote.id, auth, 'another-prepare-key', { recoveryCommitment: 'cd'.repeat(32) });
+    };
+    await prepareNext();
+    const run = await Store.open(join(x.runsDirectory, x.quote.id));
+    try { await run.transaction(db => { db.swaps[prepared.swapId!]!.state = 'COMPLETED'; }); }
+    finally { await run.close(); }
+    await x.service.runOnce();
+    x.ledger.delete(first); // The wallet inventory can still contain a stale view of a spent coin.
+    await prepareNext();
+    assert.deepEqual(inputs, [first, second, third]);
+    assert.equal(x.f.store.read().guestFundingReservations?.[`${first}:0`]?.status, 'RELEASED');
   } finally { await x.cleanup(); }
 });

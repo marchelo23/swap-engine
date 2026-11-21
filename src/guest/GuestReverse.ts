@@ -19,6 +19,7 @@ import type { Invoice } from '../lightning/LndClient.js';
 import type { GuestExecution } from './GuestExecution.js';
 import { MiningLockBusyError, withMiningLock } from '../mining/MiningLock.js';
 import { MiningPauseCoordinator, guestActiveSwaps, markActiveSwap, minerPauseFile, ownedActiveSwaps } from '../mining/ActiveSwapPolicy.js';
+import { fundingOutpoint, guestFundingPolicySchema, selectGuestFunding, type GuestFundingInput } from './GuestFunding.js';
 
 const hash = z.string().regex(/^[a-f0-9]{64}$/);
 const pubkey = z.string().regex(/^(02|03)[a-f0-9]{64}$/);
@@ -40,8 +41,7 @@ export const guestReversePolicySchema = z.object({ mode: z.literal('regtest'), i
   refundDestination: z.string().refine(value => {
     try { return value.startsWith('bcrt1') && address.toOutputScript(value, networks.regtest).length > 0; } catch { return false; }
   }),
-  funding: z.object({ txid: hash, vout: z.number().int().nonnegative().max(0xffffffff),
-    valueSats: z.number().int().min(61000).max(Number.MAX_SAFE_INTEGER) }).strict(),
+  funding: guestFundingPolicySchema,
   runsDirectory: z.string().refine(isAbsolute) }).strict();
 export type GuestReversePolicy = z.infer<typeof guestReversePolicySchema>;
 
@@ -165,33 +165,36 @@ export class GuestReverse {
       return this.status(admissionId, authorization);
     }
     const attemptId = randomUUID(); const runDirectory = join(this.policy.runsDirectory, admissionId);
-    await this.store.transaction(db => {
-      if (db.guestSwaps?.[admissionId]) throw new GuestReverseError(409, 'GUEST_PREPARE_IN_PROGRESS');
-      (db.guestSwaps ??= {})[admissionId] = { id: admissionId, admissionId, requestKey, fingerprint,
-        recoveryCommitment: input.recoveryCommitment, status: 'PREPARING', attemptId, runDirectory,
-        createdAt: now, updatedAt: now };
-    });
     let prepared: GuestPrepared;
     try {
       prepared = await this.lock(async () => {
-        // Reserve the shared funding outpoint atomically before any invoice.
+        const fundingPolicy = this.policy.funding;
+        const reserved = new Set(Object.entries(this.store.read().guestFundingReservations ?? {})
+          .filter(([, row]) => row.status === 'RESERVED').map(([outpoint]) => outpoint));
+        const funding = 'mode' in fundingPolicy ? await selectGuestFunding(this.clients.bitcoin, reserved) : fundingPolicy;
+        if (!funding) throw new GuestReverseError(503, 'GUEST_FUNDING_UNAVAILABLE');
+        const tip = await this.clients.tip();
+        if (!Number.isSafeInteger(tip) || tip < 1 || tip > 499_999_969) throw new GuestReverseError(503, 'GUEST_CHAIN_UNAVAILABLE');
+        // The chosen input and its reservation survive restarts together with the preparation.
         await this.store.transaction(db => {
-          const key = `${this.policy.funding.txid}:${this.policy.funding.vout}`;
-          const existing = db.guestFundingReservations?.[key];
-          if (existing?.status === 'RESERVED' && existing.admissionId !== admissionId)
+          if (db.guestSwaps?.[admissionId]) throw new GuestReverseError(409, 'GUEST_PREPARE_IN_PROGRESS');
+          if (admission.expiresAt <= this.now()) throw new GuestReverseError(410, 'GUEST_QUOTE_EXPIRED');
+          const key = fundingOutpoint(funding);
+          if (db.guestFundingReservations?.[key]?.status === 'RESERVED')
             throw new GuestReverseError(409, 'GUEST_FUNDING_INPUT_BUSY');
           (db.guestFundingReservations ??= {})[key] = { admissionId, outpoint: key, status: 'RESERVED',
+            createdAt: now, updatedAt: now };
+          (db.guestSwaps ??= {})[admissionId] = { id: admissionId, admissionId, requestKey, fingerprint,
+            recoveryCommitment: input.recoveryCommitment, status: 'PREPARING', attemptId, runDirectory, funding,
             createdAt: now, updatedAt: now };
         });
         // Fail-closed marker exists before the invoice can become payable.
         await markActiveSwap(this.pauseFile, { id: admissionId, state: 'PREPARING', timeoutHeight: 0, updatedAt: this.now() });
-        const tip = await this.clients.tip();
-        if (!Number.isSafeInteger(tip) || tip < 1 || tip > 499_999_969) throw new GuestReverseError(503, 'GUEST_CHAIN_UNAVAILABLE');
         const spec = preparationSpecSchema.parse({ id: admissionId, isolationId: this.policy.isolationId, tipHeight: tip,
           providerNode: this.policy.providerNode, payerNode: this.policy.payerNode, routing: this.policy.routing,
           client: { paymentHash: admission.paymentHash, claimPublicKey: admission.claimPublicKey },
           sourceAmountSats: admission.invoiceSats, refundPublicKey: this.policy.refundPublicKey,
-          claimDestination: admission.destination, refundDestination: this.policy.refundDestination, input: this.policy.funding });
+          claimDestination: admission.destination, refundDestination: this.policy.refundDestination, input: funding });
         const approval: PreparationApproval = { id: spec.id, specDigest: preparationDigest(spec),
           scope: 'isolated-regtest-invoice-only', expiresAt: now + 120000 };
         const result = await this.withRun(admissionId, runDirectory, async runStore => {
@@ -208,6 +211,7 @@ export class GuestReverse {
         const row = db.guestSwaps?.[admissionId];
         if (row?.attemptId === attemptId && row.status === 'PREPARING') { row.status = 'PREPARATION_UNKNOWN'; row.updatedAt = this.now(); }
       }).catch(() => {});
+      if (error instanceof MiningLockBusyError) throw new GuestReverseError(503, 'GUEST_EXECUTION_LOCK_BUSY');
       if (error instanceof GuestReverseError) throw error;
       throw new GuestReverseError(503, 'GUEST_PREPARATION_UNCERTAIN');
     }
@@ -590,7 +594,17 @@ export class GuestReverse {
   async runOnce() {
     await this.refreshMiningPause();
     let scanned = 0; let updated = 0;
-    for (const row of Object.values(this.store.read().guestSwaps ?? {})) {
+    const catalog = this.store.read();
+    for (const row of Object.values(catalog.guestSwaps ?? {})) {
+      if (row.terminal) continue;
+      const admission = catalog.guestAdmissions?.[row.id];
+      if (this.execution && (row.status === 'PREPARING' || row.status === 'PREPARATION_UNKNOWN') &&
+        admission && admission.expiresAt <= this.now()) {
+        try {
+          if (await this.closeUnfundedPreparation(row, admission.terms)) updated++;
+        } catch { /* Retain the attempt on uncertain evidence. */ }
+        continue;
+      }
       if (row.status !== 'INVOICE_CREATED' || !row.swapId) continue;
       scanned++;
       try {
@@ -622,7 +636,11 @@ export class GuestReverse {
               !swap.lockup && !swap.fundingIntent && !swap.pendingAction &&
               (!swap.clientPayment || swap.clientPayment.status === 'IN_FLIGHT')) {
             manager.assertAccepted(invoice, plan.contract.paymentHash, swap.quote.invoiceSats, swap.contract.timeoutHeight, 40);
-            if (this.execution) { swap = await this.execution.fund(runStore, swap, plan); changes++; }
+            if (this.execution) {
+              const funding = this.reservedFunding(row);
+              if (!funding) return changes;
+              swap = await this.execution.fund(runStore, swap, plan, funding); changes++;
+            }
           }
           if (swap.state === 'LOCKUP_BROADCAST' && this.execution) {
             swap = await this.execution.confirm(runStore, swap, plan); changes++;
@@ -673,11 +691,53 @@ export class GuestReverse {
 
   stop() { if (this.timer) clearInterval(this.timer); this.timer = undefined; }
 
-  private async releaseFundingReservation(admissionId: string) {
+  private closeUnfundedPreparation(row: NonNullable<Database['guestSwaps']>[string],
+    terms: NonNullable<Database['guestAdmissions']>[string]['terms']) {
+    return this.lock(() => this.withRun(row.id, row.runDirectory, async runStore => {
+      const { swaps, reversePreparations } = runStore.read();
+      const attempts = Object.values(swaps);
+      if (attempts.some(swap => swap.lockup || swap.fundingIntent || swap.clientPayment || swap.clientClaimIntent ||
+        swap.claimTxid || swap.refundTxid)) return false;
+      const found = await this.clients.invoices.lookup(terms.paymentHash);
+      if (found.status === 'ABSENT') {
+        if (reversePreparations?.[row.id]?.invoiceAttempt?.wireAuthorized || attempts.some(swap => swap.invoice)) return false;
+      } else {
+        const invoice = found.invoice;
+        if (invoice.state !== 'CANCELED' || invoice.r_hash !== Buffer.from(terms.paymentHash, 'hex').toString('base64') ||
+          invoice.value !== String(terms.invoiceSats) || invoice.amt_paid_sat !== '0' ||
+          invoice.htlcs?.some(htlc => htlc.state === 'ACCEPTED' || htlc.state === 'SETTLED') ||
+          attempts.some(swap => swap.invoice && swap.invoice !== invoice.payment_request)) return false;
+      }
+      await this.releaseFundingReservation(row.id, row.attemptId);
+      return true;
+    }));
+  }
+
+  private reservedFunding(row: NonNullable<Database['guestSwaps']>[string]): GuestFundingInput | undefined {
+    const policy = this.policy.funding;
+    const funding = row.funding ?? ('mode' in policy ? policy.legacyInput : policy);
+    if (!funding) return;
+    const reservation = this.store.read().guestFundingReservations?.[fundingOutpoint(funding)];
+    if (reservation?.status === 'RESERVED' && reservation.admissionId === row.id) return funding;
+  }
+
+  private async releaseFundingReservation(admissionId: string, expiredAttempt?: string) {
     await this.store.transaction(db => {
-      const key = `${this.policy.funding.txid}:${this.policy.funding.vout}`;
-      const current = db.guestFundingReservations?.[key];
-      if (current?.admissionId === admissionId) { current.status = 'RELEASED'; current.updatedAt = this.now(); }
+      const row = db.guestSwaps?.[admissionId];
+      if (!row || row.terminal) return;
+      if (expiredAttempt) {
+        if (row.attemptId !== expiredAttempt || row.swapId || !['PREPARING', 'PREPARATION_UNKNOWN'].includes(row.status)) return;
+        row.status = 'EXPIRED';
+      }
+      const now = this.now();
+      const reservations = db.guestFundingReservations ?? {};
+      const owned = row.funding ? [reservations[fundingOutpoint(row.funding)]] : Object.values(reservations);
+      for (const reservation of owned) {
+        if (reservation?.admissionId === admissionId && reservation.status === 'RESERVED') {
+          reservation.status = 'RELEASED'; reservation.updatedAt = now;
+        }
+      }
+      row.terminal = true; row.updatedAt = now;
     });
   }
 
