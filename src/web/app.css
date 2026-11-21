@@ -144,6 +144,10 @@ dialog::backdrop { background: #16161670; }
 #guest-dialog textarea { width: 100%; min-height: 96px; resize: vertical; background: var(--inset); color: var(--text); border: 1px solid #aaa; border-radius: 4px; padding: 7px 10px; font: 400 .72rem/1.45 var(--mono); }
 #guest-dialog section { display: grid; gap: 9px; margin-top: 10px; }
 #guest-dialog section[hidden], #guest-dialog #guest-claim[hidden] { display: none; }
+#guest-destination-status:empty, #guest-invoice-unavailable:empty { min-height: 0; margin: 0; }
+#guest-invoice-content:not([hidden]) { display: grid; gap: 9px; }
+#guest-copy-invoice { justify-self: start; }
+#guest-invoice-qr { width: min(100%, 280px); height: auto; justify-self: center; image-rendering: pixelated; }
 .notice { padding-block: 10px; }
 .skip { position: fixed; top: 8px; left: 8px; z-index: 5; transform: translateY(-180%); padding: 8px 12px; color: #fff; background: #111; }
 .skip:focus { transform: none; }
