@@ -57,6 +57,11 @@ export function createApi(
     try {
       if (await controlled.handle(req, res)) return;
       const url = new URL(req.url ?? '/', 'http://localhost'); const path = url.pathname;
+      if (req.method === 'GET' && path === '/v1/guest/availability') {
+        if (url.search) return send(403, { error: 'FORBIDDEN' });
+        return send(200, { network: 'regtest' as const, configured: guestReverse !== undefined,
+          watching: guestReverse?.watching === true });
+      }
       if (path === '/v1/guest/quotes' || path.startsWith('/v1/guest/quotes/')) {
         if (!guests && !guestReverse) return send(503, { error: 'GUEST_QUOTES_NOT_CONFIGURED' });
         if (url.search || (req.headers.origin !== undefined && !auth.sameOrigin(req))) return send(403, { error: 'FORBIDDEN' });

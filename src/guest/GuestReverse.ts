@@ -109,6 +109,7 @@ export class GuestReverse {
   private readonly pause: MiningPauseCoordinator;
   private readonly queues = new Map<string, Promise<unknown>>();
   private timer?: ReturnType<typeof setInterval>;
+  get watching() { return this.timer !== undefined; }
 
   constructor(private readonly store: Store, policy: unknown, clients: GuestReverseClients,
     options: { preparation?: GuestPreparationFactory; broadcast?: (hex: string) => Promise<string>;
@@ -243,7 +244,23 @@ export class GuestReverse {
       if (found.status === 'PRESENT') { invoice = found.invoice; invoiceState = found.invoice.state; } else invoiceState = 'ABSENT';
     } catch { invoiceState = 'UNKNOWN'; }
     const state = await this.classify(admission, run.swap, invoice, invoiceState);
-    return this.rowView(row, admission, state, run.swap, run.plan, invoiceState);
+    const lockupEvidence = await this.validatedLockup(run.swap);
+    return this.rowView(row, admission, state, run.swap, run.plan, invoiceState, lockupEvidence);
+  }
+
+  /** Public, exact funding evidence for local claim construction. The status
+   * never exposes an unconfirmed, changed or mismatched lockup. */
+  private async validatedLockup(swap?: Swap) {
+    if (!swap?.lockup) return undefined;
+    const confirmed = await this.clients.bitcoin.confirmed(swap.lockup.txid).catch(() => undefined);
+    if (!confirmed || confirmed.hex !== swap.lockup.hex || !Number.isSafeInteger(confirmed.confirmations) ||
+      confirmed.confirmations < 1) return undefined;
+    try {
+      const funding = Transaction.fromHex(confirmed.hex); const output = funding.outs[swap.lockup.vout];
+      if (funding.getId() !== swap.lockup.txid || !output || output.value !== BigInt(swap.quote.amountSats) ||
+        !Buffer.from(output.script).equals(buildHtlc(swap.contract).output)) return undefined;
+      return { hex: confirmed.hex, confirmations: confirmed.confirmations, valueSats: Number(output.value) };
+    } catch { return undefined; }
   }
 
   /** Step 3: verify and broadcast the client's signed claim exactly once. No
@@ -442,14 +459,18 @@ export class GuestReverse {
   }
 
   private rowView(row: NonNullable<Database['guestSwaps']>[string], admission: NonNullable<ReturnType<GuestAdmission['status']>>,
-    status: string, swap?: Swap, plan?: ReverseTestPlan, invoiceState?: string) {
+    status: string, swap?: Swap, plan?: ReverseTestPlan, invoiceState?: string,
+    lockup?: { hex: string; confirmations: number; valueSats: number }) {
     return { id: row.id, status, network: 'regtest' as const, destination: admission.destination,
       paymentHash: admission.paymentHash, claimPublicKey: admission.claimPublicKey, refundPublicKey: this.policy.refundPublicKey,
       amountSats: admission.amountSats, invoiceSats: admission.invoiceSats, serviceFeeSats: admission.serviceFeeSats,
       claimFeeSats: admission.claimFeeSats, fundingReserveSats: admission.fundingReserveSats, expiresAt: admission.expiresAt,
       recoveryCommitment: row.recoveryCommitment, swapId: row.swapId ?? null, invoice: row.invoice ?? null,
       invoiceExpiresAt: row.invoiceExpiresAt ?? null, invoiceState: invoiceState ?? null,
-      swapState: swap?.state ?? null, fundingTxid: swap?.lockup?.txid ?? null, claimTxid: swap?.claimTxid ?? null,
+      swapState: swap?.state ?? null, revision: swap?.revision ?? null,
+      fundingTxid: swap?.lockup?.txid ?? null, fundingVout: lockup ? swap?.lockup?.vout ?? null : null,
+      fundingConfirmations: lockup?.confirmations ?? null, fundingValueSats: lockup?.valueSats ?? null,
+      lockupHex: lockup?.hex ?? null, claimTxid: swap?.claimTxid ?? null,
       timeoutHeight: swap?.contract.timeoutHeight ?? plan?.contract.timeoutHeight ?? null,
       htlcAddress: plan?.address ?? null, witnessScript: plan?.witnessScript ?? null,
       claimIntent: swap?.clientClaimIntent ? { txid: swap.clientClaimIntent.txid, status: swap.clientClaimIntent.status,
@@ -481,9 +502,10 @@ export class GuestReverse {
     const claim = await this.clients.bitcoin.confirmed(claimTxid).catch(() => undefined);
     if (!claim || !Number.isSafeInteger(claim.confirmations) || claim.confirmations < 1) return false;
     try {
-      verifyHtlcSpend(claim.hex, claimTxid, swap.lockup.hex, swap.lockup.vout, swap.contract);
+      const evidence = verifyHtlcSpend(claim.hex, claimTxid, swap.lockup.hex, swap.lockup.vout, swap.contract);
       const spend = Transaction.fromHex(claim.hex);
-      return spend.outs.length === 1 && spend.outs[0]!.value === BigInt(swap.quote.amountSats - swap.quote.claimFeeSats) &&
+      return evidence.kind === 'claim' && spend.ins.length === 1 && spend.outs.length === 1 &&
+        spend.outs[0]!.value === BigInt(swap.quote.amountSats - swap.quote.claimFeeSats) &&
         Buffer.from(spend.outs[0]!.script).equals(address.toOutputScript(plan.claimDestination, networks.regtest));
     } catch { return false; }
   }
@@ -521,6 +543,21 @@ export class GuestReverse {
         return changes;
       }
       await this.execution.settle(runStore, swap, plan, claimTxid!); return changes + 1;
+    }
+    // SwapCoordinator journals the lockup before BROADCAST_LOCKUP. A lost real
+    // broadcast reply therefore has both fields; confirmed exact evidence clears
+    // the pending action without rebroadcasting.
+    if (swap.lockup && swap.pendingAction === 'BROADCAST_LOCKUP') {
+      const evidence = await this.validatedLockup(swap);
+      if (evidence) {
+        await updateSwapRevision(runStore, swap.id, swap.revision, value => {
+          if (value.pendingAction === 'BROADCAST_LOCKUP') delete value.pendingAction;
+          if (!value.lockup) value.lockup = { ...swap.lockup! };
+          if (!['COMPLETED', 'REFUNDED', 'EXPIRED', 'FAILED'].includes(value.state) && value.state !== 'LOCKUP_CONFIRMED')
+            reconcileTransition(value, 'LOCKUP_CONFIRMED');
+        });
+        changes++;
+      }
     }
     const intent = swap.fundingIntent; const fundingVout = intent?.fundingVout;
     if (!swap.lockup && intent?.signedHex && intent.fundingTxid && Number.isSafeInteger(fundingVout)) {
@@ -605,8 +642,14 @@ export class GuestReverse {
             }
           }
           if (swap.state === 'LIGHTNING_SETTLED' && invoice.state === 'SETTLED' && this.execution) {
-            swap = await this.execution.markPaid(runStore, swap, invoice); changes++;
-            swap = await this.execution.complete(runStore, swap, plan); changes++;
+            if (!swap.clientPayment) {
+              swap = await updateSwapRevision(runStore, swap.id, swap.revision, value => {
+                if (!value.clientPayment) value.clientPayment = { hash: value.contract.paymentHash, status: 'IN_FLIGHT', feeLimitSats: 0 };
+              });
+              changes++;
+            }
+            if (swap.clientPayment?.status === 'IN_FLIGHT') { swap = await this.execution.markPaid(runStore, swap, invoice); changes++; }
+            if (swap.clientPayment?.status === 'SUCCEEDED') { swap = await this.execution.complete(runStore, swap, plan); changes++; }
           }
           return changes;
         });

@@ -1,13 +1,13 @@
-﻿import { ECPairFactory } from 'ecpair';
-import * as ecc from 'tiny-secp256k1';
+﻿import * as secp from '@noble/secp256k1';
 import { address, networks } from 'bitcoinjs-lib';
 import { z } from 'zod';
 
-const keys = ECPairFactory(ecc);
 const tokenPattern = /^[A-Za-z0-9_-]{43}$/;
 const base64urlPattern = /^[A-Za-z0-9_-]+$/;
 const hex32 = z.string().regex(/^[a-f0-9]{64}$/);
-const pubkey = z.string().regex(/^(02|03)[a-f0-9]{64}$/).refine(value => ecc.isPoint(bytesFromHex(value)));
+const pubkey = z.string().regex(/^(02|03)[a-f0-9]{64}$/).refine(value => {
+  try { secp.Point.fromHex(value); return true; } catch { return false; }
+});
 const amount = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 const secretsSchema = z.object({ version: z.literal(1), network: z.literal('regtest'),
   capabilityToken: z.string().regex(tokenPattern), quoteId: z.uuid(), destination: z.string(),
@@ -60,8 +60,8 @@ async function validateSecrets(value: GuestRecoverySecrets): Promise<GuestRecove
   if (!tokenPattern.test(parsed.capabilityToken)) throw new Error('Invalid capability token');
   if (base64ToBytes(parsed.capabilityToken).length !== 32) throw new Error('Invalid capability token');
   if (await sha256Hex(bytesFromHex(parsed.preimage)) !== parsed.paymentHash) throw new Error('Preimage does not match payment hash');
-  const key = keys.fromPrivateKey(bytesFromHex(parsed.claimPrivateKey), { network: networks.regtest });
-  if (hex(key.publicKey) !== parsed.claimPublicKey) throw new Error('Claim key does not match public key');
+  if (hex(secp.getPublicKey(bytesFromHex(parsed.claimPrivateKey), true)) !== parsed.claimPublicKey)
+    throw new Error('Claim key does not match public key');
   const decoded = address.fromBech32(parsed.destination);
   if (decoded.prefix !== 'bcrt' || !parsed.destination.startsWith('bcrt1')) throw new Error('Unsupported destination');
   address.toOutputScript(parsed.destination, networks.regtest);
@@ -82,8 +82,8 @@ export async function generateGuestRecoveryIdentity(): Promise<GuestRecoveryIden
   let claimPrivateKey = ''; let claimPublicKey = '';
   for (let attempt = 0; attempt < 8; attempt++) {
     const candidate = hex(randomBytes(32));
-    try { const key = keys.fromPrivateKey(bytesFromHex(candidate), { network: networks.regtest });
-      claimPrivateKey = candidate; claimPublicKey = hex(key.publicKey); break; } catch { /* retry invalid scalar */ }
+    try { claimPublicKey = hex(secp.getPublicKey(bytesFromHex(candidate), true));
+      claimPrivateKey = candidate; break; } catch { /* retry invalid scalar */ }
   }
   if (!claimPrivateKey) throw new Error('Unable to generate a claim key');
   const preimage = hex(randomBytes(32)); const paymentHash = await sha256Hex(bytesFromHex(preimage));

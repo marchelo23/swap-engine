@@ -140,6 +140,10 @@ h2 { font-size: 1.15rem; font-weight: 720; letter-spacing: -.035em; }
 dialog { width: min(480px, calc(100% - 28px)); max-height: calc(100% - 28px); padding: 20px; color: var(--text); background: var(--surface); border: 1px solid #979797; border-radius: 6px; }
 dialog::backdrop { background: #16161670; }
 .dialog-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 13px; }
+#guest-dialog { width: min(620px, calc(100% - 28px)); }
+#guest-dialog textarea { width: 100%; min-height: 96px; resize: vertical; background: var(--inset); color: var(--text); border: 1px solid #aaa; border-radius: 4px; padding: 7px 10px; font: 400 .72rem/1.45 var(--mono); }
+#guest-dialog section { display: grid; gap: 9px; margin-top: 10px; }
+#guest-dialog section[hidden], #guest-dialog #guest-claim[hidden] { display: none; }
 .notice { padding-block: 10px; }
 .skip { position: fixed; top: 8px; left: 8px; z-index: 5; transform: translateY(-180%); padding: 8px 12px; color: #fff; background: #111; }
 .skip:focus { transform: none; }

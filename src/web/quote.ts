@@ -3,7 +3,9 @@ import { mountCubes } from './cubes.js';
 import { canQuote, defaultPair, railLabel, type Pair } from './rails.js';
 import { details, get, integer, message, sats, text } from './ui.js';
 
-export function mountQuote(prepare?: (stillVisible: () => boolean, amountSats: number) => Promise<void>) {
+type GuestFlow = { begin(amountSats: number, active: () => boolean): Promise<void>; cancel(): void };
+
+export function mountQuote(prepare?: (stillVisible: () => boolean, amountSats: number) => Promise<void>, guestFlow?: GuestFlow) {
   const form = get<HTMLFormElement>('quote-form');
   const amount = get<HTMLInputElement>('amount');
   const action = get<HTMLButtonElement>('swap-action');
@@ -19,6 +21,7 @@ export function mountQuote(prepare?: (stillVisible: () => boolean, amountSats: n
   let controlled: boolean | 'unavailable' | null = null;
   let csrf: string | undefined;
   let canPrepare = false; let preparing = false;
+  let guestConfigured = false; let guestAvailable = false;
   let revision = 0;
   let quote: Quote | undefined;
   let pending: { controller: AbortController; work: Promise<Quote | undefined> } | undefined;
@@ -26,6 +29,7 @@ export function mountQuote(prepare?: (stillVisible: () => boolean, amountSats: n
   let expiry: number | undefined;
 
   function invalidate() {
+    guestFlow?.cancel();
     revision++;
     pending?.controller.abort();
     pending = undefined;
@@ -39,7 +43,7 @@ export function mountQuote(prepare?: (stillVisible: () => boolean, amountSats: n
 
   function principal() {
     const value = Number(amount.value);
-    if (/^\d+$/.test(amount.value) && value >= (controlled === true ? 11_000 : 10_000) && value <= (controlled === true ? 50_000 : 1_000_000)) return value;
+    if (/^\d+$/.test(amount.value) && value >= (controlled === true || guestAvailable ? 11_000 : 10_000) && value <= (controlled === true || guestAvailable ? 50_000 : 1_000_000)) return value;
     return undefined;
   }
 
@@ -63,11 +67,13 @@ export function mountQuote(prepare?: (stillVisible: () => boolean, amountSats: n
     status('Quoting route…');
     const work = api.quote(value, active.signal, csrf).then(result => {
       if (version !== revision) return;
-      const totals = quoteTotals(result, value, Date.now(), controlled === true);
+      const totals = quoteTotals(result, value, Date.now(), controlled === true && !guestAvailable);
       quote = result;
       animateValues([sats(result.serviceFeeSats), sats(result.claimFeeSats), sats(totals.lost), integer(totals.received)]);
-      if (controlled === true) action.disabled = preparing || !aligned || !canQuote(pair) || !canPrepare;
-      status(controlled === true ? 'Quote ready · review before swapping' : 'Quote ready · execution off');
+      if (!guestAvailable) {
+        if (controlled === true) action.disabled = preparing || !aligned || !canQuote(pair) || !canPrepare;
+        status(controlled === true ? 'Quote ready · review before swapping' : 'Quote ready · execution off');
+      }
       expiry = window.setTimeout(() => {
         invalidate();
         status('Quote expired · press Swap');
@@ -88,6 +94,22 @@ export function mountQuote(prepare?: (stillVisible: () => boolean, amountSats: n
 
   function schedule(delay: number) {
     if (!visible) return;
+    if (guestConfigured && !guestAvailable) {
+      action.disabled = true;
+      status('Guest watcher unavailable · no invoice will be created.');
+      return;
+    }
+    if (guestAvailable) {
+      const value = principal();
+      action.disabled = preparing || !aligned || !canQuote(pair) || value === undefined;
+      if (value === undefined) amount.setAttribute('aria-invalid', 'true'); else amount.removeAttribute('aria-invalid');
+      if (!aligned) { status('Aligning rails…'); return; }
+      if (!canQuote(pair)) { status('Route unavailable'); return; }
+      if (value === undefined) { status('Enter 11,000–50,000 sats'); return; }
+      if (!quote && !preparing) debounce = window.setTimeout(() => void load(value), delay);
+      status(preparing ? 'Opening guest recovery…' : 'Guest quote ready · encrypted recovery required before payment.');
+      return;
+    }
     if (controlled !== false) {
       const value = principal();
       action.disabled = preparing || controlled !== true || !aligned || !canQuote(pair) || (canPrepare && (!value || !quote || quote.invoiceSats !== value));
@@ -128,6 +150,18 @@ export function mountQuote(prepare?: (stillVisible: () => boolean, amountSats: n
   form.addEventListener('submit', async event => {
     event.preventDefault();
     successNotice = false;
+    if (guestAvailable) {
+      if (preparing || !guestFlow) return;
+      const value = principal();
+      if (!aligned || !canQuote(pair) || value === undefined || dialog.open) return;
+      const version = revision; const active = () => visible && version === revision && guestAvailable && !get('swap').hidden;
+      let failure: string | undefined;
+      preparing = true; schedule(0);
+      try { await guestFlow.begin(value, active); }
+      catch (error) { failure = error instanceof Error ? error.message : 'Guest preparation is unavailable.'; }
+      finally { preparing = false; if (visible) { schedule(0); if (active() && failure) status(failure); } }
+      return;
+    }
     if (controlled === true) {
       if (preparing) return;
       if (canPrepare && prepare && !preparing && aligned && canQuote(pair)) {
@@ -178,6 +212,7 @@ export function mountQuote(prepare?: (stillVisible: () => boolean, amountSats: n
       if (visible === next) return;
       visible = next;
       if (!visible) {
+        guestFlow?.cancel();
         if (!quote) invalidate();
         return;
       }
@@ -197,7 +232,16 @@ export function mountQuote(prepare?: (stillVisible: () => boolean, amountSats: n
       csrf = csrfToken;
       canPrepare = preparationAvailable;
       amount.readOnly = false;
-      text('amount-help', configured === true ? '11,000–50,000 sats' : '10,000–1,000,000 sats');
+      text('amount-help', configured === true || guestAvailable ? '11,000–50,000 sats' : '10,000–1,000,000 sats');
+      invalidate();
+      schedule(0);
+    },
+    setGuestContext(configured: boolean, watching: boolean) {
+      const available = configured && watching;
+      if (guestConfigured === configured && guestAvailable === available) return;
+      guestConfigured = configured;
+      guestAvailable = available;
+      text('amount-help', guestAvailable || controlled === true ? '11,000–50,000 sats' : '10,000–1,000,000 sats');
       invalidate();
       schedule(0);
     },

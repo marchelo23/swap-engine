@@ -4,10 +4,12 @@ import { mountAuth } from './auth.js';
 import { fonts } from './fonts.js';
 import { playOpening } from './opening.js';
 import { mountOperationsBalances } from './operations.js';
+import { mountGuest } from './guest.js';
 import { mountOwnedReverse } from './ownedReverse.js';
 import { mountQuote } from './quote.js';
 import { get, integer, text } from './ui.js';
 
+const guest = mountGuest();
 const quotes = mountQuote(async (stillVisible, amountSats) => {
   const owner = session;
   if (!owner) throw new Error('Sign in to prepare a regtest swap.');
@@ -15,7 +17,7 @@ const quotes = mountQuote(async (stillVisible, amountSats) => {
   const id = await prepareForReview(owner, availability, amountSats);
   if (session !== owner || !stillVisible()) return;
   location.hash = 'track'; await reverse.reviewPrepared(id);
-});
+}, guest);
 let session: Session | null = null;
 const reverse = mountOwnedReverse((configured, availability) => {
   get('prepared-swap-link').hidden = configured !== true;
@@ -23,6 +25,13 @@ const reverse = mountOwnedReverse((configured, availability) => {
 });
 const setBalancesActive = mountOperationsBalances();
 void fonts;
+void api.guestAvailability().then(availability => {
+  guest.setAvailability(availability.configured, availability.watching);
+  quotes.setGuestContext(availability.configured, availability.watching);
+}).catch(() => {
+  guest.setAvailability(false, false);
+  quotes.setGuestContext(false, false);
+});
 const environment = api.health().then(health => {
   get('mode').dataset.mode = health.mode;
   get('network').title = 'Bitcoin regtest';

@@ -175,6 +175,21 @@ test('ACCEPTED is never SETTLED and COMPLETED requires a confirmed exact claim p
   } finally { await x.cleanup(); }
 });
 
+test('status exposes revision and only validated confirmed lockup evidence for local signing', async () => {
+  const x = await fixture(); try {
+    const seeded = await seedClaim(x);
+    const confirmed = await x.service.status(x.quote.id, x.auth) as any;
+    assert.equal(confirmed.revision, seeded.expectedRevision);
+    assert.equal(confirmed.fundingTxid, seeded.lockup.getId());
+    assert.equal(confirmed.fundingVout, 0); assert.equal(confirmed.fundingConfirmations, 1);
+    assert.equal(confirmed.lockupHex, seeded.lockup.toHex()); assert.equal(confirmed.fundingValueSats, seeded.amountSats);
+    x.ledger.get(seeded.lockup.getId())!.confirmations = 0;
+    const unconfirmed = await x.service.status(x.quote.id, x.auth) as any;
+    assert.equal(unconfirmed.fundingVout, null); assert.equal(unconfirmed.lockupHex, null);
+    assert.equal(unconfirmed.fundingConfirmations, null);
+  } finally { await x.cleanup(); }
+});
+
 test('client-signed claim is bound to the exact outpoint/destination/fee and broadcasts once', async () => {
   const x = await fixture(); try {
     const seeded = await seedClaim(x); const before = x.lockCalls();

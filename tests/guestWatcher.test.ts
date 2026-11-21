@@ -12,7 +12,7 @@ import { SwapManager } from '../src/core/SwapManager.js';
 import { createReverseTestPlan } from '../src/core/ReverseTestPlan.js';
 import { preparationDigest } from '../src/core/ReversePreparation.js';
 import { buildHtlc } from '../src/bitcoin/HtlcBuilder.js';
-import { createClaim } from '../src/bitcoin/ClaimManager.js';
+import { constructSpend, createClaim } from '../src/bitcoin/ClaimManager.js';
 import { Store } from '../src/persistence/Store.js';
 import { updateSwapRevision } from '../src/core/SwapStateMachine.js';
 import type { Invoice } from '../src/lightning/LndClient.js';
@@ -177,6 +177,56 @@ test('restart reconciliation settles and completes from independent evidence wit
     assert.deepEqual(x.actions, ['settle', 'markPaid', 'complete']);
     const status = await x.service.status(x.quote.id, x.auth) as any;
     assert.equal(status.status, 'COMPLETED');
+  } finally { await x.cleanup(); }
+});
+
+test('confirmed lockup with a lost broadcast reply clears BROADCAST_LOCKUP without rebroadcast', async () => {
+  const x = await fixture({ withExecution: true }); try {
+    const seeded = await seedLockup(x, { pending: 'BROADCAST_LOCKUP' });
+    x.ledger.set(seeded.lockup.getId(), { hex: seeded.lockup.toHex(), confirmations: 1 });
+    await x.service.runOnce();
+    const run = await Store.open(join(x.runsDirectory, x.quote.id));
+    try {
+      const swap = run.read().swaps[seeded.swapId]!;
+      assert.equal(swap.pendingAction, undefined); assert.equal(swap.state, 'LOCKUP_CONFIRMED');
+      assert.equal(swap.lockup?.txid, seeded.lockup.getId());
+    } finally { await run.close(); }
+    assert.deepEqual(x.actions, []);
+  } finally { await x.cleanup(); }
+});
+
+test('restart after markPaid completes without repeating the settlement acknowledgement', async () => {
+  const x = await fixture({ withExecution: true }); try {
+    const seeded = await seedLockup(x, { claim: true }); x.setInvoice('SETTLED');
+    const run = await Store.open(join(x.runsDirectory, x.quote.id));
+    try {
+      await run.transaction(db => { const swap = db.swaps[seeded.swapId]!;
+        swap.state = 'LIGHTNING_SETTLED'; swap.clientPayment = { hash: swap.contract.paymentHash, status: 'SUCCEEDED', feeLimitSats: 0 };
+        swap.revision++; });
+    } finally { await run.close(); }
+    await x.service.runOnce();
+    assert.deepEqual(x.actions, ['complete']);
+    const after = await Store.open(join(x.runsDirectory, x.quote.id));
+    try { assert.equal(after.read().swaps[seeded.swapId]!.state, 'COMPLETED'); } finally { await after.close(); }
+  } finally { await x.cleanup(); }
+});
+
+test('recovery never treats a refund or malformed spend as the guest claim', async () => {
+  const x = await fixture({ withExecution: true }); try {
+    const seeded = await seedLockup(x);
+    const refund = constructSpend({ contract: x.f.contract, lockupTxHex: seeded.lockup.toHex(), vout: 0,
+      destination: x.f.destination, feeSats: 500, privateKey: x.f.refundKey.privateKey! }, 'refund');
+    x.ledger.set(refund.getId(), { hex: refund.toHex(), confirmations: 1 });
+    const run = await Store.open(join(x.runsDirectory, x.quote.id));
+    try {
+      await run.transaction(db => { const swap = db.swaps[seeded.swapId]!;
+        swap.claimTxid = refund.getId(); swap.state = 'MANUAL_REVIEW'; swap.revision++; });
+    } finally { await run.close(); }
+    x.setInvoice('SETTLED');
+    await x.service.runOnce();
+    assert.deepEqual(x.actions, []);
+    const after = await Store.open(join(x.runsDirectory, x.quote.id));
+    try { assert.equal(after.read().swaps[seeded.swapId]!.state, 'MANUAL_REVIEW'); } finally { await after.close(); }
   } finally { await x.cleanup(); }
 });
 
