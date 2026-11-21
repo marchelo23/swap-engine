@@ -8,9 +8,20 @@ use std::{collections::HashMap, num::NonZeroU32, time::SystemTime};
 struct DeclaredMock {
     quotes: HashMap<QuoteId, Quote>,
     journal: HashMap<OperationId, (Submission, OperationStatus, Option<Proof>)>,
+    reserved_inputs: HashMap<OutPoint, OperationId>,
+    original_ark_txids: HashMap<OperationId, Txid>,
     submit_calls: usize,
     lose_reply: bool,
-    recovered_receipt: Option<VtxoId>,
+    observed_transfer: Option<ObservedTransfer>,
+}
+
+#[derive(Clone)]
+struct ObservedTransfer {
+    pending: bool,
+    consumed: (VtxoId, Txid),
+    recipient: ark_core::ArkAddress,
+    receipt: VtxoId,
+    amount: Amount,
 }
 
 impl ArkAdapter for DeclaredMock {
@@ -65,6 +76,20 @@ impl ArkAdapter for DeclaredMock {
             .get(&request.quote)
             .ok_or(AdapterError::InvalidQuote)?;
         quote.validate_submission(&request, SystemTime::now())?;
+        let input = match &request.intent {
+            Intent::Boarding { funding, .. } => *funding,
+            Intent::Transfer { input, .. } | Intent::Offboarding { input, .. } => input.0,
+        };
+        if self.reserved_inputs.contains_key(&input) {
+            return Err(AdapterError::InputNotSpendable);
+        }
+        self.reserved_inputs.insert(input, id);
+        if matches!(request.intent, Intent::Transfer { .. }) {
+            // The synthetic remote records the original TXID even if the
+            // caller loses the reply. Recovery must match this reference.
+            self.original_ark_txids
+                .insert(id, Txid::from_byte_array([self.submit_calls as u8 + 2; 32]));
+        }
         self.journal
             .insert(id, (request, OperationStatus::Prepared, None));
         self.submit_calls += 1;
@@ -96,17 +121,37 @@ impl ArkAdapter for DeclaredMock {
             .journal
             .get_mut(&id)
             .ok_or(AdapterError::UnknownOperation)?;
-        if *state == OperationStatus::Uncertain {
-            if let (Intent::Transfer { amount, .. }, Some(receipt)) =
-                (&request.intent, self.recovered_receipt)
-            {
-                *state = OperationStatus::Preconfirmed;
-                *evidence = Some(Proof::TransferReceipt {
-                    ark_txid: receipt.0.txid,
-                    recipient_vtxo: receipt,
-                    amount: *amount,
-                });
-            }
+        if *state != OperationStatus::Uncertain {
+            return Ok(*state);
+        }
+        let (
+            Intent::Transfer {
+                input,
+                recipient,
+                amount,
+            },
+            Some(observed),
+            Some(&txid),
+        ) = (
+            &request.intent,
+            &self.observed_transfer,
+            self.original_ark_txids.get(&id),
+        )
+        else {
+            return Ok(*state);
+        };
+        if !observed.pending
+            && observed.consumed == (*input, txid)
+            && observed.receipt.0.txid == txid
+            && observed.recipient == *recipient
+            && observed.amount == *amount
+        {
+            *state = OperationStatus::Preconfirmed;
+            *evidence = Some(Proof::TransferReceipt {
+                ark_txid: txid,
+                recipient_vtxo: observed.receipt,
+                amount: observed.amount,
+            });
         }
         Ok(*state)
     }
@@ -233,6 +278,14 @@ async fn mock_uncertain_transfer_recovers_original_with_preconfirmation_not_chai
         ..Default::default()
     };
     let [_, transfer, _] = sample_intents();
+    let Intent::Transfer {
+        input,
+        recipient,
+        amount,
+    } = transfer.clone()
+    else {
+        unreachable!()
+    };
     let request = prepare(&mut adapter, transfer).await;
     let id = request.id;
     assert_eq!(
@@ -245,14 +298,79 @@ async fn mock_uncertain_transfer_recovers_original_with_preconfirmation_not_chai
         Err(AdapterError::SubmissionUncertain(id))
     );
     assert_eq!(
-        adapter.submit(request).await,
+        adapter.submit(request.clone()).await,
         Ok(OperationStatus::Uncertain)
+    );
+    let second_id = Submission {
+        id: OperationId(100),
+        ..request
+    };
+    assert_eq!(
+        adapter.submit(second_id.clone()).await,
+        Err(AdapterError::InputNotSpendable)
+    );
+    assert_eq!(
+        adapter.status(second_id.id).await,
+        Err(AdapterError::UnknownOperation)
     );
     assert_eq!(adapter.recover(id).await, Ok(OperationStatus::Uncertain));
     assert_eq!(adapter.proof(id).await, Ok(None));
     let txid = Txid::from_byte_array([2; 32]);
     let recipient_vtxo = VtxoId(OutPoint::new(txid, 0));
-    adapter.recovered_receipt = Some(recipient_vtxo);
+    let observed = ObservedTransfer {
+        pending: false,
+        consumed: (input, txid),
+        recipient,
+        receipt: recipient_vtxo,
+        amount,
+    };
+    let unrelated = Txid::from_byte_array([3; 32]);
+    let wrong_destination = ark_core::ArkAddress::new(
+        bitcoin::Network::Regtest,
+        bitcoin::secp256k1::Keypair::from_seckey_slice(
+            &bitcoin::secp256k1::Secp256k1::new(),
+            &[2; 32],
+        )
+        .unwrap()
+        .x_only_public_key()
+        .0,
+        bitcoin::key::TweakedPublicKey::dangerous_assume_tweaked(
+            "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+                .parse()
+                .unwrap(),
+        ),
+    );
+    for bad in [
+        ObservedTransfer {
+            pending: true,
+            ..observed.clone()
+        },
+        ObservedTransfer {
+            consumed: (VtxoId(OutPoint::null()), txid),
+            ..observed.clone()
+        },
+        ObservedTransfer {
+            consumed: (input, unrelated),
+            ..observed.clone()
+        },
+        ObservedTransfer {
+            receipt: VtxoId(OutPoint::new(unrelated, 0)),
+            ..observed.clone()
+        },
+        ObservedTransfer {
+            recipient: wrong_destination,
+            ..observed.clone()
+        },
+        ObservedTransfer {
+            amount: Amount::from_sat(999),
+            ..observed.clone()
+        },
+    ] {
+        adapter.observed_transfer = Some(bad);
+        assert_eq!(adapter.recover(id).await, Ok(OperationStatus::Uncertain));
+        assert_eq!(adapter.proof(id).await, Ok(None));
+    }
+    adapter.observed_transfer = Some(observed);
     assert_eq!(adapter.recover(id).await, Ok(OperationStatus::Preconfirmed));
     assert_eq!(
         adapter.proof(id).await,

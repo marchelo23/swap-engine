@@ -45,7 +45,9 @@ enum Command {
     },
     VerifySpent {
         input: bitcoin::OutPoint,
-        sats: u64,
+        /// Optional legacy amount argument, ignored by the read-only spent check.
+        #[arg(hide = true)]
+        _sats: Option<u64>,
     },
     SettleVtxo {
         wallet: WalletId,
@@ -89,9 +91,7 @@ async fn main() -> ExitCode {
         Command::TransferFinalize { txid } => {
             (Action::TransferFinalize(txid), Some(WalletId::Alice))
         }
-        Command::VerifySpent { input, sats } => {
-            (Action::VerifySpent(input, sats), Some(WalletId::Alice))
-        }
+        Command::VerifySpent { input, .. } => (Action::VerifySpent(input), Some(WalletId::Alice)),
         Command::SettleVtxo { wallet, input } => (Action::SettleVtxo(input), Some(wallet)),
         Command::OffboardCoop {
             input,

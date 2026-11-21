@@ -1,10 +1,13 @@
 offboard() {
-  local address before result commitment tx output after rows spent change params
+  local address before result commitment tx output vout after rows spent change params
+  local descriptor bitcoin_before bitcoin_after
   address=$(lab addresses bob | jq -er '.wallets.bob.onchain')
   before=$(lab balance bob)
   jq -e '.wallets.bob.total_sats == 75000' <<<"$before" >/dev/null
-  tx=$(core scantxoutset start "$(jq -nc --arg addr "$address" '["addr("+$addr+")"]')")
-  jq -e '.success and .total_amount == 0' <<<"$tx" >/dev/null
+  descriptor=$(jq -nc --arg addr "$address" '["addr("+$addr+")"]')
+  tx=$(core scantxoutset start "$descriptor")
+  bitcoin_before=$(jq -ser 'select(length == 1) | .[0] | select(.success == true) |
+    .total_amount | select(type == "number" and . == 0)' <<<"$tx")
   expect_lab_error ArkNetworkMismatch offboard-coop "$bob_input" 1BitcoinEaterAddressDontSendf59kuE 30000
   expect_lab_error ArkInvalidAmount offboard-coop "$bob_input" "$address" 100000
   params=$(http "$api" | jq -ce '{unilateralExitDelay,boardingExitDelay,fees}')
@@ -14,10 +17,15 @@ offboard() {
   wait_for "offboarding commitment in Core mempool" in_mempool "$commitment"
   mine 1
   tx=$(core getrawtransaction "$commitment" 1)
-  output=$(jq -ce --arg addr "$address" '.vout[] | select(.scriptPubKey.address == $addr and .value == 0.0003) |
-    {vout:.n, amount_sats:(.value * 1e8 | round)}' <<<"$tx")
-  core gettxout "$commitment" "$(jq -r .vout <<<"$output")" |
-    jq -e '.confirmations >= 1 and .value == 0.0003' >/dev/null
+  output=$(jq -ce --arg addr "$address" '[.vout[] | select(.scriptPubKey.address == $addr and .value == 0.0003)] |
+    select(length == 1) | .[0] | {vout:.n, amount_sats:(.value * 1e8 | round)}' <<<"$tx")
+  vout=$(jq -er .vout <<<"$output")
+  confirmed_utxo "$commitment" "$vout" 30000 >/dev/null
+  tx=$(core scantxoutset start "$descriptor")
+  bitcoin_after=$(jq -ser --arg tx "$commitment" --argjson vout "$vout" '
+    select(length == 1) | .[0] |
+    select(.success == true and (.unspents | length == 1 and .[0].txid == $tx and .[0].vout == $vout)) |
+    .total_amount | select(type == "number") | . * 1e8 | round | select(. == 30000)' <<<"$tx")
   after=$(lab balance bob)
   jq -e '.wallets.bob.confirmed_sats == 45000 and .wallets.bob.total_sats == 45000' <<<"$after" >/dev/null
   rows=$(lab list-vtxos bob)
@@ -27,10 +35,11 @@ offboard() {
     (.is_spent | not) and .amount_sats == 45000 and (.commitment_txids | index($tx)))' <<<"$rows")
   jq -n --arg address "$address" --argjson commitment "$(confirmed_tx "$commitment")" \
     --argjson output "$output" --argjson spent "$spent" --argjson change "$change" \
-    --argjson before "$before" --argjson after "$after" --argjson params "$params" '
+    --argjson before "$before" --argjson after "$after" --argjson params "$params" \
+    --argjson bitcoin_before_sats "$bitcoin_before" --argjson bitcoin_after_sats "$bitcoin_after" '
     {network:"regtest",method:"cooperative",$address,$commitment,$output,$spent,$change,$params,
       ark_before_sats:$before.wallets.bob.total_sats,ark_after_sats:$after.wallets.bob.total_sats,
-      bitcoin_before_sats:0,bitcoin_after_sats:$output.amount_sats,
-      user_fee_sats:($before.wallets.bob.total_sats - $after.wallets.bob.total_sats - $output.amount_sats),
+      $bitcoin_before_sats,$bitcoin_after_sats,
+      user_fee_sats:($before.wallets.bob.total_sats - $after.wallets.bob.total_sats - ($bitcoin_after_sats - $bitcoin_before_sats)),
       wrong_network:"PASSED",insufficient_input:"PASSED",unilateral_exit:"SKIPPED"}' > "$evidence/offboard.json"
 }

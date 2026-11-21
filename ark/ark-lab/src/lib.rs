@@ -10,12 +10,13 @@ use ark_client::{
 };
 use ark_core::server::Info;
 use bitcoin::{address::NetworkUnchecked, Address, Network, OutPoint, Txid};
-use blockchain::{RegtestBlockchain, ESPLORA};
+use blockchain::{esplora_url, RegtestBlockchain};
 use serde_json::{json, Value};
 use std::{future::Future, net::Ipv4Addr, path::Path, sync::Arc, time::Duration};
 use wallet_store::WalletStore;
 
 const OPERATOR: &str = "http://127.0.0.1:37070";
+const DOCKER_OPERATOR: &str = "http://arkd:7070";
 const TIMEOUT: Duration = Duration::from_secs(5);
 pub(crate) const ROUND_DEADLINE: Duration = Duration::from_secs(120);
 
@@ -73,9 +74,25 @@ pub enum Action {
     TransferSubmit(OutPoint, u64),
     Pending,
     TransferFinalize(Txid),
-    VerifySpent(OutPoint, u64),
+    VerifySpent(OutPoint),
     SettleVtxo(OutPoint),
     Offboard(OutPoint, Address<NetworkUnchecked>, u64),
+}
+
+fn operator_url_for(mode: Option<&str>) -> Result<&'static str> {
+    match mode {
+        None | Some("loopback") => Ok(OPERATOR),
+        Some("docker") => Ok(DOCKER_OPERATOR),
+        Some(_) => Err(LabError::NetworkMismatch),
+    }
+}
+
+fn operator_url() -> Result<&'static str> {
+    match std::env::var("ARK_LAB_NETWORK_MODE") {
+        Ok(mode) => operator_url_for(Some(mode.as_str())),
+        Err(std::env::VarError::NotPresent) => operator_url_for(None),
+        Err(std::env::VarError::NotUnicode(_)) => Err(LabError::NetworkMismatch),
+    }
 }
 
 pub(crate) async fn bounded_submission<T, E>(
@@ -107,7 +124,11 @@ async fn operator_info(port: u16) -> Result<Info> {
 }
 
 async fn query_operator_info(port: u16) -> Result<Info> {
-    let url = format!("http://{}:{port}", Ipv4Addr::LOCALHOST);
+    let url = if port == 37070 {
+        operator_url()?.to_string()
+    } else {
+        format!("http://{}:{port}", Ipv4Addr::LOCALHOST)
+    };
     let mut probe = ark_grpc::Client::new(url);
     let info = async {
         probe.connect().await?;
@@ -121,8 +142,10 @@ async fn query_operator_info(port: u16) -> Result<Info> {
 
 async fn connect(store: &WalletStore, create: bool) -> Result<SdkClient> {
     let identity = store.identity(create)?;
+    let operator = operator_url()?;
+    let esplora = esplora_url().map_err(|_| LabError::NetworkMismatch)?;
     let config = OfflineClientConfig {
-        ark_server_url: OPERATOR.into(),
+        ark_server_url: operator.into(),
         // No swap commands; do not inherit an upstream mainnet default.
         boltz_url: String::new(),
         boltz_referral_id: BoltzReferralId::Disabled,
@@ -134,7 +157,7 @@ async fn connect(store: &WalletStore, create: bool) -> Result<SdkClient> {
     };
     let blockchain =
         RegtestBlockchain::new().map_err(|_| LabError::Sdk("indexer configuration"))?;
-    let wallet = Wallet::new_from_xpriv(identity, Network::Regtest, ESPLORA)
+    let wallet = Wallet::new_from_xpriv(identity, Network::Regtest, esplora)
         .map_err(|_| LabError::Sdk("on-chain wallet configuration"))?;
     let client = OfflineClient::with_bip32(
         config,
@@ -270,6 +293,11 @@ pub async fn run(repo: &Path, action: Action, wallets: &[WalletId]) -> Result<Va
             Action::Balance => balance(&client).await?,
             Action::ListVtxos => vtxos(&client).await?,
             Action::Board(input) | Action::SettleVtxo(input) => {
+                RegtestBlockchain::new()
+                    .map_err(|_| LabError::IndexerUnavailable)?
+                    .require_regtest()
+                    .await
+                    .map_err(|_| LabError::IndexerUnavailable)?;
                 let mut rng = bitcoin::secp256k1::rand::thread_rng();
                 let (vtxos, boarding) = if matches!(action, Action::Board(_)) {
                     (&[][..], std::slice::from_ref(input))
@@ -283,15 +311,12 @@ pub async fn run(repo: &Path, action: Action, wallets: &[WalletId]) -> Result<Va
                 .await?;
                 json!({"input": input.to_string(), "commitment_txid": commitment})
             }
-            Action::TransferSubmit(input, sats) | Action::VerifySpent(input, sats) => {
+            Action::TransferSubmit(input, sats) => {
                 let bob_store = WalletStore::open(repo, WalletId::Bob.name(), false)?;
                 let bob = connect(&bob_store, false).await?;
-                if matches!(action, Action::TransferSubmit(..)) {
-                    transfer::submit(&client, &bob, *input, *sats).await?
-                } else {
-                    transfer::verify_spent(&client, &bob, *input, *sats).await?
-                }
+                transfer::submit(&client, &bob, *input, *sats).await?
             }
+            Action::VerifySpent(input) => transfer::verify_spent(&client, *input).await?,
             Action::Pending => transfer::pending(&client).await?,
             Action::TransferFinalize(txid) => transfer::finalize(&client, *txid).await?,
             Action::Offboard(input, address, sats) => {
@@ -340,5 +365,18 @@ mod tests {
         .await
         .unwrap_err();
         assert!(matches!(error, LabError::SubmissionUncertain));
+    }
+
+    #[test]
+    fn operator_endpoint_allowlists_loopback_and_docker_only() {
+        assert_eq!(operator_url_for(None).unwrap(), OPERATOR);
+        assert_eq!(operator_url_for(Some("loopback")).unwrap(), OPERATOR);
+        assert_eq!(operator_url_for(Some("docker")).unwrap(), DOCKER_OPERATOR);
+        for bad in ["", "mainnet", "https://arkade.example", "DOCKER"] {
+            assert!(matches!(
+                operator_url_for(Some(bad)),
+                Err(LabError::NetworkMismatch)
+            ));
+        }
     }
 }

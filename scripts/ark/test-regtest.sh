@@ -5,18 +5,21 @@ cd -- "$root"
 case "${1:---unit-only}" in
   --unit-only)
     [[ $# -le 1 ]] || fail "usage: ark:test [--unit-only | --e2e]"
-    exec cargo test --manifest-path ark/Cargo.toml --locked --lib --tests
+    bash scripts/ark/test-bootstrap-funding.sh
+    cd ark
+    exec cargo test --locked --lib --tests
     ;;
   --e2e) [[ $# == 1 ]] || fail "usage: ark:test --e2e" ;;
   *) fail "usage: ark:test [--unit-only | --e2e]" ;;
 esac
 
-cargo build --manifest-path ark/Cargo.toml --locked
+(cd ark && cargo build --locked)
 setup_engine
 setup_state
 assert_resources
 require_env
 require_running
+assert_host_networks all
 validate_chain
 validate_indexers || fail "indexers must be synchronized"
 valid_operator || fail "local regtest operator unavailable"
@@ -36,9 +39,10 @@ source "$root/scripts/ark/e2e-offboard.sh"
 matrix="$evidence/matrix.json"
 jq -n --arg genesis "$genesis" '
   {network:"regtest",$genesis,source:"live isolated stack",
-    stages:{boarding:"PENDING",transfer_and_client_restart:"PENDING",
+    stages:{boarding:"PENDING",boarding_operator_outage:"PENDING",transfer_and_client_restart:"PENDING",
       cooperative_offboard:"PENDING",stale_vtxo_and_renewal:"PENDING",
-      operator_unavailable:"PENDING",rpc_unavailable:"PENDING",indexer_unavailable:"PENDING",
+      operator_unavailable:"PENDING",operator_restart:"PENDING",
+      rpc_unavailable:"PENDING",indexer_unavailable:"PENDING",
       unilateral_exit:"SKIPPED",live_mutation_timeout:"SKIPPED"}}' > "$matrix"
 stage_set() {
   jq --arg stage "$1" --arg status "$2" '.stages[$stage]=$status' "$matrix" > "$matrix.next"
@@ -70,20 +74,44 @@ resume_service() {
 }
 offboard_address() { lab addresses bob | jq -er '.wallets.bob.onchain'; }
 
+restart_snapshot_ready() {
+  # The fixture expires leaves after 40s. Wait for both funded leaves to
+  # enter the recovery bucket before measuring persistence, so elapsed
+  # wall-clock time during a slow restart cannot change their classification.
+  lab list-vtxos | jq -e '.wallets | all(.alice, .bob;
+    [.[] | select(.is_spent | not)] | length == 1 and .[0].is_expired)' >/dev/null
+}
+
 operator_unavailable() {
-  local address
+  local address balance_before balance_after rows_before rows_after
   address=$(offboard_address)
+  wait_for "stable fixture balances after VTXO expiry" restart_snapshot_ready
+  balance_before=$(lab balance | jq -ceS '.wallets')
+  rows_before=$(lab list-vtxos | jq -ceS '.wallets')
+  jq -e '.alice.recoverable_sats == 125000 and .alice.total_sats == 125000 and
+    .bob.recoverable_sats == 45000 and .bob.total_sats == 45000' <<<"$balance_before" >/dev/null
+  jq -e '(.alice | length) > 0 and (.bob | length) > 0' <<<"$rows_before" >/dev/null
   stop_service ark_lab_arkd
   expect_lab_error ArkOperatorUnavailable offboard-coop "$bob_input" "$address" 30000
+  stage_set "$stage" PASSED
+  stage=operator_restart
   resume_service
   wait_for "operator restart" valid_operator
   wait_for "operator wallet restart" valid_wallet
+  balance_after=$(lab balance | jq -ceS '.wallets')
+  rows_after=$(lab list-vtxos | jq -ceS '.wallets')
+  [[ "$balance_before" == "$balance_after" ]] || fail "wallet balances changed across operator restart"
+  [[ "$rows_before" == "$rows_after" ]] || fail "VTXOs changed across operator restart"
+  jq --argjson balance "$balance_after" --argjson vtxos "$rows_after" \
+    '.operator_restart = {balances_unchanged:true,vtxos_unchanged:true,$balance,$vtxos}' \
+    "$matrix" > "$matrix.next"
+  mv -- "$matrix.next" "$matrix"
 }
 
 rpc_unavailable() {
   stop_service ark_lab_bitcoin
   if core getblockchaininfo >/dev/null 2>&1; then fail "expected dedicated Core RPC to fail"; fi
-  # This gate precedes funding/mining and never calls a wallet mutation.
+  # This is a read-only outage probe; never mine or fund with Core offline.
   resume_service
   wait_for "Core restart" core getblockchaininfo
   validate_chain

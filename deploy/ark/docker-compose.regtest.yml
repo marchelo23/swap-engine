@@ -28,6 +28,7 @@ services:
         zmqpubrawblock=tcp://0.0.0.0:28332
         zmqpubrawtx=tcp://0.0.0.0:28333
     ports: ["127.0.0.1:38443:18443"]
+    networks: [default, host_access]
     volumes: [bitcoin_data:/data]
   postgres:
     image: docker.io/library/postgres:16
@@ -54,6 +55,7 @@ services:
       NBXPLORER_POSTGRES: "User ID=postgres;Host=postgres;Database=nbxplorer"
       NBXPLORER_NOAUTH: "1"
     ports: ["127.0.0.1:32838:32838"]
+    networks: [default, host_access]
     volumes: [nbxplorer_data:/datadir]
   fulcrum:
     image: docker.io/cculianu/fulcrum:v2.1.1
@@ -112,6 +114,7 @@ services:
       LIGHTNING_ENABLED: "false"
     volumes: [mempool_cache:/backend/cache]
     ports: ["127.0.0.1:33000:8999"]
+    networks: [default, host_access]
   redis:
     image: docker.io/library/redis:7-alpine
     container_name: ark_lab_redis
@@ -164,12 +167,18 @@ services:
       ARKD_VTXO_TREE_EXPIRY: "40"
       ARKD_UNROLLED_VTXO_MIN_EXPIRY_MARGIN: "10"
     ports: ["127.0.0.1:37070:7070", "127.0.0.1:37071:7071"]
+    networks: [default, host_access]
     volumes: [arkd_data:/app/data]
 
 networks:
   default:
     name: swap_engine_ark_net
     internal: true
+    labels: *owner
+  # Docker needs a non-internal bridge to make the loopback bindings usable.
+  host_access:
+    name: swap_engine_ark_host_net
+    driver: bridge
     labels: *owner
 
 volumes:

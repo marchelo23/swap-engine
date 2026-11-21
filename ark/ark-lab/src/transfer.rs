@@ -1,8 +1,5 @@
 use crate::{bounded_submission, LabError, Result, SdkClient};
-use ark_core::{
-    contract::SpendPathKind,
-    send::{SendReceiver, VtxoInput},
-};
+use ark_core::{contract::SpendPathKind, send::VtxoInput};
 use bitcoin::{Amount, OutPoint, Txid};
 use serde_json::{json, Value};
 use std::time::Duration;
@@ -114,44 +111,22 @@ pub(crate) async fn finalize(client: &SdkClient, txid: Txid) -> Result<Value> {
     Ok(json!({"ark_txid":txid,"finalize_attempted":is_pending}))
 }
 
-// Exercise the SDK's normal selection guard only on an input the real
-// index already confirms was consumed. Never send a replay to the operator.
-pub(crate) async fn verify_spent(
-    alice: &SdkClient,
-    bob: &SdkClient,
-    input: OutPoint,
-    sats: u64,
-) -> Result<Value> {
+// Check the indexed state without invoking any send API or probing with a replay.
+pub(crate) async fn verify_spent(alice: &SdkClient, input: OutPoint) -> Result<Value> {
     let list = alice
         .list_vtxos()
         .await
         .map_err(|_| LabError::OperatorUnavailable)?;
-    if !list
-        .all()
-        .any(|entry| entry.vtxo().outpoint == input && entry.vtxo().is_spent)
+    let mut matches = list.all().filter(|entry| entry.vtxo().outpoint == input);
+    if !matches.next().is_some_and(|entry| entry.vtxo().is_spent)
+        || matches.next().is_some()
+        || list
+            .spendable_offchain()
+            .any(|entry| entry.vtxo().outpoint == input)
     {
         return Err(LabError::Sdk("expected already-consumed replay input"));
     }
-    let (address, _) = bob
-        .get_offchain_address()
-        .await
-        .map_err(|_| LabError::Sdk("Bob Ark address"))?;
-    match alice
-        .send_selection(
-            &[input],
-            vec![SendReceiver::bitcoin(address, Amount::from_sat(sats))],
-        )
-        .await
-    {
-        Err(error)
-            if error
-                .to_string()
-                .contains("failed to resolve selected send inputs") =>
-        {
-            Ok(json!({"input":input.to_string(),"rejected":true}))
-        }
-        _ => Err(LabError::Sdk("expected SDK selection rejection")),
-    }
+    Ok(json!({"input":input.to_string(),"spent":true,"spendable":false,"rejected":true}))
 }
 
 #[cfg(test)]

@@ -3,7 +3,7 @@ on:
   workflow_dispatch:
     inputs:
       run_e2e:
-        description: 'Run the isolated Bitcoin/Arkade regtest stack'
+        description: 'Run the isolated Dockerized Bitcoin/Arkade regtest stack'
         type: boolean
         default: false
 
@@ -14,48 +14,46 @@ jobs:
   ark-e2e:
     if: inputs.run_e2e
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: '24'
-      - name: Install repository Rust toolchain
-        run: rustup show
-        working-directory: ark
-      - name: Start and verify dedicated stack
+      - name: Build Ark Rust SDK container image
+        run: bash scripts/ark/docker-e2e.sh build
+      - name: Run offline unit and contract checks in Docker
+        run: bash scripts/ark/docker-e2e.sh unit
+      - name: Start and verify dedicated regtest stack (chain=regtest)
         run: |
-          npm run ark:start
-          npm run ark:status
-      - name: Run live regtest matrix
-        run: npm run ark:test -- --e2e
+          bash scripts/ark/docker-e2e.sh start
+          bash scripts/ark/docker-e2e.sh status
+      - name: Verify persistent wallets A and B
+        run: bash scripts/ark/docker-e2e.sh wallets
+      - name: Run live regtest E2E matrix and isolated arkd integration test
+        run: bash scripts/ark/docker-e2e.sh e2e
+      - name: Verify non-destructive restart persistence
+        run: bash scripts/ark/docker-e2e.sh restart-check
       - name: Stop stack without deleting state
         if: always()
-        run: npm run ark:stop
-      - name: Validate public E2E evidence before upload
-        if: always()
-        run: |
-          for file in matrix.json boarding.json transfer.json offboard.json renewal.json; do
-            path="data/ark/e2e/evidence/$file"
-            [ -f "$path" ] || continue
-            jq -e 'type == "object"' "$path" >/dev/null
-            if grep -Eqi '(mnemonic|xprv|private_key|rpcpassword|ark_lab_|-----begin)' "$path"; then
-              echo "Unexpected sensitive token in $path" >&2
-              exit 1
-            fi
-          done
-      - name: Upload only public evidence (no data directories or service logs)
-        if: always()
+        run: bash scripts/ark/docker-e2e.sh stop
+      - name: Build pinned Ark CI tools container (no secrets in context)
+        if: ${{ success() }}
+        run: bash scripts/ark/docker-ci-checks.sh build
+      - name: Validate public E2E evidence (fail-closed strict schema)
+        id: validate_evidence
+        if: ${{ success() }}
+        run: bash scripts/ark/docker-ci-checks.sh validate-e2e-evidence data/ark/docker-e2e/evidence data/ark/docker-e2e/evidence-approved
+      - name: Upload only approved public evidence (no data directories or service logs)
+        if: ${{ steps.validate_evidence.outcome == 'success' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ark-regtest-public-evidence
           retention-days: 14
-          if-no-files-found: warn
+          if-no-files-found: error
           path: |
-            data/ark/e2e/evidence/matrix.json
-            data/ark/e2e/evidence/boarding.json
-            data/ark/e2e/evidence/transfer.json
-            data/ark/e2e/evidence/offboard.json
-            data/ark/e2e/evidence/renewal.json
+            data/ark/docker-e2e/evidence-approved/matrix.json
+            data/ark/docker-e2e/evidence-approved/boarding.json
+            data/ark/docker-e2e/evidence-approved/transfer.json
+            data/ark/docker-e2e/evidence-approved/offboard.json
+            data/ark/docker-e2e/evidence-approved/renewal.json
+            data/ark/docker-e2e/evidence-approved/restart.json
