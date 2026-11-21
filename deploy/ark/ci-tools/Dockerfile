@@ -8,5 +8,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       jq \
     && rm -rf /var/lib/apt/lists/*
 
+COPY --chown=root:root --chmod=0555 validate-e2e-evidence.sh /usr/local/libexec/ark-validate-e2e-evidence.sh
+
 USER node
 WORKDIR /tmp
