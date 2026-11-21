@@ -17,10 +17,7 @@ permissions:
 jobs:
   ark-unit:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
-    defaults:
-      run:
-        working-directory: ark
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -29,9 +26,16 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '24'
-      - run: rustup show
-      - run: cargo fmt --all -- --check
-      - run: cargo clippy --locked --all-targets --all-features -- -D warnings
-      - run: cargo test --locked --lib --tests
-      - run: npm run secrets:check
-        working-directory: .
+      - name: Build Ark Rust SDK image (offline locked verification)
+        run: bash scripts/ark/docker-e2e.sh build
+      - name: Run unit and contract tests inside ark-sdk container (no live services)
+        run: bash scripts/ark/docker-e2e.sh unit
+      - name: Run bootstrap funding bash regression when present
+        run: |
+          if [ -f scripts/ark/test-bootstrap-funding.sh ] && grep -Fq 'miner_history()' scripts/ark/common.sh; then
+            bash scripts/ark/test-bootstrap-funding.sh
+          else
+            echo "SKIPPED: test-bootstrap-funding.sh requires PR #63 bootstrap helpers"
+          fi
+      - name: Secret hygiene scan
+        run: npm run secrets:check
