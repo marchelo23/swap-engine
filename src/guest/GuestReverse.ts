@@ -16,6 +16,7 @@ import { HoldInvoiceManager } from '../lightning/HoldInvoiceManager.js';
 import { updateSwapRevision } from '../core/SwapStateMachine.js';
 import type { Invoice } from '../lightning/LndClient.js';
 import type { GuestExecution } from './GuestExecution.js';
+import { MiningLockBusyError, withMiningLock } from '../mining/MiningLock.js';
 
 const hash = z.string().regex(/^[a-f0-9]{64}$/);
 const pubkey = z.string().regex(/^(02|03)[a-f0-9]{64}$/);
@@ -101,12 +102,14 @@ export class GuestReverse {
   private readonly storeFactory: GuestStoreFactory;
   private readonly now: () => number;
   private readonly execution?: GuestExecution;
+  private readonly lock: <T>(work: () => Promise<T>) => Promise<T>;
   private readonly queues = new Map<string, Promise<unknown>>();
   private timer?: ReturnType<typeof setInterval>;
 
   constructor(private readonly store: Store, policy: unknown, clients: GuestReverseClients,
     options: { preparation?: GuestPreparationFactory; broadcast?: (hex: string) => Promise<string>;
-      storeFactory?: GuestStoreFactory; execution?: GuestExecution } = {}) {
+      storeFactory?: GuestStoreFactory; execution?: GuestExecution;
+      lock?: <T>(work: () => Promise<T>) => Promise<T>; lockFile?: string } = {}) {
     this.policy = guestReversePolicySchema.parse(policy);
     if (this.policy.providerNode === this.policy.payerNode ||
       this.policy.routing.providerOrigin === this.policy.routing.payerOrigin ||
@@ -116,7 +119,9 @@ export class GuestReverse {
       this.policy.routing.providerOrigin !== clients.invoices.origin) throw new Error('Guest reverse endpoints or nodes differ');
     this.clients = clients; this.preparation = options.preparation ?? realPreparation;
     this.broadcast = options.broadcast; this.storeFactory = options.storeFactory ?? (directory => StoreFile.open(directory));
-    this.execution = options.execution; this.now = clients.now ?? Date.now; this.admission = new GuestAdmission(store, this.now);
+    this.execution = options.execution;
+    this.lock = options.lock ?? (<T>(work: () => Promise<T>) => withMiningLock(work, { lockFile: options.lockFile }));
+    this.now = clients.now ?? Date.now; this.admission = new GuestAdmission(store, this.now);
   }
 
   /** Step 1: capability-authenticated quote (existing admission primitive). */
@@ -234,47 +239,54 @@ export class GuestReverse {
       throw new GuestReverseError(409, 'GUEST_CLAIM_IN_PROGRESS');
     }
     return this.withRun(admissionId, row.runDirectory, async runStore => {
-      const swap = runStore.read().swaps[row.swapId!];
-      if (!swap || !swap.lockup || !['LOCKUP_BROADCAST', 'LOCKUP_CONFIRMED'].includes(swap.state) || swap.revision !== input.expectedRevision)
-        throw new GuestReverseError(409, 'GUEST_CLAIM_NOT_READY');
-      if (swap.clientClaimIntent) {
-        if (swap.clientClaimIntent.txid === txid && swap.clientClaimIntent.status === 'BROADCAST') {
-          await this.recordClaim(row, requestKey, fingerprint, txid, admission, 'BROADCAST');
-          return this.claimView(row, txid, swap.revision);
-        }
-        throw new GuestReverseError(409, 'GUEST_CLAIM_CONFLICT');
-      }
-      const manager = await this.assertAccepted(admission, swap);
-      this.verifyClaim(swap, admission, input.signedClaimHex);
-      const tip = await this.clients.tip();
-      if (!Number.isSafeInteger(tip) || tip > swap.contract.timeoutHeight - 10) throw new GuestReverseError(409, 'GUEST_CLTV_WINDOW_CLOSED');
-      const updated = await updateSwapRevision(runStore, swap.id, swap.revision, value => {
-        if (value.clientClaimIntent || value.state !== swap.state || !value.lockup) throw new GuestReverseError(409, 'GUEST_CLAIM_CONFLICT');
-        value.clientClaimIntent = { txid, destination: admission.destination, feeSats: value.quote.claimFeeSats, status: 'INTENT' };
-      });
-      await this.recordClaim(row, requestKey, fingerprint, txid, admission, 'INTENT');
       try {
-        this.verifyClaim(updated, admission, input.signedClaimHex);
-        const after = await this.clients.invoices.lookup(admission.paymentHash);
-        if (after.status !== 'PRESENT') throw new Error('invoice uncertain');
-        manager.assertAccepted(after.invoice, admission.paymentHash, updated.quote.invoiceSats, updated.contract.timeoutHeight, 40);
-        if (await this.clients.tip() > updated.contract.timeoutHeight - 10) throw new Error('claim window closed');
-        if (await this.broadcast!(input.signedClaimHex) !== txid) throw new Error('claim broadcast identity mismatch');
-      } catch {
-        await runStore.transaction(db => {
-          const value = db.swaps[updated.id];
-          if (value?.clientClaimIntent?.txid === txid && value.clientClaimIntent.status === 'INTENT') value.clientClaimIntent.status = 'UNKNOWN';
-        }).catch(() => {});
-        await this.recordClaim(row, requestKey, fingerprint, txid, admission, 'UNKNOWN').catch(() => {});
-        throw new GuestReverseError(503, 'GUEST_CLAIM_UNCERTAIN');
+        return await this.lock(async () => {
+          const swap = runStore.read().swaps[row.swapId!];
+          if (!swap || !swap.lockup || !['LOCKUP_BROADCAST', 'LOCKUP_CONFIRMED'].includes(swap.state) || swap.revision !== input.expectedRevision)
+            throw new GuestReverseError(409, 'GUEST_CLAIM_NOT_READY');
+          if (swap.clientClaimIntent) {
+            if (swap.clientClaimIntent.txid === txid && swap.clientClaimIntent.status === 'BROADCAST') {
+              await this.recordClaim(row, requestKey, fingerprint, txid, admission, 'BROADCAST');
+              return this.claimView(row, txid, swap.revision);
+            }
+            throw new GuestReverseError(409, 'GUEST_CLAIM_CONFLICT');
+          }
+          const manager = await this.assertAccepted(admission, swap);
+          this.verifyClaim(swap, admission, input.signedClaimHex);
+          const tip = await this.clients.tip();
+          if (!Number.isSafeInteger(tip) || tip > swap.contract.timeoutHeight - 10) throw new GuestReverseError(409, 'GUEST_CLTV_WINDOW_CLOSED');
+          const updated = await updateSwapRevision(runStore, swap.id, swap.revision, value => {
+            if (value.clientClaimIntent || value.state !== swap.state || !value.lockup) throw new GuestReverseError(409, 'GUEST_CLAIM_CONFLICT');
+            value.clientClaimIntent = { txid, destination: admission.destination, feeSats: value.quote.claimFeeSats, status: 'INTENT' };
+          });
+          await this.recordClaim(row, requestKey, fingerprint, txid, admission, 'INTENT');
+          try {
+            this.verifyClaim(updated, admission, input.signedClaimHex);
+            const after = await this.clients.invoices.lookup(admission.paymentHash);
+            if (after.status !== 'PRESENT') throw new Error('invoice uncertain');
+            manager.assertAccepted(after.invoice, admission.paymentHash, updated.quote.invoiceSats, updated.contract.timeoutHeight, 40);
+            if (await this.clients.tip() > updated.contract.timeoutHeight - 10) throw new Error('claim window closed');
+            if (await this.broadcast!(input.signedClaimHex) !== txid) throw new Error('claim broadcast identity mismatch');
+          } catch {
+            await runStore.transaction(db => {
+              const value = db.swaps[updated.id];
+              if (value?.clientClaimIntent?.txid === txid && value.clientClaimIntent.status === 'INTENT') value.clientClaimIntent.status = 'UNKNOWN';
+            }).catch(() => {});
+            await this.recordClaim(row, requestKey, fingerprint, txid, admission, 'UNKNOWN').catch(() => {});
+            throw new GuestReverseError(503, 'GUEST_CLAIM_UNCERTAIN');
+          }
+          const final = await updateSwapRevision(runStore, updated.id, updated.revision, value => {
+            if (value.clientClaimIntent?.txid !== txid || value.clientClaimIntent.status !== 'INTENT')
+              throw new GuestReverseError(409, 'GUEST_CLAIM_CONFLICT');
+            value.clientClaimIntent.status = 'BROADCAST';
+          });
+          await this.recordClaim(row, requestKey, fingerprint, txid, admission, 'BROADCAST');
+          return this.claimView(row, txid, final.revision);
+        });
+      } catch (error) {
+        if (error instanceof MiningLockBusyError) throw new GuestReverseError(503, 'GUEST_EXECUTION_LOCK_BUSY');
+        throw error;
       }
-      const final = await updateSwapRevision(runStore, updated.id, updated.revision, value => {
-        if (value.clientClaimIntent?.txid !== txid || value.clientClaimIntent.status !== 'INTENT')
-          throw new GuestReverseError(409, 'GUEST_CLAIM_CONFLICT');
-        value.clientClaimIntent.status = 'BROADCAST';
-      });
-      await this.recordClaim(row, requestKey, fingerprint, txid, admission, 'BROADCAST');
-      return this.claimView(row, txid, final.revision);
     });
   }
 

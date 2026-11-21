@@ -164,7 +164,7 @@ test('controlled guest execution uses the existing coordinator for fund/confirm/
       lockup.addOutput(htlc.output, BigInt(initial.quote.amountSats));
       const claim = createClaim({ contract: initial.contract, lockupTxHex: lockup.toHex(), vout: 0,
         destination: x.f.destination, feeSats: initial.quote.claimFeeSats, privateKey: x.f.claimKey.privateKey! }, x.f.preimage);
-      let invoiceState: Invoice['state'] = 'ACCEPTED'; let fundCalls = 0; let broadcastCalls = 0; let settleCalls = 0;
+      let invoiceState: Invoice['state'] = 'ACCEPTED'; let fundCalls = 0; let broadcastCalls = 0; let settleCalls = 0; let lockCalls = 0;
       const ledger = new Map<string, { hex: string; confirmations: number }>();
       const invoice = (): Invoice => ({ state: invoiceState, r_hash: Buffer.from(initial.contract.paymentHash, 'hex').toString('base64'),
         value: String(initial.quote.invoiceSats), amt_paid_sat: invoiceState === 'SETTLED' ? String(initial.quote.invoiceSats) : '0',
@@ -179,7 +179,7 @@ test('controlled guest execution uses the existing coordinator for fund/confirm/
         settle: async () => { settleCalls++; invoiceState = 'SETTLED'; },
         cancel: async () => {}, tip: async () => 100,
         confirmed: async txid => ledger.get(txid) ?? { hex: '', confirmations: 0 } };
-      const execution = controlledGuestExecution(() => ports);
+      const execution = controlledGuestExecution(() => ports, { lock: async work => { lockCalls++; return work(); } });
       let current = await execution.fund(run, initial, plan);
       assert.equal(current.state, 'LOCKUP_BROADCAST'); assert.equal(fundCalls, 1); assert.equal(broadcastCalls, 1);
       ledger.set(lockup.getId(), { hex: lockup.toHex(), confirmations: 1 });
@@ -193,6 +193,7 @@ test('controlled guest execution uses the existing coordinator for fund/confirm/
       current = await execution.markPaid(run, current, invoice()); assert.equal(current.clientPayment?.status, 'SUCCEEDED');
       current = await execution.complete(run, current, plan); assert.equal(current.state, 'COMPLETED');
       current = await execution.complete(run, current, plan); assert.equal(current.state, 'COMPLETED');
+      assert.ok(lockCalls >= 3);
     } finally { await run.close(); }
   } finally { await x.cleanup(); }
 });

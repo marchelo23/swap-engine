@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { mkdir, writeFile, readFile, chmod, lstat, copyFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { readinessFixture } from './readinessFixture.js';
 import { Store } from '../src/persistence/Store.js';
 import { SecretVault } from '../src/persistence/SecretVault.js';
@@ -17,6 +18,7 @@ import { SwapManager } from '../src/core/SwapManager.js';
 import { once } from 'node:events';
 import type { AddressInfo } from 'node:net';
 
+process.env.MINER_LOCK_FILE ??= join(tmpdir(), `lqwd-miner-lock-${process.pid}.lock`);
 const linux = process.platform === 'linux'; const password = 'synthetic-operator-backup-passphrase';
 async function lifecycleFixture() {
   const x = await readinessFixture(); const directory = join(x.f.directory, 'operator'); const backupDirectory = join(x.f.directory, 'backup');

@@ -22,7 +22,7 @@ const invoiceText = 'lnbcrt' + 'c'.repeat(30);
 
 async function fixture(options: { failAfterCreate?: boolean; noBroadcast?: boolean; broadcastFails?: boolean; tip?: number } = {}) {
   const f = await setup(); const runsDirectory = await privateTestDirectory('guest-runs'); const routing = routingFixture();
-  let tip = options.tip ?? 100; let invoiceState: Invoice['state'] = 'OPEN'; let calls = 0; let broadcasts = 0;
+  let tip = options.tip ?? 100; let invoiceState: Invoice['state'] = 'OPEN'; let calls = 0; let broadcasts = 0; let lockCalls = 0;
   const ledger = new Map<string, { hex: string; confirmations: number }>();
   const invoice = (): Invoice => ({ state: invoiceState, r_hash: Buffer.from(f.contract.paymentHash, 'hex').toString('base64'),
     value: String(GUEST_INVOICE_SATS), amt_paid_sat: invoiceState === 'SETTLED' ? String(GUEST_INVOICE_SATS) : '0', payment_request: invoiceText,
@@ -64,14 +64,15 @@ async function fixture(options: { failAfterCreate?: boolean; noBroadcast?: boole
     refundDestination: f.destination, funding: { txid: 'ab'.repeat(32), vout: 0, valueSats: 100000 },
     runsDirectory };
   const service = new GuestReverse(f.store, policy, clients, { preparation,
-    broadcast: options.noBroadcast ? undefined : broadcast });
+    broadcast: options.noBroadcast ? undefined : broadcast,
+    lock: async work => { lockCalls++; return work(); } });
   const token = randomBytes(32).toString('base64url'); const auth = `Bearer ${token}`;
   const quote = await service.quote(auth, 'guest-quote-key', { destination: f.destination, amountSats: GUEST_INVOICE_SATS,
     paymentHash: f.contract.paymentHash, claimPublicKey: f.contract.claimPublicKey });
   return { f, service, quote, auth, token, runsDirectory, ledger,
     prepare: (key = 'guest-prepare-key', commitment = 'ab'.repeat(32)) => service.prepare(quote.id, auth, key, { recoveryCommitment: commitment }),
     setInvoice: (state: Invoice['state']) => { invoiceState = state; }, setTip: (value: number) => { tip = value; },
-    calls: () => calls, broadcasts: () => broadcasts,
+    calls: () => calls, broadcasts: () => broadcasts, lockCalls: () => lockCalls,
     cleanup: async () => { await f.cleanup(); await rm(runsDirectory, { recursive: true, force: true }); } };
 }
 
@@ -165,7 +166,7 @@ test('client-signed claim is bound to the exact outpoint/destination/fee and bro
     const result = await x.service.submitClaim(x.quote.id, x.auth, 'claim-key',
       { signedClaimHex: seeded.claim.toHex(), expectedRevision: seeded.expectedRevision }) as any;
     assert.equal(result.status, 'CLAIM_BROADCAST_PENDING_CONFIRMATION'); assert.equal(result.claimTxid, seeded.claim.getId());
-    assert.equal(x.broadcasts(), 1);
+    assert.equal(x.broadcasts(), 1); assert.equal(x.lockCalls(), 1);
     const replay = await x.service.submitClaim(x.quote.id, x.auth, 'claim-key',
       { signedClaimHex: seeded.claim.toHex(), expectedRevision: seeded.expectedRevision }) as any;
     assert.equal(replay.claimTxid, seeded.claim.getId()); assert.equal(x.broadcasts(), 1);

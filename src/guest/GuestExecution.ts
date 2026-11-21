@@ -9,6 +9,7 @@ import { SwapCoordinator } from '../core/SwapCoordinator.js';
 import { transition, updateSwapRevision } from '../core/SwapStateMachine.js';
 import { HoldInvoiceManager } from '../lightning/HoldInvoiceManager.js';
 import { controlledReversePorts } from '../core/ControlledReversePorts.js';
+import { withMiningLock } from '../mining/MiningLock.js';
 
 /** Trusted execution seam for the guest watcher. It is constructed only by an
  * explicit operator wiring; the HTTP service and environment never install it. */
@@ -32,13 +33,17 @@ export function controlledPortsFactory(deps: ControlledDeps): GuestPortsFactory 
   return (store, swap, plan) => controlledReversePorts(deps.bitcoin, deps.provider, deps.payer, store, swap.id, plan, deps.input);
 }
 
+type ExecutionOptions = { lockFile?: string; lock?: <T>(work: () => Promise<T>) => Promise<T> };
+
 /** Uses the existing controlled-run coordinator. Funding, settlement and
- * completion are one-shot/durable; ambiguous outcomes become MANUAL_REVIEW. */
-export function controlledGuestExecution(portsFactory: GuestPortsFactory): GuestExecution {
+ * completion hold the same kernel flock as the DS-02 miner; ambiguous outcomes
+ * become MANUAL_REVIEW and are never retried by this execution helper. */
+export function controlledGuestExecution(portsFactory: GuestPortsFactory, options: ExecutionOptions = {}): GuestExecution {
   const coordinator = (store: Store, swap: Swap, plan: ReverseTestPlan) =>
     new SwapCoordinator(store, portsFactory(store, swap, plan));
+  const lock = options.lock ?? (<T>(work: () => Promise<T>) => withMiningLock(work, { lockFile: options.lockFile }));
   return {
-    async fund(store, swap, plan) {
+    async fund(store, swap, plan) { return lock(async () => {
       let current = swap;
       if (!current.clientPayment) current = await updateSwapRevision(store, current.id, current.revision, value => {
         if (value.state !== 'INVOICE_CREATED' || value.clientPayment) throw stopped();
@@ -46,9 +51,10 @@ export function controlledGuestExecution(portsFactory: GuestPortsFactory): Guest
       });
       if (current.state !== 'INVOICE_CREATED' || current.pendingAction || current.lockup || current.fundingIntent) throw stopped();
       return coordinator(store, current, plan).fundAccepted(current.id, current.revision);
-    },
+    }); },
     async confirm(store, swap, plan) { return coordinator(store, swap, plan).confirmLockup(swap.id); },
-    async settle(store, swap, plan, claimTxid) { return coordinator(store, swap, plan).observeClaim(swap.id, claimTxid, swap.revision); },
+    async settle(store, swap, plan, claimTxid) { return lock(() =>
+      coordinator(store, swap, plan).observeClaim(swap.id, claimTxid, swap.revision)); },
     async markPaid(store, swap, invoice) {
       const manager = new HoldInvoiceManager({ lookup: async () => invoice,
         settle: async () => { throw new Error('Guest watcher cannot settle directly'); },
@@ -59,7 +65,7 @@ export function controlledGuestExecution(portsFactory: GuestPortsFactory): Guest
         value.clientPayment.status = 'SUCCEEDED'; value.clientPayment.feeSats = 0;
       });
     },
-    async complete(store, swap, plan) { return coordinator(store, swap, plan).complete(swap.id); },
+    async complete(store, swap, plan) { return lock(() => coordinator(store, swap, plan).complete(swap.id)); },
     async expire(store, swap) {
       return updateSwapRevision(store, swap.id, swap.revision, value => {
         if (value.state !== 'INVOICE_CREATED' || value.lockup || value.fundingIntent || value.pendingAction || value.clientClaimIntent) throw stopped();
