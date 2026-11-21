@@ -23,19 +23,13 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: '24'
       - name: Build Ark Rust SDK image (offline locked verification)
         run: bash scripts/ark/docker-e2e.sh build
       - name: Run unit and contract tests inside ark-sdk container (no live services)
         run: bash scripts/ark/docker-e2e.sh unit
-      - name: Run bootstrap funding bash regression when present
-        run: |
-          if [ -f scripts/ark/test-bootstrap-funding.sh ] && grep -Fq 'miner_history()' scripts/ark/common.sh; then
-            bash scripts/ark/test-bootstrap-funding.sh
-          else
-            echo "SKIPPED: test-bootstrap-funding.sh requires PR #63 bootstrap helpers"
-          fi
-      - name: Secret hygiene scan
-        run: npm run secrets:check
+      - name: Build pinned Ark CI tools container (no secrets in context)
+        run: bash scripts/ark/docker-ci-checks.sh build
+      - name: Run bootstrap funding bash regression inside pinned container (offline, streamed inputs)
+        run: bash scripts/ark/docker-ci-checks.sh bootstrap-regression --if-present
+      - name: Run secret hygiene scan inside pinned container (offline, full history stream)
+        run: bash scripts/ark/docker-ci-checks.sh secrets-check
