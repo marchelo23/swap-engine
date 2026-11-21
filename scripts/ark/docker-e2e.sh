@@ -170,9 +170,46 @@ compose_build_env() {
     "${compose_prefix[@]}" -p "$project" -f "$compose_file" "$@"
 }
 
+# List existing containers/volumes for this exact instance only (after
+# assert_resources verified ownership). Avoids Podman 4.3 multi-label filter ORing.
+owned_containers() {
+  local mode=${1:-all} name listing full
+  if [[ "$mode" == running ]]; then
+    listing=$(docker ps --format '{{.Names}}')
+  else
+    listing=$(docker ps -a --format '{{.Names}}')
+  fi
+  for name in "${services[@]}"; do
+    full="${container_prefix}_$name"
+    grep -Fxq "$full" <<<"$listing" || continue
+    printf '%s\n' "$full"
+  done
+}
+
+owned_container_ids() {
+  local line name
+  while IFS= read -r line; do
+    [[ -z "$line" ]] && continue
+    name=${line%%=*}
+    if [[ " ${services[*]/#/${container_prefix}_} " == *" $name "* ]]; then
+      printf '%s\n' "$line"
+    fi
+  done < <(docker ps -a --format '{{.Names}}={{.ID}}') | sort
+}
+
+owned_volumes() {
+  local name listing full
+  listing=$(docker volume ls --format '{{.Name}}')
+  for name in "${volumes[@]}"; do
+    full="${res_prefix}_$name"
+    grep -Fxq "$full" <<<"$listing" || continue
+    printf '%s\n' "$full"
+  done | sort
+}
+
 require_running() {
   local name running
-  running=$(docker ps --filter "label=$owner_label=$root" --filter "label=$lab_label=docker-e2e" --filter "label=com.docker.compose.project=$project" --format '{{.Names}}')
+  running=$(owned_containers running)
   for name in "${services[@]}"; do
     [[ "$name" == mempool_mariadb ]] && continue
     grep -Fxq "${container_prefix}_$name" <<<"$running" || fail "${container_prefix}_$name not running"
@@ -422,8 +459,7 @@ cmd_start() {
   assert_resources
 
   if [[ ! -e "$env_file" && ! -L "$env_file" ]]; then
-    [[ -z $(docker ps -a --filter "label=$owner_label=$root" --filter "label=$lab_label=docker-e2e" --filter "label=com.docker.compose.project=$project" --format '{{.Names}}') &&
-       -z $(docker volume ls --filter "label=$owner_label=$root" --filter "label=$lab_label=docker-e2e" --filter "label=com.docker.compose.project=$project" --format '{{.Name}}') ]] ||
+    [[ -z $(owned_containers all) && -z $(owned_volumes) ]] ||
       fail "restore $env_file from your private backup before starting"
     local tmp name value
     tmp=$(mktemp "$state/compose.env.XXXXXXXX")
@@ -908,7 +944,7 @@ cmd_stop() {
   [[ -e "$env_file" ]] || exit 0
   require_env
   local existing i name
-  existing=$(docker ps --filter "label=$owner_label=$root" --filter "label=$lab_label=docker-e2e" --filter "label=com.docker.compose.project=$project" --format '{{.Names}}')
+  existing=$(owned_containers running)
   for ((i=${#services[@]}-1; i>=0; i--)); do
     name="${container_prefix}_${services[i]}"
     if grep -Fxq "$name" <<<"$existing"; then
@@ -916,7 +952,7 @@ cmd_stop() {
     fi
   done
   local remaining
-  remaining=$(docker ps --filter "label=$owner_label=$root" --filter "label=$lab_label=docker-e2e" --filter "label=com.docker.compose.project=$project" --format '{{.Names}}')
+  remaining=$(owned_containers running)
   [[ -z "$remaining" ]] || fail "owned containers still running after stop: $remaining"
   printf 'Stopped all owned containers for %s (non-destructive; containers and volumes preserved).\n' "$project"
 }
@@ -944,10 +980,8 @@ cmd_restart_check() {
     '{addresses:$addr.wallets, balance:$bal.wallets, vtxos:$vtxo.wallets}' | sdk_jq -ceS '.')
   e2e_bal_before=$(lab_e2e balance | sdk_jq -ceS '.wallets')
   e2e_vtxo_before=$(lab_e2e list-vtxos | sdk_jq -ceS '.wallets')
-  cids_before=$(docker ps -a --filter "label=$owner_label=$root" --filter "label=$lab_label=docker-e2e" --filter "label=com.docker.compose.project=$project" \
-    --format '{{.Names}}={{.ID}}' | sort)
-  vols_before=$(docker volume ls --filter "label=$owner_label=$root" --filter "label=$lab_label=docker-e2e" --filter "label=com.docker.compose.project=$project" \
-    --format '{{.Name}}' | sort)
+  cids_before=$(owned_container_ids)
+  vols_before=$(owned_volumes)
 
   # Full non-destructive stack stop and restart via subshell calls so locks release cleanly.
   bash "$0" stop
@@ -961,10 +995,8 @@ cmd_restart_check() {
     '{addresses:$addr.wallets, balance:$bal.wallets, vtxos:$vtxo.wallets}' | sdk_jq -ceS '.')
   e2e_bal_after=$(lab_e2e balance | sdk_jq -ceS '.wallets')
   e2e_vtxo_after=$(lab_e2e list-vtxos | sdk_jq -ceS '.wallets')
-  cids_after=$(docker ps -a --filter "label=$owner_label=$root" --filter "label=$lab_label=docker-e2e" --filter "label=com.docker.compose.project=$project" \
-    --format '{{.Names}}={{.ID}}' | sort)
-  vols_after=$(docker volume ls --filter "label=$owner_label=$root" --filter "label=$lab_label=docker-e2e" --filter "label=com.docker.compose.project=$project" \
-    --format '{{.Name}}' | sort)
+  cids_after=$(owned_container_ids)
+  vols_after=$(owned_volumes)
 
   [[ "$status_before" == "$status_after" ]] || fail "stack status changed across full restart"
   [[ "$normal_before" == "$normal_after" ]] || fail "normal wallets A/B changed across full restart"
