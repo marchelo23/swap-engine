@@ -3,6 +3,7 @@ source "$(dirname -- "${BASH_SOURCE[0]}")/common.sh"
 setup_engine
 setup_state
 assert_resources
+assert_host_networks existing
 check_ports
 
 if [[ ! -e "$env_file" && ! -L "$env_file" ]]; then
@@ -33,7 +34,6 @@ if ! core listwallets | jq -e 'index("ark-lab-miner") != null' >/dev/null; then
     core -named createwallet wallet_name=ark-lab-miner load_on_startup=true >/dev/null
   fi
 fi
-miner() { core -rpcwallet=ark-lab-miner "$@"; }
 mine() {
   local address
   address=$(miner getnewaddress) || return
@@ -65,25 +65,8 @@ unset password
 wait_for "operator wallet sync" valid_wallet
 wait_for "regtest operator" valid_operator
 
-funding_count() {
-  miner listtransactions '*' 1000 |
-    jq -er '[.[] | select(.comment == "ark-lab-operator-bootstrap" and
-      .confirmations >= 0 and (.abandoned | not)) | .txid] | unique | length'
-}
-count=$(funding_count)
-if (( count > 0 && count < 21 )) || [[ $(wallet_total) == 0 && "$count" == 0 ]]; then
-  address=$(admin_get wallet/address | jq -er '.address | select(startswith("bcrt1"))')
-  # NBXplorer may return the same unused address repeatedly. Distinct faucet
-  # transactions also give the fee estimator history. Resume incomplete runs
-  # using the persisted transaction comments in the miner wallet.
-  for ((i=count; i<21; i++)); do
-    miner sendtoaddress "$address" 1 ark-lab-operator-bootstrap >/dev/null
-  done
-fi
-if miner listtransactions '*' 1000 |
-  jq -e 'any(.comment == "ark-lab-operator-bootstrap" and .confirmations == 0 and (.abandoned | not))' >/dev/null; then
-  mine 1
-fi
+source "$root/scripts/ark/bootstrap-funding.sh"
+bootstrap_funding
 funded() { wallet_total | jq -e '. > 0'; }
 wait_for "funded operator wallet" funded
 printf '%s\n' '{"fees":{"offchainInputFee":"0.0","onchainInputFee":"0.0","offchainOutputFee":"0.0","onchainOutputFee":"0.0"}}' |

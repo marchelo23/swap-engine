@@ -16,7 +16,7 @@ npm run ark:stop
 
 The stack binds **only** `127.0.0.1`: Core RPC `38443`, NBXplorer `32838`,
 Esplora `33000`, operator `37070`, and operator admin `37071`. Keep these ports
-free; the scripts reject another worktree's containers, network and volumes.
+free; the scripts reject another worktree's containers, networks and volumes.
 Do not expose admin/indexers to untrusted local users. See
 [operator lifecycle](operator-regtest.md) for more on isolation and readiness.
 
@@ -26,17 +26,24 @@ The E2E harness claims `data/ark/e2e/` once, before mutation. It uses fresh
 private wallet identities under `data/ark/e2e/fixture/data/ark/wallets/`, not
 the two normal CLI wallets. The isolated Core miner funds the Alice fixture
 with 200,000 sats, mines one block, waits for indexers, and joins one Ark batch
-with that **specific** confirmed boarding input. A second mined block confirms
-the batch commitment. In this fixture the operator sets all intent fees to
+with that **specific** confirmed boarding input. Before joining, the harness
+tries that outpoint with arkd stopped, proves the original UTXO is still
+unspent and the miner has only that one funding transaction for the address,
+then starts arkd and boards the original input. A second mined block confirms
+the batch commitment and the harness checks that it spent that input. In
+this fixture the operator sets all intent fees to
 zero; separate Bitcoin mining fees are read from Core (funding and each
 commitment), not subtracted from an off-chain balance by inference.
 
 Alice submits 75,000 sats to Bob via Ark (not Lightning), without finalizing.
-A new CLI process observes that exact pending TXID and finalizes it. Retrying
+The harness discards the submit acknowledgement; a new CLI process discovers
+the sole pending TXID, then finalizes it without a new submission. Retrying
 finalization only queries the operator once there is nothing left to finalize;
 the harness checks the final balances (125,000/75,000), TXID and VTXO ancestry,
-rejects a replay of the original consumed input, and checks the same snapshot
-in fresh processes. This is a finalized **Ark preconfirmation**, not a
+proves exactly one input was consumed and one Bob VTXO was credited, checks
+that the spent input is absent from the spendable set without sending a
+replay, and compares the same snapshot in fresh processes. This is a
+finalized **Ark preconfirmation**, not a
 Bitcoin confirmation; Bob's 75,000-sat VTXO is then used in a cooperative
 offboard batch. Independent of that transfer, the harness detects an expired
 Alice change VTXO, rejects it for payment, and renews the original into a
@@ -60,8 +67,9 @@ confirmed batch leaf.
   Do not create a replacement payment while the original is uncertain.
 - **Cooperative exit:** Bob requests a 30,000-sat output to a fresh `bcrt1`
   address in the operator's next batch, with change back to Ark (45,000 sats
-  in this fixture). Core validates the exact output and the commitment
-  confirmation. This output has ordinary wallet spending conditions, not an
+  in this fixture). Core validates the exact unspent output and commitment
+  confirmation; a second `scantxoutset` measures the resulting balance.
+  This output has ordinary wallet spending conditions, not an
   Ark unilateral CSV wait. After a timeout, check that exact destination on
   Core and the original VTXO's `settled_by`/spent status before taking action.
 - **Unilateral rescue (not executed, not exposed in this CLI):** The pinned
@@ -80,8 +88,10 @@ confirmed batch leaf.
   run `ark:start` to resume non-destructively. Do not substitute other
   RPC/indexer endpoints. Harness outage tests stop only the lab's operator,
   Core and Esplora separately, then restart each; they exercise pre-submit
-  guards, not a live mid-submit delay. The stalled submission test in the
-  Rust suite is synthetic.
+  guards, not a live mid-submit delay. For the funded operator restart
+  comparison, the harness waits for the live leaves to reach a stable
+  balance bucket before comparing full balances and VTXOs. The stalled
+  submission test in the Rust suite is synthetic.
 - **Backup:** Stop the stack and clients before copying its private state
   and owned persistent volumes. Preserve `compose.env`, wallet directories
   (including mnemonic and SQLite), and the original attempt fence. Do not
@@ -114,8 +124,8 @@ signing material, transactions' signatures, and logs.
 
 | Check | Layer | What counts as evidence |
 | --- | --- | --- |
-| Boarding, Ark transfer/restart/replay, cooperative exit, stale renewal | Live | TXIDs, Core heights/block hashes and fees, VTXO outpoints, balances |
-| Operator, Core RPC and Esplora outage | Live | Dedicated service stopped, request fails closed before mutation, readiness restored |
+| Boarding, Ark transfer/acknowledgement loss, cooperative exit, stale renewal | Live | TXIDs, Core heights/block hashes and fees, VTXO outpoints, balances |
+| Operator, Core RPC and Esplora outage | Live | Dedicated service stopped, request fails closed before mutation, readiness restored; funded fixture balances and VTXOs identical across operator restart |
 | Offboard submission timeout | Unit / simulated | A stalled future produces `ArkSubmissionUncertain`; live mid-mutation timeout `SKIPPED` |
 | Unilateral exit | Not run | `SKIPPED`; no confirmed unroll or rescue TXID |
 

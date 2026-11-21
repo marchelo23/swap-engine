@@ -13,7 +13,11 @@ api=http://127.0.0.1:37070/v1/info
 admin=http://127.0.0.1:37071/v1/admin
 explorer=http://127.0.0.1:33000/api
 nbx=http://127.0.0.1:32838/v1/cryptos/BTC/status
-services=(bitcoin postgres nbxplorer fulcrum mempool_mariadb mempool_api mempool_web redis arkd_wallet arkd_signer arkd)
+services=(bitcoin postgres nbxplorer fulcrum mempool_mariadb mempool_api redis arkd_wallet arkd_signer arkd)
+host_services=(bitcoin nbxplorer mempool_api arkd)
+# The API now serves Esplora directly. Recognize the old proxy only for
+# ownership checks and shutdown on existing labs; never start or require it.
+managed_services=("${services[@]}" mempool_web)
 volumes=(bitcoin_data postgres_data nbxplorer_data fulcrum_data mariadb_data mempool_cache wallet_data arkd_data)
 
 fail() { printf 'Ark regtest: %s\n' "$*" >&2; exit 1; }
@@ -64,14 +68,35 @@ assert_owner() {
 assert_resources() {
   local name members
   assert_owner network swap_engine_ark_net
-  for name in "${services[@]}"; do assert_owner container "ark_lab_$name"; done
+  assert_owner network swap_engine_ark_host_net
+  for name in "${managed_services[@]}"; do assert_owner container "ark_lab_$name"; done
   for name in "${volumes[@]}"; do assert_owner volume "swap_engine_ark_$name"; done
   members=$(docker ps -a --filter "label=com.docker.compose.project=$project" --format '{{.Names}}')
   while IFS= read -r name; do
     [[ -z "$name" ]] && continue
-    [[ " ${services[*]/#/ark_lab_} " == *" $name "* ]] ||
+    [[ " ${managed_services[*]/#/ark_lab_} " == *" $name "* ]] ||
       fail "unexpected container $name in project $project"
   done <<<"$members"
+}
+
+# --no-recreate intentionally preserves existing containers. Detect a
+# pre-split lab before treating its loopback endpoints as ready.
+assert_host_networks() {
+  local mode name existing networks
+  mode=$1
+  existing=$(docker ps -a --format '{{.Names}}') || fail "cannot list lab containers"
+  for name in "${host_services[@]/#/ark_lab_}"; do
+    if ! grep -Fxq "$name" <<<"$existing"; then
+      [[ "$mode" == existing ]] && continue
+      fail "$name is missing"
+    fi
+    networks=$(docker container inspect --format \
+      '{{range $name, $_ := .NetworkSettings.Networks}}{{println $name}}{{end}}' "$name") ||
+      fail "cannot inspect lab networks for $name"
+    grep -Fxq swap_engine_ark_host_net <<<"$networks" &&
+      grep -Fxq swap_engine_ark_net <<<"$networks" ||
+      fail "$name requires the host bridge migration in docs/ark/operator-regtest.md"
+  done
 }
 
 require_env() {
@@ -124,7 +149,7 @@ require_running() {
   local name running
   running=$(docker ps --filter "label=$owner_label=$root" --format '{{.Names}}')
   for name in "${services[@]}"; do
-    [[ "$name" == mempool_mariadb || "$name" == mempool_web ]] && continue
+    [[ "$name" == mempool_mariadb ]] && continue
     grep -Fxq "ark_lab_$name" <<<"$running" || fail "ark_lab_$name not running"
   done
 }
@@ -134,6 +159,36 @@ core() {
     password=$(printf "%s\n" "$BITCOIN_EXTRA_ARGS" | sed -n "s/^rpcpassword=//p")
     exec bitcoin-cli -regtest -rpcuser=ark-lab -rpcpassword="$password" "$@"
   ' sh "$@"
+}
+
+miner() { core -rpcwallet=ark-lab-miner "$@"; }
+
+# Core permits an empty response for a spent/unknown outpoint. Require
+# exactly one nonempty, confirmed UTXO and propagate an actual RPC failure.
+confirmed_utxo() {
+  local txid=$1 vout=$2 sats=$3 response
+  response=$(core gettxout "$txid" "$vout") || return
+  jq -se --argjson sats "$sats" '
+    select(length == 1) | .[0] |
+    select(type == "object" and length > 0 and
+      (.confirmations | type == "number" and . >= 1) and
+      (.value | type == "number" and (. * 1e8 | round) == $sats))' <<<"$response"
+}
+
+# Inspect all wallet pages, including abandoned/conflicted rows. Callers must
+# decide what is safe; do not turn RPC or schema failures into an empty list.
+miner_history() {
+  local filter=$1 key=$2 page length skip=0
+  while :; do
+    page=$(miner listtransactions '*' 1000 "$skip" false) || return
+    length=$(jq -ser '
+      select(length == 1) | .[0] |
+      select(type == "array" and length <= 1000 and all(.[]; type == "object" and (.category | type == "string"))) |
+      length' <<<"$page") || return
+    jq -c --arg key "$key" "$filter" <<<"$page" || return
+    if (( length < 1000 )); then break; fi
+    skip=$((skip + length))
+  done
 }
 
 http() { curl -q --noproxy '*' --silent --fail --max-time 5 "$@"; }
@@ -188,6 +243,7 @@ wallet_total() {
 report_status() {
   local tip height op wallet balance db
   require_running
+  assert_host_networks all
   validate_chain
   validate_indexers || fail "NBXplorer or Esplora not synced"
   db=$(compose exec -T postgres psql -U postgres -Atc \
