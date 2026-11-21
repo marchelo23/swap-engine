@@ -122,6 +122,30 @@ test('guest watcher is inert without an injected controlled execution', async ()
   } finally { await x.cleanup(); }
 });
 
+test('recovery reconciles an ambiguous funding broadcast from the exact confirmed lockup', async () => {
+  const x = await fixture({ withExecution: true }); try {
+    const seeded = await seedLockup(x, { claim: true });
+    const run = await Store.open(join(x.runsDirectory, x.quote.id));
+    try {
+      await run.transaction(db => {
+        const swap = db.swaps[seeded.swapId]!; const lockup = swap.lockup!;
+        swap.fundingIntent = { txid: 'ab'.repeat(32), vout: 0, valueSats: 100000, scriptPubKey: '00',
+          changeAddress: x.f.destination, principalSats: swap.quote.amountSats, maxFeeSats: 1000,
+          signedHex: lockup.hex, fundingTxid: lockup.txid, fundingVout: lockup.vout };
+        delete swap.lockup; delete swap.claimTxid; delete swap.clientClaimIntent;
+        swap.state = 'MANUAL_REVIEW'; swap.pendingAction = 'BROADCAST_LOCKUP'; swap.revision++;
+      });
+    } finally { await run.close(); }
+    x.ledger.set(seeded.lockup.getId(), { hex: seeded.lockup.toHex(), confirmations: 1 });
+    await x.service.runOnce();
+    const after = await Store.open(join(x.runsDirectory, x.quote.id));
+    try { const swap = after.read().swaps[seeded.swapId]!;
+      assert.equal(swap.state, 'LOCKUP_CONFIRMED'); assert.equal(swap.lockup?.txid, seeded.lockup.getId()); }
+    finally { await after.close(); }
+    assert.equal(x.actions.includes('fund') || x.actions.includes('settle'), false);
+  } finally { await x.cleanup(); }
+});
+
 test('watcher funds once, confirms the lockup and never repeats a financial action', async () => {
   const x = await fixture({ withExecution: true }); try {
     await x.prepare(); x.setInvoice('ACCEPTED');
@@ -205,6 +229,7 @@ test('controlled guest execution uses the existing coordinator for fund/confirm/
 test('multiple pending swaps update one durable timer pause and terminal swaps release it', async () => {
   const x = await fixture(); try {
     await x.prepare('prepare-1');
+    await x.f.store.transaction(db => { for (const reservation of Object.values(db.guestFundingReservations ?? {})) reservation.status = 'RELEASED'; });
     x.setTip(105);
     const token2 = randomBytes(32).toString('base64url'); const auth2 = `Bearer ${token2}`;
     const quote2 = await x.service.quote(auth2, 'guest-quote-key-2', {
@@ -243,5 +268,43 @@ test('RPC-unavailable reconciliation keeps a conservative pause marker and perfo
     const entries = Object.values(paused.activeSwapPolicy.swaps) as any[];
     assert.ok(entries.some(entry => entry.state === 'UNKNOWN' || entry.state === 'LOCKUP_CONFIRMED' || entry.state === 'CLAIM_DETECTED'));
     assert.deepEqual(x.actions, []);
+  } finally { await x.cleanup(); }
+});
+
+test('a confirmed claim is not settled after the accepted LN HTLC deadline', async () => {
+  const x = await fixture({ withExecution: true }); try {
+    const seeded = await seedLockup(x, { claim: true }); x.setTip(205);
+    await x.service.runOnce();
+    assert.equal(x.actions.includes('settle'), false);
+    const run = await Store.open(join(x.runsDirectory, x.quote.id));
+    try { assert.equal(run.read().swaps[seeded.swapId]!.state, 'MANUAL_REVIEW'); } finally { await run.close(); }
+  } finally { await x.cleanup(); }
+});
+
+test('evidence-only recovery settles a confirmed ambiguous claim without rebroadcast', async () => {
+  const x = await fixture({ withExecution: true }); try {
+    const seeded = await seedLockup(x, { claim: true });
+    const run = await Store.open(join(x.runsDirectory, x.quote.id));
+    try { await run.transaction(db => { const swap = db.swaps[seeded.swapId]!;
+      swap.state = 'MANUAL_REVIEW'; swap.clientClaimIntent!.status = 'UNKNOWN'; swap.revision++; }); }
+    finally { await run.close(); }
+    await x.service.runOnce();
+    assert.ok(x.actions.includes('settle'));
+    const status = await x.service.status(x.quote.id, x.auth) as any;
+    assert.notEqual(status.status, 'COMPLETED');
+  } finally { await x.cleanup(); }
+});
+
+test('recovery completes an already-settled invoice with a confirmed exact claim', async () => {
+  const x = await fixture({ withExecution: true }); try {
+    const seeded = await seedLockup(x, { claim: true });
+    const run = await Store.open(join(x.runsDirectory, x.quote.id));
+    try { await run.transaction(db => { const swap = db.swaps[seeded.swapId]!; swap.state = 'MANUAL_REVIEW'; swap.revision++; }); }
+    finally { await run.close(); }
+    x.setInvoice('SETTLED');
+    await x.service.runOnce();
+    assert.ok(x.actions.includes('markPaid')); assert.ok(x.actions.includes('complete'));
+    const status = await x.service.status(x.quote.id, x.auth) as any;
+    assert.equal(status.status, 'COMPLETED');
   } finally { await x.cleanup(); }
 });

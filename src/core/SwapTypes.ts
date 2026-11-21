@@ -36,6 +36,8 @@ export type Database = { schema: 1; quotes: Record<string, Quote>; swaps: Record
     timeoutHeight?: number; createdAt: number; updatedAt: number;
     claim?: { requestKey: string; fingerprint: string; txid: string; destination: string; feeSats: number;
       status: 'INTENT' | 'BROADCAST' | 'UNKNOWN' } }>;
+  guestFundingReservations?: Record<string, { admissionId: string; outpoint: string;
+    status: 'RESERVED' | 'RELEASED'; createdAt: number; updatedAt: number }>;
   ownedPreparations?: Record<string, { ownerId: string; fingerprint: string; attemptId: string; createdAt: number;
     sourceAmountSats?: number;
     status: 'INTENT' | 'READY' | 'UNKNOWN' | 'COMPLETED' | 'EXPIRED' | 'REJECTED'; swapId?: string;

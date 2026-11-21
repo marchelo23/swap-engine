@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from 'node:crypto';
+﻿import { createHash, randomUUID } from 'node:crypto';
 import { mkdir } from 'node:fs/promises';
 import { isAbsolute, join } from 'node:path';
 import { Transaction, address, networks } from 'bitcoinjs-lib';
@@ -12,8 +12,9 @@ import { preparationSpecSchema, preparationDigest, type PreparationSpec, type Pr
 import { createLndReversePreparation } from '../core/LndReversePreparation.js';
 import { reverseRoutingSchema, type ReverseTestPlan } from '../core/ReverseTestPlan.js';
 import { verifyHtlcSpend } from '../bitcoin/SpendEvidence.js';
+import { buildHtlc } from '../bitcoin/HtlcBuilder.js';
 import { HoldInvoiceManager } from '../lightning/HoldInvoiceManager.js';
-import { updateSwapRevision } from '../core/SwapStateMachine.js';
+import { reconcileTransition, transition, updateSwapRevision } from '../core/SwapStateMachine.js';
 import type { Invoice } from '../lightning/LndClient.js';
 import type { GuestExecution } from './GuestExecution.js';
 import { MiningLockBusyError, withMiningLock } from '../mining/MiningLock.js';
@@ -172,6 +173,15 @@ export class GuestReverse {
     let prepared: GuestPrepared;
     try {
       prepared = await this.lock(async () => {
+        // Reserve the shared funding outpoint atomically before any invoice.
+        await this.store.transaction(db => {
+          const key = `${this.policy.funding.txid}:${this.policy.funding.vout}`;
+          const existing = db.guestFundingReservations?.[key];
+          if (existing?.status === 'RESERVED' && existing.admissionId !== admissionId)
+            throw new GuestReverseError(409, 'GUEST_FUNDING_INPUT_BUSY');
+          (db.guestFundingReservations ??= {})[key] = { admissionId, outpoint: key, status: 'RESERVED',
+            createdAt: now, updatedAt: now };
+        });
         // Fail-closed marker exists before the invoice can become payable.
         await markActiveSwap(this.pauseFile, { id: admissionId, state: 'PREPARING', timeoutHeight: 0, updatedAt: this.now() });
         const tip = await this.clients.tip();
@@ -265,6 +275,10 @@ export class GuestReverse {
           if (swap.clientClaimIntent) {
             if (swap.clientClaimIntent.txid === txid && swap.clientClaimIntent.status === 'BROADCAST') {
               await this.recordClaim(row, requestKey, fingerprint, txid, admission, 'BROADCAST');
+              if (!swap.claimTxid) {
+                const fixed = await updateSwapRevision(runStore, swap.id, swap.revision, value => { value.claimTxid = txid; });
+                return this.claimView(row, txid, fixed.revision);
+              }
               return this.claimView(row, txid, swap.revision);
             }
             throw new GuestReverseError(409, 'GUEST_CLAIM_CONFLICT');
@@ -284,6 +298,7 @@ export class GuestReverse {
             if (after.status !== 'PRESENT') throw new Error('invoice uncertain');
             manager.assertAccepted(after.invoice, admission.paymentHash, updated.quote.invoiceSats, updated.contract.timeoutHeight, 40);
             if (await this.clients.tip() > updated.contract.timeoutHeight - 10) throw new Error('claim window closed');
+            await this.assertFreshFunding(updated);
             if (await this.broadcast!(input.signedClaimHex) !== txid) throw new Error('claim broadcast identity mismatch');
           } catch {
             await runStore.transaction(db => {
@@ -296,7 +311,7 @@ export class GuestReverse {
           const final = await updateSwapRevision(runStore, updated.id, updated.revision, value => {
             if (value.clientClaimIntent?.txid !== txid || value.clientClaimIntent.status !== 'INTENT')
               throw new GuestReverseError(409, 'GUEST_CLAIM_CONFLICT');
-            value.clientClaimIntent.status = 'BROADCAST';
+            value.clientClaimIntent.status = 'BROADCAST'; value.claimTxid = txid;
           });
           await this.recordClaim(row, requestKey, fingerprint, txid, admission, 'BROADCAST');
           await markActiveSwap(this.pauseFile, { id: final.id, state: 'CLAIM_DETECTED',
@@ -319,6 +334,41 @@ export class GuestReverse {
       cancel: async () => { throw new Error('Guest backend cannot cancel'); } });
     manager.assertAccepted(found.invoice, admission.paymentHash, swap.quote.invoiceSats, swap.contract.timeoutHeight, 40);
     return manager;
+  }
+
+  /** Fresh active-chain and mempool-aware check immediately before a claim
+   * broadcast: exact confirmed funding txid/vout/script/principal and an
+   * unspent funding outpoint. */
+  private async assertFreshFunding(swap: Swap) {
+    if (!swap.lockup) throw new GuestReverseError(409, 'GUEST_LOCKUP_MISSING');
+    const chain = await this.clients.bitcoin.call<{ chain: string; initialblockdownload: boolean; blocks: number; bestblockhash: string }>(
+      'getblockchaininfo').catch(() => undefined);
+    if (!chain || chain.chain !== 'regtest' || chain.initialblockdownload !== false ||
+      !Number.isSafeInteger(chain.blocks) || !/^[a-f0-9]{64}$/.test(chain.bestblockhash))
+      throw new GuestReverseError(409, 'GUEST_FUNDING_CHAIN_UNAVAILABLE');
+    const confirmed = await this.clients.bitcoin.confirmed(swap.lockup.txid).catch(() => undefined);
+    if (!confirmed || !Number.isSafeInteger(confirmed.confirmations) || confirmed.confirmations < 1 || confirmed.hex !== swap.lockup.hex)
+      throw new GuestReverseError(409, 'GUEST_FUNDING_UNCONFIRMED_OR_CHANGED');
+    const funding = Transaction.fromHex(confirmed.hex); const output = funding.outs[swap.lockup.vout];
+    if (funding.getId() !== swap.lockup.txid || !output || output.value !== BigInt(swap.quote.amountSats) ||
+      !Buffer.from(output.script).equals(buildHtlc(swap.contract).output))
+      throw new GuestReverseError(409, 'GUEST_FUNDING_IDENTITY_MISMATCH');
+    const coin = await this.clients.bitcoin.call<{ bestblock: string; confirmations: number; value: number;
+      scriptPubKey: { hex: string } }>('gettxout', [swap.lockup.txid, swap.lockup.vout, true]).catch(() => undefined);
+    if (!coin || coin.bestblock !== chain.bestblockhash || !Number.isSafeInteger(coin.confirmations) || coin.confirmations < 1 ||
+      coin.value !== swap.quote.amountSats / 1e8 || coin.scriptPubKey.hex !== Buffer.from(output.script).toString('hex'))
+      throw new GuestReverseError(409, 'GUEST_FUNDING_OUTPOINT_NOT_UNSPENT');
+  }
+
+  /** A confirmed claim still must settle before the accepted LN HTLC expires.
+   * Keep a safety margin; otherwise stop for manual review instead of settling. */
+  private async assertSettlementDeadline(invoice: Invoice) {
+    const accepted = (invoice.htlcs ?? []).filter(htlc => htlc.state === 'ACCEPTED');
+    if (!accepted.length || accepted.some(htlc => !Number.isSafeInteger(htlc.expiration_height)))
+      throw new GuestReverseError(409, 'GUEST_SETTLEMENT_DEADLINE');
+    const earliest = Math.min(...accepted.map(htlc => htlc.expiration_height!));
+    const tip = await this.clients.tip();
+    if (!Number.isSafeInteger(tip) || tip >= earliest - 10) throw new GuestReverseError(409, 'GUEST_SETTLEMENT_DEADLINE');
   }
 
   private verifyClaim(swap: Swap, admission: NonNullable<ReturnType<GuestAdmission['status']>>, raw: string): Transaction {
@@ -426,6 +476,74 @@ export class GuestReverse {
     });
   }
 
+  private async exactClaim(swap: Swap, plan: ReverseTestPlan, claimTxid: string): Promise<boolean> {
+    if (!swap.lockup) return false;
+    const claim = await this.clients.bitcoin.confirmed(claimTxid).catch(() => undefined);
+    if (!claim || !Number.isSafeInteger(claim.confirmations) || claim.confirmations < 1) return false;
+    try {
+      verifyHtlcSpend(claim.hex, claimTxid, swap.lockup.hex, swap.lockup.vout, swap.contract);
+      const spend = Transaction.fromHex(claim.hex);
+      return spend.outs.length === 1 && spend.outs[0]!.value === BigInt(swap.quote.amountSats - swap.quote.claimFeeSats) &&
+        Buffer.from(spend.outs[0]!.script).equals(address.toOutputScript(plan.claimDestination, networks.regtest));
+    } catch { return false; }
+  }
+
+  /** Evidence-only recovery for states left ambiguous by funding, claim or
+   * settlement. It never rebroadcasts or retries a payment; only a confirmed
+   * exact claim and invoice evidence can advance or complete the swap. */
+  private async recoverAmbiguous(runStore: Store, swap: Swap, plan: ReverseTestPlan, invoice: Invoice) {
+    let changes = 0; const claimTxid = swap.claimTxid ?? swap.clientClaimIntent?.txid;
+    const claimConfirmed = claimTxid ? await this.exactClaim(swap, plan, claimTxid) : false;
+    if (invoice.state === 'SETTLED' && claimConfirmed && this.execution) {
+      let current = swap;
+      if (!['LIGHTNING_SETTLED', 'COMPLETED'].includes(current.state)) {
+        current = await updateSwapRevision(runStore, current.id, current.revision, value => {
+          if (value.pendingAction === 'SETTLE') delete value.pendingAction;
+          if (!value.claimTxid) value.claimTxid = claimTxid!;
+          if (!value.clientPayment) value.clientPayment = { hash: value.contract.paymentHash, status: 'IN_FLIGHT', feeLimitSats: 0 };
+          if (['FAILED', 'UNKNOWN'].includes(value.clientPayment.status)) throw new GuestReverseError(409, 'GUEST_SETTLEMENT_CONTEXT');
+          if (['COMPLETED', 'REFUNDED', 'EXPIRED', 'FAILED'].includes(value.state)) return;
+          if (value.state !== 'LIGHTNING_SETTLED') { if (value.state !== 'CLAIM_DETECTED') reconcileTransition(value, 'CLAIM_DETECTED'); transition(value, 'LIGHTNING_SETTLED'); }
+        });
+        changes++;
+      }
+      if (current.state === 'LIGHTNING_SETTLED' && current.clientPayment?.status === 'IN_FLIGHT') { current = await this.execution.markPaid(runStore, current, invoice); changes++; }
+      if (current.state === 'LIGHTNING_SETTLED' && current.clientPayment?.status === 'SUCCEEDED') { current = await this.execution.complete(runStore, current, plan); changes++; }
+      return changes;
+    }
+    if (invoice.state === 'ACCEPTED' && claimConfirmed && !swap.pendingAction && this.execution) {
+      try { await this.assertSettlementDeadline(invoice); }
+      catch {
+        await updateSwapRevision(runStore, swap.id, swap.revision, value => {
+          if (value.state !== 'MANUAL_REVIEW' && !['COMPLETED', 'REFUNDED', 'EXPIRED', 'FAILED'].includes(value.state))
+            transition(value, 'MANUAL_REVIEW');
+        });
+        return changes;
+      }
+      await this.execution.settle(runStore, swap, plan, claimTxid!); return changes + 1;
+    }
+    const intent = swap.fundingIntent; const fundingVout = intent?.fundingVout;
+    if (!swap.lockup && intent?.signedHex && intent.fundingTxid && Number.isSafeInteger(fundingVout)) {
+      const txid = Transaction.fromHex(intent.signedHex).getId();
+      if (txid !== intent.fundingTxid) return changes;
+      const funding = await this.clients.bitcoin.confirmed(txid).catch(() => undefined);
+      if (funding && Number.isSafeInteger(funding.confirmations) && funding.confirmations >= 1 && funding.hex === intent.signedHex) {
+        const tx = Transaction.fromHex(funding.hex); const output = tx.outs[fundingVout!];
+        if (output && output.value === BigInt(swap.quote.amountSats) && Buffer.from(output.script).equals(buildHtlc(swap.contract).output)) {
+          await updateSwapRevision(runStore, swap.id, swap.revision, value => {
+            if (value.pendingAction) delete value.pendingAction;
+            value.lockup = { txid, hex: funding.hex, vout: fundingVout! };
+            if (!value.clientPayment) value.clientPayment = { hash: value.contract.paymentHash, status: 'IN_FLIGHT', feeLimitSats: 0 };
+            if (!['COMPLETED', 'REFUNDED', 'EXPIRED', 'FAILED'].includes(value.state) && value.state !== 'LOCKUP_CONFIRMED')
+              reconcileTransition(value, 'LOCKUP_CONFIRMED');
+          });
+          changes++;
+        }
+      }
+    }
+    return changes;
+  }
+
   /** Full guest+optional-owned authoritative reconciliation under the mining
    * lock. Uncertain evidence becomes a conservative marker; it is never removed. */
   async refreshMiningPause() { return this.pause.reconcile(); }
@@ -443,14 +561,20 @@ export class GuestReverse {
           let swap = runStore.read().swaps[row.swapId!];
           const plan = runStore.read().reversePreparations?.[row.id]?.plan;
           if (!swap || !plan || !same(swap.contract, plan.contract) || !same(swap.quote, plan.quote)) return 0;
-          if (swap.state === 'MANUAL_REVIEW' || swap.pendingAction ||
-            swap.clientClaimIntent?.status === 'UNKNOWN' || swap.clientClaimIntent?.status === 'INTENT') return 0;
+          if (['COMPLETED', 'REFUNDED', 'EXPIRED', 'FAILED'].includes(swap.state)) {
+            await this.releaseFundingReservation(row.id); return 0;
+          }
           const found = await this.clients.invoices.lookup(plan.contract.paymentHash).catch(() => undefined);
           if (!found || found.status !== 'PRESENT') return 0;
           const invoice = found.invoice; let changes = 0;
           const manager = new HoldInvoiceManager({ lookup: async () => invoice,
             settle: async () => { throw new Error('Guest watcher cannot settle directly'); },
             cancel: async () => { throw new Error('Guest watcher cannot cancel directly'); } });
+          const claimTxid = swap.claimTxid ?? swap.clientClaimIntent?.txid;
+          if (swap.state === 'MANUAL_REVIEW' || swap.pendingAction ||
+            swap.clientClaimIntent?.status === 'UNKNOWN' || swap.clientClaimIntent?.status === 'INTENT') {
+            return await this.recoverAmbiguous(runStore, swap, plan, invoice);
+          }
           if (invoice.state === 'CANCELED') {
             if (!swap.lockup && !swap.fundingIntent && !swap.pendingAction && !swap.clientClaimIntent && this.execution) {
               await this.execution.expire(runStore, swap); changes++;
@@ -466,15 +590,18 @@ export class GuestReverse {
           if (swap.state === 'LOCKUP_BROADCAST' && this.execution) {
             swap = await this.execution.confirm(runStore, swap, plan); changes++;
           }
-          if (swap.lockup && swap.claimTxid && swap.clientClaimIntent?.status === 'BROADCAST' &&
-              (swap.state === 'LOCKUP_BROADCAST' || swap.state === 'LOCKUP_CONFIRMED')) {
-            const claim = await this.clients.bitcoin.confirmed(swap.claimTxid).catch(() => undefined);
-            if (claim && Number.isSafeInteger(claim.confirmations) && claim.confirmations >= 1) {
-              verifyHtlcSpend(claim.hex, swap.claimTxid, swap.lockup.hex, swap.lockup.vout, swap.contract);
-              const spend = Transaction.fromHex(claim.hex);
-              if (spend.outs.length !== 1 || spend.outs[0]!.value !== BigInt(swap.quote.amountSats - swap.quote.claimFeeSats) ||
-                !Buffer.from(spend.outs[0]!.script).equals(address.toOutputScript(plan.claimDestination, networks.regtest))) return changes;
-              if (this.execution) { swap = await this.execution.settle(runStore, swap, plan, swap.claimTxid); changes++; }
+          if (swap.lockup && claimTxid && (swap.clientClaimIntent?.status === 'BROADCAST' || !swap.clientClaimIntent) &&
+              (swap.state === 'LOCKUP_BROADCAST' || swap.state === 'LOCKUP_CONFIRMED' || swap.state === 'CLAIM_DETECTED')) {
+            if (await this.exactClaim(swap, plan, claimTxid)) {
+              try { await this.assertSettlementDeadline(invoice); }
+              catch {
+                await updateSwapRevision(runStore, swap.id, swap.revision, value => {
+                  if (value.state !== 'MANUAL_REVIEW' && !['COMPLETED', 'REFUNDED', 'EXPIRED', 'FAILED'].includes(value.state))
+                    transition(value, 'MANUAL_REVIEW');
+                });
+                return changes;
+              }
+              if (this.execution) { swap = await this.execution.settle(runStore, swap, plan, claimTxid); changes++; }
             }
           }
           if (swap.state === 'LIGHTNING_SETTLED' && invoice.state === 'SETTLED' && this.execution) {
@@ -502,6 +629,14 @@ export class GuestReverse {
   }
 
   stop() { if (this.timer) clearInterval(this.timer); this.timer = undefined; }
+
+  private async releaseFundingReservation(admissionId: string) {
+    await this.store.transaction(db => {
+      const key = `${this.policy.funding.txid}:${this.policy.funding.vout}`;
+      const current = db.guestFundingReservations?.[key];
+      if (current?.admissionId === admissionId) { current.status = 'RELEASED'; current.updatedAt = this.now(); }
+    });
+  }
 
   private withRun<T>(id: string, directory: string, work: (store: Store) => Promise<T>): Promise<T> {
     const previous = this.queues.get(id) ?? Promise.resolve();

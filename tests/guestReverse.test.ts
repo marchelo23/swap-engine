@@ -30,8 +30,17 @@ async function fixture(options: { failAfterCreate?: boolean; noBroadcast?: boole
     value: String(GUEST_INVOICE_SATS), amt_paid_sat: invoiceState === 'SETTLED' ? String(GUEST_INVOICE_SATS) : '0', payment_request: invoiceText,
     htlcs: invoiceState === 'ACCEPTED' ? [{ state: 'ACCEPTED', expiration_height: 210, amt_msat: String(GUEST_INVOICE_SATS * 1000) }] : [] });
   const clients: GuestReverseClients = {
-    bitcoin: { origin: routing.bitcoinOrigin, call: async () => { throw new Error('unexpected Core call'); },
-      confirmed: async txid => ledger.get(txid) ?? { hex: '', confirmations: 0 } },
+    bitcoin: { origin: routing.bitcoinOrigin, call: async (method, params) => {
+      if (method === 'getblockchaininfo') return { chain: 'regtest', initialblockdownload: false, blocks: tip,
+        bestblockhash: '11'.repeat(32) } as any;
+      if (method === 'gettxout') { const [txid, vout] = (params ?? []) as [string, number];
+        const entry = ledger.get(txid); if (!entry || entry.confirmations < 1) return null as any;
+        const tx = Transaction.fromHex(entry.hex); const output = tx.outs[vout]; if (!output) return null as any;
+        return { bestblock: '11'.repeat(32), confirmations: entry.confirmations, value: Number(output.value) / 1e8,
+          scriptPubKey: { hex: Buffer.from(output.script).toString('hex') } } as any;
+      }
+      throw new Error('unexpected Core call');
+    }, confirmed: async txid => ledger.get(txid) ?? { hex: '', confirmations: 0 } },
     provider: { origin: routing.providerOrigin, call: async () => { throw new Error('unexpected provider call'); },
       assertRegtest: async () => ({ chains: [{ chain: 'bitcoin', network: 'regtest' }], synced_to_chain: true }) },
     payer: { origin: routing.payerOrigin, call: async () => { throw new Error('unexpected payer call'); },
@@ -72,7 +81,7 @@ async function fixture(options: { failAfterCreate?: boolean; noBroadcast?: boole
   const token = randomBytes(32).toString('base64url'); const auth = `Bearer ${token}`;
   const quote = await service.quote(auth, 'guest-quote-key', { destination: f.destination, amountSats: GUEST_INVOICE_SATS,
     paymentHash: f.contract.paymentHash, claimPublicKey: f.contract.claimPublicKey });
-  return { f, service, quote, auth, token, runsDirectory, ledger, pauseFile,
+  return { f, service, quote, auth, token, runsDirectory, ledger, clients, pauseFile,
     prepare: (key = 'guest-prepare-key', commitment = 'ab'.repeat(32)) => service.prepare(quote.id, auth, key, { recoveryCommitment: commitment }),
     setInvoice: (state: Invoice['state']) => { invoiceState = state; }, setTip: (value: number) => { tip = value; },
     calls: () => calls, broadcasts: () => broadcasts, lockCalls: () => lockCalls,
@@ -93,18 +102,19 @@ async function seedClaim(x: Awaited<ReturnType<typeof fixture>>,
   options: { destination?: string; feeSats?: number; lockupSeed?: Buffer } = {}) {
   const prepared = await x.prepare() as any;
   const run = await Store.open(join(x.runsDirectory, x.quote.id));
-  let expectedRevision: number; let claim: Transaction; let amountSats: number;
+  let expectedRevision: number; let claim: Transaction; let amountSats: number; let lockup: Transaction;
   try {
     const swap = run.read().swaps[prepared.swapId]!; amountSats = swap.quote.amountSats;
     const built = lockupAndClaim(x, amountSats, { destination: options.destination,
       feeSats: options.feeSats ?? swap.quote.claimFeeSats, lockupSeed: options.lockupSeed });
-    claim = built.claim;
+    claim = built.claim; lockup = built.lockup;
     await run.transaction(db => { const current = db.swaps[swap.id]!; current.lockup = { txid: built.lockup.getId(), hex: built.lockup.toHex(), vout: 0 };
       current.state = 'LOCKUP_CONFIRMED'; current.revision++; });
     expectedRevision = run.read().swaps[prepared.swapId]!.revision;
   } finally { await run.close(); }
+  x.ledger.set(lockup.getId(), { hex: lockup.toHex(), confirmations: 1 });
   x.setInvoice('ACCEPTED');
-  return { prepared, claim: claim!, expectedRevision: expectedRevision!, amountSats: amountSats! };
+  return { prepared, claim: claim!, lockup: lockup!, expectedRevision: expectedRevision!, amountSats: amountSats! };
 }
 
 test('guest prepare needs the capability and a recovery commitment, then creates one invoice without client secrets', async () => {
@@ -172,6 +182,10 @@ test('client-signed claim is bound to the exact outpoint/destination/fee and bro
       { signedClaimHex: seeded.claim.toHex(), expectedRevision: seeded.expectedRevision }) as any;
     assert.equal(result.status, 'CLAIM_BROADCAST_PENDING_CONFIRMATION'); assert.equal(result.claimTxid, seeded.claim.getId());
     assert.equal(x.broadcasts(), 1); assert.equal(x.lockCalls(), before + 1);
+    const run = await Store.open(join(x.runsDirectory, x.quote.id));
+    try { const disk = run.read().swaps[seeded.prepared.swapId]!;
+      assert.equal(disk.claimTxid, seeded.claim.getId()); assert.equal(disk.clientClaimIntent?.status, 'BROADCAST'); }
+    finally { await run.close(); }
     const replay = await x.service.submitClaim(x.quote.id, x.auth, 'claim-key',
       { signedClaimHex: seeded.claim.toHex(), expectedRevision: seeded.expectedRevision }) as any;
     assert.equal(replay.claimTxid, seeded.claim.getId()); assert.equal(x.broadcasts(), 1);
@@ -180,6 +194,26 @@ test('client-signed claim is bound to the exact outpoint/destination/fee and bro
       (error: unknown) => error instanceof GuestReverseError && error.code === 'GUEST_CLAIM_CONFLICT');
     assert.equal(x.broadcasts(), 1);
   } finally { await x.cleanup(); }
+});
+
+test('claim broadcast requires fresh confirmed exact funding and an unspent outpoint', async () => {
+  for (const change of ['unconfirmed', 'changed', 'principal', 'script', 'spent'] as const) {
+    const x = await fixture(); try {
+      const seeded = await seedClaim(x);
+      if (change === 'unconfirmed') x.ledger.get(seeded.lockup.getId())!.confirmations = 0;
+      if (change === 'changed') x.ledger.get(seeded.lockup.getId())!.hex = x.f.tx.toHex();
+      if (change === 'principal') { const tx = Transaction.fromHex(seeded.lockup.toHex()); tx.outs[0]!.value = 1n;
+        x.ledger.set(seeded.lockup.getId(), { hex: tx.toHex(), confirmations: 1 }); }
+      if (change === 'script') { const tx = Transaction.fromHex(seeded.lockup.toHex()); tx.outs[0]!.script = Buffer.from('00');
+        x.ledger.set(seeded.lockup.getId(), { hex: tx.toHex(), confirmations: 1 }); }
+      if (change === 'spent') { const original = x.clients.bitcoin.call;
+        x.clients.bitcoin.call = async (method, params) => method === 'gettxout' ? null as any : original(method, params); }
+      await assert.rejects(x.service.submitClaim(x.quote.id, x.auth, `claim-${change}`,
+        { signedClaimHex: seeded.claim.toHex(), expectedRevision: seeded.expectedRevision }),
+        (error: unknown) => error instanceof GuestReverseError && error.code === 'GUEST_CLAIM_UNCERTAIN');
+      assert.equal(x.broadcasts(), 0);
+    } finally { await x.cleanup(); }
+  }
 });
 
 test('claim verification fails closed on destination, fee, outpoint or CLTV deadline before broadcasting', async () => {
@@ -276,4 +310,17 @@ test('a pause-file failure blocks the invoice before any preparation', async () 
     assert.equal(x.calls(), 0);
     assert.equal(x.f.store.read().guestSwaps![x.quote.id]!.status, 'PREPARATION_UNKNOWN');
   } finally { await x.cleanup(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test('the shared funding outpoint is reserved atomically across guest admissions', async () => {
+  const x = await fixture(); try {
+    await x.prepare();
+    const token2 = randomBytes(32).toString('base64url'); const auth2 = `Bearer ${token2}`;
+    const quote2 = await x.service.quote(auth2, 'guest-quote-key-2', { destination: x.f.destination,
+      amountSats: GUEST_INVOICE_SATS, paymentHash: x.f.contract.paymentHash, claimPublicKey: x.f.contract.claimPublicKey });
+    const calls = x.calls();
+    await assert.rejects(x.service.prepare(quote2.id, auth2, 'guest-prepare-key-2', { recoveryCommitment: 'cd'.repeat(32) }),
+      (error: unknown) => error instanceof GuestReverseError && error.code === 'GUEST_FUNDING_INPUT_BUSY');
+    assert.equal(x.calls(), calls);
+  } finally { await x.cleanup(); }
 });

@@ -1,57 +1,63 @@
-import { randomBytes } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { Transaction, payments, networks } from 'bitcoinjs-lib';
 import { setup } from './helpers.js';
 import { buildHtlc } from '../src/bitcoin/HtlcBuilder.js';
 import { createClaim } from '../src/bitcoin/ClaimManager.js';
-import { createGuestRecoveryBundle, parseGuestRecoveryBundle, recoveryCommitment,
-  serializeGuestRecoveryBundle, type GuestRecoveryInput } from '../src/client/GuestRecovery.js';
+import { createGuestRecoveryBundle, createGuestRecoverySecrets, decryptGuestRecovery,
+  encryptGuestRecovery, generateGuestRecoveryIdentity, parseEncryptedRecovery, recoveryCommitment,
+  serializeEncryptedRecovery } from '../src/client/GuestRecovery.js';
 
-function inputFor(f: Awaited<ReturnType<typeof setup>>): GuestRecoveryInput {
-  const htlc = buildHtlc(f.contract);
-  return { capabilityToken: randomBytes(32).toString('base64url'), paymentHash: f.contract.paymentHash,
-    claimPublicKey: f.contract.claimPublicKey, claimPrivateKey: Buffer.from(f.claimKey.privateKey!).toString('hex'),
-    preimage: f.preimage, destination: f.destination, refundPublicKey: f.contract.refundPublicKey,
-    timeoutHeight: f.contract.timeoutHeight, htlcAddress: htlc.address, witnessScript: htlc.witnessScript.toString('hex') };
-}
-
-test('recovery bundle round-trips and its commitment contains no client secret', async () => {
-  const f = await setup();
-  try {
-    const input = inputFor(f); const bundle = createGuestRecoveryBundle(input);
-    const serialized = serializeGuestRecoveryBundle(bundle);
-    assert.deepEqual(parseGuestRecoveryBundle(serialized), bundle);
-    const commitment = recoveryCommitment(bundle);
-    assert.match(commitment, /^[a-f0-9]{64}$/);
-    const requestBody = JSON.stringify({ recoveryCommitment: commitment });
-    for (const secret of [bundle.capabilityToken, bundle.preimage, bundle.claimPrivateKey])
-      assert.equal(requestBody.includes(secret), false);
-    // The client-held material reconstructs the exact claim without any provider secret.
-    const claim = createClaim({ contract: f.contract, lockupTxHex: f.tx.toHex(), vout: 0,
-      destination: bundle.destination, feeSats: 500, privateKey: Buffer.from(bundle.claimPrivateKey, 'hex') }, bundle.preimage);
-    assert.match(claim.getId(), /^[a-f0-9]{64}$/);
-    assert.equal(bundle.paymentHash, f.contract.paymentHash);
-  } finally { await f.cleanup(); }
+test('recovery module generates browser material, encrypts before invoice and exposes no plaintext secrets', async () => {
+  const identity = await generateGuestRecoveryIdentity();
+  assert.match(identity.capabilityToken, /^[A-Za-z0-9_-]{43}$/);
+  assert.match(identity.paymentHash, /^[a-f0-9]{64}$/);
+  assert.match(identity.claimPublicKey, /^(02|03)[a-f0-9]{64}$/);
+  assert.match(identity.preimage, /^[a-f0-9]{64}$/);
+  const destination = payments.p2wpkh({ pubkey: Buffer.from(identity.claimPublicKey, 'hex'), network: networks.regtest }).address!;
+  const quote = { id: randomUUID(), destination, amountSats: 49250, invoiceSats: 50000,
+    serviceFeeSats: 750, claimFeeSats: 500, fundingReserveSats: 1000 };
+  const secrets = await createGuestRecoverySecrets(identity, quote);
+  const passphrase = 'correct horse battery staple';
+  const envelope = await encryptGuestRecovery(secrets, passphrase);
+  const exported = serializeEncryptedRecovery(envelope);
+  for (const secret of [identity.capabilityToken, identity.preimage, identity.claimPrivateKey])
+    assert.equal(exported.includes(secret), false);
+  const commitment = await recoveryCommitment(envelope);
+  assert.match(commitment, /^[a-f0-9]{64}$/);
+  assert.equal(JSON.stringify({ recoveryCommitment: commitment }).includes(identity.preimage), false);
+  assert.deepEqual(await decryptGuestRecovery(parseEncryptedRecovery(exported), passphrase), secrets);
+  await assert.rejects(decryptGuestRecovery(envelope, 'wrong passphrase'));
+  await assert.rejects(decryptGuestRecovery({ ...envelope, ciphertext: (envelope.ciphertext[0] === 'A' ? 'B' : 'A') + envelope.ciphertext.slice(1) }, passphrase));
+  const source = await readFile('src/client/GuestRecovery.ts', 'utf8');
+  assert.equal(source.includes("from 'node:"), false);
+  assert.ok(source.includes('crypto.subtle'));
 });
 
-test('recovery bundle rejects mismatched secrets, destination, HTLC and malformed documents', async () => {
+test('full recovery bundle adds public contract fields and reconstructs the claim', async () => {
   const f = await setup();
   try {
-    const input = inputFor(f); createGuestRecoveryBundle(input);
-    const invalid: GuestRecoveryInput[] = [
-      { ...input, preimage: '00'.repeat(32) },
-      { ...input, claimPrivateKey: Buffer.from(f.refundKey.privateKey!).toString('hex') },
-      { ...input, destination: 'bc1q' + 'a'.repeat(38) },
-      { ...input, timeoutHeight: input.timeoutHeight + 1 },
-      { ...input, htlcAddress: 'bcrt1q' + 'a'.repeat(40) },
-      { ...input, witnessScript: '00' },
-      { ...input, capabilityToken: 'short' },
-    ];
-    for (const value of invalid) assert.throws(() => createGuestRecoveryBundle(value));
-    const bundle = createGuestRecoveryBundle(input);
-    assert.throws(() => parseGuestRecoveryBundle(JSON.stringify({ ...bundle, extra: true })));
-    assert.throws(() => parseGuestRecoveryBundle(JSON.stringify({ ...bundle, version: 2 })));
-    assert.throws(() => parseGuestRecoveryBundle(JSON.stringify({ ...bundle, network: 'mainnet' })));
-    assert.throws(() => parseGuestRecoveryBundle('{not-json'));
+    const identity = await generateGuestRecoveryIdentity();
+    const destination = payments.p2wpkh({ pubkey: Buffer.from(identity.claimPublicKey, 'hex'), network: networks.regtest }).address!;
+    const quote = { id: randomUUID(), destination, amountSats: 49250, invoiceSats: 50000,
+      serviceFeeSats: 750, claimFeeSats: 500, fundingReserveSats: 1000 };
+    const secrets = await createGuestRecoverySecrets(identity, quote);
+    const contract = { paymentHash: identity.paymentHash, claimPublicKey: identity.claimPublicKey,
+      refundPublicKey: f.contract.refundPublicKey, timeoutHeight: f.contract.timeoutHeight };
+    const htlc = buildHtlc(contract);
+    const bundle = await createGuestRecoveryBundle(secrets, { swapId: randomUUID(), refundPublicKey: contract.refundPublicKey,
+      timeoutHeight: contract.timeoutHeight, htlcAddress: htlc.address, witnessScript: htlc.witnessScript.toString('hex') });
+    const passphrase = 'another strong passphrase';
+    const envelope = await encryptGuestRecovery(bundle, passphrase);
+    const decrypted = await decryptGuestRecovery(envelope, passphrase);
+    assert.deepEqual(decrypted, bundle);
+    const tx = new Transaction(); tx.version = 2; tx.addInput(new Uint8Array(32).fill(1), 0);
+    tx.addOutput(htlc.output, 50000n);
+    const claim = createClaim({ contract, lockupTxHex: tx.toHex(), vout: 0, destination,
+      feeSats: 500, privateKey: Buffer.from(bundle.claimPrivateKey, 'hex') }, bundle.preimage);
+    assert.match(claim.getId(), /^[a-f0-9]{64}$/);
+    assert.equal(bundle.paymentHash, identity.paymentHash);
   } finally { await f.cleanup(); }
 });
