@@ -3,7 +3,7 @@ import { once } from 'node:events';
 import assert from 'node:assert/strict';
 import type { AddressInfo } from 'node:net';
 import { test } from 'node:test';
-import { Transaction, payments, networks } from 'bitcoinjs-lib';
+import { Transaction, address, networks } from 'bitcoinjs-lib';
 import { chromium, type Page } from 'playwright';
 import { createApi } from '../../src/api/server.js';
 import { GuestAdmission } from '../../src/guest/GuestAdmission.js';
@@ -71,8 +71,8 @@ async function guestBackend(watching = true) {
       const evidenceValue = verifyHtlcSpend(raw.signedClaimHex, tx.getId(), prepared.lockup.toHex(), 0, prepared.contract);
       if (evidenceValue.kind !== 'claim' || tx.outs.length !== 1 ||
         tx.outs[0]!.value !== BigInt(f.store.read().guestAdmissions![id]!.terms.amountSats - 500) ||
-        !Buffer.from(tx.outs[0]!.script).equals(payments.p2wpkh({ pubkey: Buffer.from(prepared.contract.claimPublicKey, 'hex'),
-          network: networks.regtest }).output!)) throw new GuestReverseError(409, 'GUEST_CLAIM_INVALID');
+        !Buffer.from(tx.outs[0]!.script).equals(address.toOutputScript(
+          f.store.read().guestAdmissions![id]!.terms.destination, networks.regtest))) throw new GuestReverseError(409, 'GUEST_CLAIM_INVALID');
       prepared.completed = true; prepared.claimTxid = tx.getId();
       return { id, status: 'CLAIM_BROADCAST_PENDING_CONFIRMATION', network: 'regtest' as const,
         swapId: prepared.swapId, claimTxid: tx.getId(), revision: 8,
@@ -109,6 +109,7 @@ test('fresh browser profile exports and restores recovery before invoice, then s
   await page.getByRole('button', { name: 'SWAP', exact: true }).click();
   const dialog = page.getByRole('dialog', { name: 'Guest swap recovery' });
   await dialog.waitFor();
+  await page.locator('#guest-destination').fill(backend.f.destination);
   const passphrase = 'correct horse battery staple';
   await page.locator('#guest-passphrase').fill(passphrase);
   await page.locator('#guest-passphrase-confirm').fill(passphrase);

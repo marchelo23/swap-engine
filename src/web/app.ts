@@ -5,11 +5,12 @@ import { fonts } from './fonts.js';
 import { playOpening } from './opening.js';
 import { mountOperationsBalances } from './operations.js';
 import { mountGuest } from './guest.js';
+import { createGuestPresentation } from './guestUi.js';
 import { mountOwnedReverse } from './ownedReverse.js';
 import { mountQuote } from './quote.js';
 import { get, integer, text } from './ui.js';
 
-const guest = mountGuest();
+const guest = mountGuest(createGuestPresentation());
 const quotes = mountQuote(async (stillVisible, amountSats) => {
   const owner = session;
   if (!owner) throw new Error('Sign in to prepare a regtest swap.');
