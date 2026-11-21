@@ -293,6 +293,11 @@ pub async fn run(repo: &Path, action: Action, wallets: &[WalletId]) -> Result<Va
             Action::Balance => balance(&client).await?,
             Action::ListVtxos => vtxos(&client).await?,
             Action::Board(input) | Action::SettleVtxo(input) => {
+                RegtestBlockchain::new()
+                    .map_err(|_| LabError::IndexerUnavailable)?
+                    .require_regtest()
+                    .await
+                    .map_err(|_| LabError::IndexerUnavailable)?;
                 let mut rng = bitcoin::secp256k1::rand::thread_rng();
                 let (vtxos, boarding) = if matches!(action, Action::Board(_)) {
                     (&[][..], std::slice::from_ref(input))
