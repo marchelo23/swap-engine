@@ -247,6 +247,7 @@ dialog::backdrop { background: #16161670; }
 .rail-field select option { color: #111; background: #fff; }
 .select-icon { position: absolute; right: 3px; pointer-events: none; color: #3b3b3b; width: .88rem; }
 .rail-icon { width: 19px; height: 19px; }
+.cube-outer[data-rail="ark"] .rail-field, .turn-label[data-rail="ark"] { column-gap: 10px; }
 .cube-outer .rail-field .rail-icon {
   transition: opacity 180ms ease-in-out, transform 180ms ease-in-out;
 }

@@ -39,6 +39,11 @@ The rotation cycle is On-chain → Lightning → Liquid → Ark → On-chain. A 
 
 Selecting Ark on either side shows “Solo regtest · swaps no disponibles” and disables quoting and swapping. The read-only Ark panel in administrator Operations explains that there is no connected adapter or telemetry.
 
+**Arkade mark:** Ark Labs. The local `src/web/arkade-mark.svg` is the unmodified
+[SVG from arkade-os/intent-solver at `c31fd42`](https://github.com/arkade-os/intent-solver/blob/c31fd42fa648f6b6eeab56e2a71c1ee4e69dfadd/packages/solver-app/src/admin/static/arkade-mark.svg),
+identical to `Logo/SVG/arkade-mark-purple.svg` in the [official brand kit](https://arkadeos.com/arkade-brand-kit.zip)
+(Edition 1, November 2026). Its README permits using the logo to refer to Arkade, but not to suggest partnership or endorsement without a written agreement. The brand guidelines allow the standalone mark in compact controls, at least 16 px wide. The mark identifies the rail; it does not imply an active integration or endorsement.
+
 ## Product contracts
 
 | Surface | Current behavior |

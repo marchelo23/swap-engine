@@ -158,6 +158,9 @@ test('three faces quote a real route and preserve keyboard, account and responsi
   await page.getByLabel('Send network').selectOption('ark');
   await waitForRails(page, 'ark', 'onchain');
   assert.equal(await page.locator('#send-icon').getAttribute('href'), '#icon-ark');
+  assert.equal(await page.locator('#icon-ark image').getAttribute('href'), '/arkade-mark.svg');
+  assert.deepEqual(await page.locator('.cube-send .rail-icon').evaluate(icon =>
+    [getComputedStyle(icon).width, getComputedStyle(icon).height]), ['19px', '19px']);
   const arkNotice = page.getByText('Solo regtest · swaps no disponibles', { exact: true });
   await arkNotice.waitFor();
   await page.getByLabel('Receive network').selectOption('ark');

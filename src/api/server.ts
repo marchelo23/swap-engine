@@ -14,6 +14,7 @@ import { historicalSwaps, HistoricalSwapResponse } from './historicalSwaps.js';
 const webAssets = new Map([
   ['/', ['index.html', 'text/html; charset=utf-8']],
   ['/app.css', ['app.css', 'text/css; charset=utf-8']],
+  ['/arkade-mark.svg', ['arkade-mark.svg', 'image/svg+xml']],
   ['/app.js', ['app.js', 'text/javascript; charset=utf-8']],
 ]);
 

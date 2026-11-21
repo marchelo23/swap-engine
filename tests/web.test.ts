@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
+import { createHash } from 'node:crypto';
 import type { AddressInfo } from 'node:net';
 import { setup } from './helpers.js';
 import { createApi } from '../src/api/server.js';
@@ -52,12 +53,14 @@ test('same-origin frontend serves only allowlisted assets and uses the real quot
   await once(server, 'listening');
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   try {
-    for (const [path, mime] of [['/', 'text/html'], ['/app.css', 'text/css'], ['/app.js', 'text/javascript']] as const) {
+    for (const [path, mime] of [['/', 'text/html'], ['/app.css', 'text/css'], ['/app.js', 'text/javascript'], ['/arkade-mark.svg', 'image/svg+xml']] as const) {
       const response = await fetch(base + path);
       assert.equal(response.status, 200);
       assert.ok(response.headers.get('content-type')!.startsWith(mime));
       assert.match(response.headers.get('content-security-policy')!, /default-src 'self'/);
       if (path === '/app.js') assert.match(await response.text(), /Bundled font licenses/);
+      if (path === '/arkade-mark.svg') assert.equal(createHash('sha256').update(await response.text()).digest('hex'),
+        'f03e402da01aba3eec43621a2ddcfb450775ca785c8dfa416daed17a1eabf2c7');
     }
     assert.equal((await fetch(base + '/config.ts')).status, 404);
     assert.equal((await fetch(base + '/app.js', { method: 'POST' })).status, 404);
