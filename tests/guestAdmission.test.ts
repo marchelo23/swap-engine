@@ -47,3 +47,15 @@ test('concurrent replays reserve one admission and do not admit private material
     assert.equal(Object.keys(f.store.read().guestAdmissions ?? {}).length, 1);
   } finally { await f.cleanup(); }
 });
+
+test('competing amounts for the same capability and idempotency key cannot both be admitted', async () => {
+  const f = await setup();
+  try {
+    const service = new GuestAdmission(f.store); const auth = `Bearer ${randomBytes(32).toString('base64url')}`;
+    const common = { destination: f.destination, paymentHash: f.contract.paymentHash, claimPublicKey: f.contract.claimPublicKey };
+    const outcomes = await Promise.allSettled([25000, 50000].map(amountSats => service.reserve(auth, 'guest-racing-amount', { ...common, amountSats })));
+    assert.equal(outcomes.filter(result => result.status === 'fulfilled').length, 1);
+    assert.equal(outcomes.filter(result => result.status === 'rejected').length, 1);
+    assert.equal(Object.keys(f.store.read().guestAdmissions ?? {}).length, 1);
+  } finally { await f.cleanup(); }
+});
