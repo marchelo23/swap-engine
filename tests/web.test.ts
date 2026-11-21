@@ -60,7 +60,7 @@ test('same-origin frontend serves only allowlisted assets and uses the real quot
       assert.match(response.headers.get('content-security-policy')!, /default-src 'self'/);
       if (path === '/app.js') assert.match(await response.text(), /Bundled font licenses/);
       if (path === '/arkade-mark.svg') assert.equal(createHash('sha256').update(await response.text()).digest('hex'),
-        'f03e402da01aba3eec43621a2ddcfb450775ca785c8dfa416daed17a1eabf2c7');
+        '025a420db6d6452fc2ccfad775f5d8585a94259a928144b4ab319f69d3208f75');
     }
     assert.equal((await fetch(base + '/config.ts')).status, 404);
     assert.equal((await fetch(base + '/app.js', { method: 'POST' })).status, 404);
