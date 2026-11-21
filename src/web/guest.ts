@@ -166,16 +166,24 @@ export function mountGuest(presentation: GuestPresentation = {}) {
     if (passphrase.value.length < 8 || passphrase.value !== confirmation.value) {
       setStatus('Use the same passphrase in both fields (at least 8 characters).'); return;
     }
+    const supplied = presentation.readDestination?.();
+    let destination: string;
+    if (presentation.readDestination) {
+      if (!supplied) return;
+      destination = supplied.trim().toLowerCase();
+    } else {
+      destination = payments.p2wpkh({ pubkey: bytes(current.identity.claimPublicKey), network: networks.regtest }).address ?? '';
+    }
+    if (!/^bcrt1[0-9a-z]{20,}$/.test(destination)) {
+      setStatus('Enter a valid regtest on-chain destination.'); return;
+    }
+    try { address.toOutputScript(destination, networks.regtest); }
+    catch { setStatus('Enter a valid regtest on-chain destination.'); return; }
+    if (!current.active()) return;
     prepareButton.disabled = true;
     try {
       const availability = await api.guestAvailability();
       if (!availability.configured || !availability.watching) throw new Error('Guest watcher unavailable. No invoice was created.');
-      const supplied = presentation.readDestination?.();
-      const destination = (supplied?.trim().toLowerCase() ??
-        payments.p2wpkh({ pubkey: bytes(current.identity.claimPublicKey), network: networks.regtest }).address ?? '');
-      if (!/^bcrt1[0-9a-z]{20,}$/.test(destination)) throw new Error('Enter a valid regtest on-chain destination.');
-      address.toOutputScript(destination, networks.regtest);
-      if (!current.active()) return;
       if (!current.quote) {
         setStatus('Creating the guest quote…');
         const quote = await api.guestQuote(current.identity, destination, current.amountSats, current.quoteKey);
