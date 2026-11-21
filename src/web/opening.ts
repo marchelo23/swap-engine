@@ -10,7 +10,8 @@ const glyphs = [
 const columns = 5;
 const lines = 6;
 const samples = 20;
-const total = 2900;
+const revealAt = 2800;
+const total = 3230;
 const lerp = (a: number, b: number, t: number) => a * (1 - t) + b * t;
 const clamp = (n: number) => Math.max(0, Math.min(1, n));
 const ease = (n: number) => { const t = clamp(n); return t * t * (3 - 2 * t); };
@@ -36,22 +37,44 @@ function letterPoints() {
 export function playOpening() {
   const media = matchMedia('(prefers-reduced-motion: reduce)');
   if (media.matches) return;
+  const overlay = get('opening-overlay');
   const canvas = get<HTMLCanvasElement>('opening');
-  const field = get('sculpture');
+  const shell = get('workspace-shell');
+  const skip = get('skip-intro');
   const context = canvas.getContext('2d');
   if (!context) return;
   const paint = context;
   const letters = letterPoints();
   let frame = 0;
   let start: number | undefined;
+  let revealed = false;
+
+  function enter() {
+    if (revealed || media.matches) return;
+    revealed = true;
+    const units = ['.cube-send', '.cube-swap', '.cube-receive'];
+    units.forEach((selector, index) => {
+      document.querySelector(selector)?.animate([
+        { translate: `${(index - 1) * 55}px 38px -175px`, rotate: `1 0 0 ${index === 1 ? -13 : 21}deg` },
+        { translate: '0 0 0', rotate: '1 0 0 0deg' },
+      ], { duration: 790, delay: (index === 1 ? 0 : index === 0 ? 75 : 150), easing: 'cubic-bezier(.17,.78,.24,1)', fill: 'backwards' });
+    });
+    document.querySelector('.stage-shadow')?.animate(
+      [{ opacity: 0, scale: '.87 .6' }, { opacity: 1, scale: '1 1' }],
+      { duration: 950, easing: 'ease-out' },
+    );
+  }
 
   function finish() {
     cancelAnimationFrame(frame);
-    canvas.hidden = true;
-    field.classList.remove('opening');
+    const restoreFocus = overlay.contains(document.activeElement);
+    overlay.hidden = true;
+    shell.inert = false;
+    if (restoreFocus) get('main').focus({ preventScroll: true });
     media.removeEventListener('change', motionChanged);
-    get('rail-onchain').removeEventListener('click', finish);
-    get('rail-lightning').removeEventListener('click', finish);
+    skip.removeEventListener('click', finish);
+    window.removeEventListener('hashchange', finish);
+    enter();
   }
 
   function motionChanged() {
@@ -63,19 +86,26 @@ export function playOpening() {
     const time = now - start;
     if (time >= total) { finish(); return; }
     const ratio = Math.min(devicePixelRatio, 2);
-    const width = Math.round(field.clientWidth * ratio);
-    const height = Math.round(field.clientHeight * ratio);
+    const viewWidth = overlay.clientWidth;
+    const viewHeight = overlay.clientHeight;
+    const width = Math.round(viewWidth * ratio);
+    const height = Math.round(viewHeight * ratio);
     if (!width || !height) { finish(); return; }
     if (canvas.width !== width || canvas.height !== height) {
       canvas.width = width;
       canvas.height = height;
     }
-    paint.setTransform(width / 620, 0, 0, height / 276, 0, 0);
-    paint.clearRect(0, 0, 620, 276);
+    overlay.style.opacity = String(1 - ease((time - revealAt) / (total - revealAt)));
+    if (time >= revealAt) enter();
+    paint.setTransform(width / viewWidth, 0, 0, height / viewHeight, 0, 0);
+    paint.clearRect(0, 0, viewWidth, viewHeight);
+    const scale = Math.min(viewWidth / 620, viewHeight / 320, 1.65);
+    const left = viewWidth * .075;
+    const length = viewWidth - left * 2;
     paint.save();
     if (time < 360) {
       paint.beginPath();
-      paint.rect(0, 0, 79 + 464 * ease(time / 360), 276);
+      paint.rect(0, 0, left + (length + 2) * ease(time / 360), viewHeight);
       paint.clip();
     }
     const wave = ease((time - 420) / 500);
@@ -84,20 +114,20 @@ export function playOpening() {
     paint.strokeStyle = '#111';
     paint.lineCap = 'round';
     paint.lineJoin = 'round';
-    paint.lineWidth = 1.45;
+    paint.lineWidth = 1.5;
     for (let row = 0; row < lines; row++) {
       paint.beginPath();
       for (let column = 0; column < columns; column++) {
         for (let segment = 0; segment <= samples; segment++) {
           const u = (column + segment / samples) / columns;
-          const sourceX = 79 + u * 462;
-          const sourceY = 94 + row * 17 + wave * (
+          const sourceX = left + u * length;
+          const sourceY = viewHeight / 2 + scale * ((row - 2.5) * 17 + wave * (
             17 * Math.sin(u * 13 - time * 0.006 + row * 0.56) +
             5 * Math.cos(u * 19 - time * 0.004 + row * 0.22)
-          );
+          ));
           const target = letters[column]![row]![segment]!;
-          const x = lerp(sourceX, 125 + column * 77 + target.x, morph);
-          const y = lerp(sourceY, 99 + target.y, morph);
+          const x = lerp(sourceX, viewWidth / 2 + scale * (column * 77 + target.x - 185), morph);
+          const y = lerp(sourceY, viewHeight / 2 + scale * (target.y - 37), morph);
           if (segment === 0 && (column === 0 || morph > 0)) paint.moveTo(x, y);
           else paint.lineTo(x, y);
         }
@@ -108,10 +138,10 @@ export function playOpening() {
     frame = requestAnimationFrame(draw);
   }
 
-  field.classList.add('opening');
-  canvas.hidden = false;
+  overlay.hidden = false;
+  shell.inert = true;
   media.addEventListener('change', motionChanged);
-  get('rail-onchain').addEventListener('click', finish, { once: true });
-  get('rail-lightning').addEventListener('click', finish, { once: true });
+  skip.addEventListener('click', finish, { once: true });
+  window.addEventListener('hashchange', finish, { once: true });
   frame = requestAnimationFrame(draw);
 }

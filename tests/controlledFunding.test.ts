@@ -3,6 +3,17 @@ import assert from 'node:assert/strict';
 import { Transaction, Psbt, address, networks } from 'bitcoinjs-lib';
 import { setup } from './helpers.js';
 import { prepareControlledFunding, verifyControlledFunding } from '../src/bitcoin/ControlledFunding.js';
+import { readFile } from 'node:fs/promises';
+
+test('actual Core 32 PSBT format defaults require explicit v0 without changing transaction version', async () => {
+  const sample = JSON.parse(await readFile(new URL('./fixtures/core32-createpsbt.json', import.meta.url), 'utf8'));
+  // Pure createpsbt with a nonexistent dummy input: this fixture never locked, signed or broadcast funds.
+  assert.throws(() => Psbt.fromBase64(sample.defaultV2));
+  const parsed = Psbt.fromBase64(sample.explicitV0);
+  assert.equal(parsed.version, 2); assert.equal(parsed.txInputs.length, 1);
+  assert.equal(Buffer.from(parsed.txInputs[0]!.hash).toString('hex'), '11'.repeat(32));
+  assert.equal(parsed.txOutputs[0]!.value, 50000n);
+});
 
 async function fundingFixture() {
   const f = await setup(); const change = address.toOutputScript(f.destination, networks.regtest);
@@ -29,7 +40,7 @@ async function fundingFixture() {
       assert.equal(intent.txid, input.txid); assert.equal(intent.valueSats, 100000); assert.equal(intent.maxFeeSats, 1000);
       assert.equal(wallet, true); assert.deepEqual(params[0], [input]);
       assert.deepEqual(params[3], { add_inputs: false, lockUnspents: true, changeAddress: f.destination, fee_rate: 2, replaceable: false });
-      assert.deepEqual(params.slice(4), [true, 2, 0]);
+      assert.deepEqual(params.slice(4), [true, 2, 0]); // Core 32 defaults to PSBT v2; bitcoinjs requires explicit v0.
       if (lost) throw new Error('Locking outcome unknown');
       return { psbt: psbt.toBase64() } as T;
     }

@@ -4,7 +4,7 @@ import { once } from 'node:events';
 import type { AddressInfo } from 'node:net';
 import { preflight } from '../src/diagnostics/preflight.js';
 import { ReadOnlyBitcoinClient, ReadOnlyLndClient } from '../src/diagnostics/ReadOnlyClients.js';
-import { setup } from './helpers.js';
+import { setup, testAccount } from './helpers.js';
 import { createApi } from '../src/api/server.js';
 
 function fixtures() {
@@ -140,7 +140,8 @@ test('runtime read-only clients deny mutations before opening credential files o
 
 test('unsynced preflight is 503 while UI, liveness and quotes remain available', async () => {
   const f = await setup(); const probes = fixtures();
-  const server = createApi(f.manager, async () => { throw new Error('unavailable'); }, probes.run);
+  const account = await testAccount(f.directory, 'ADMIN');
+  const server = createApi(f.manager, async () => { throw new Error('unavailable'); }, probes.run, 'regtest', { auth: { storePath: account.storePath } });
   server.listen(0, '127.0.0.1'); await once(server, 'listening');
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   try {
@@ -150,8 +151,9 @@ test('unsynced preflight is 503 while UI, liveness and quotes remain available',
     assert.equal(response.status, 503);
     assert.equal((await response.json()).wallet.loaded, false);
     assert.equal((await fetch(`${base}/v1/quotes`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{"amountSats":50000}' })).status, 201);
-    assert.equal((await fetch(`${base}/v1/liquidity`)).status, 503);
-    const disabled = await fetch(`${base}/v1/swaps/reverse`, { method: 'POST', headers: { 'content-type': 'application/json', 'idempotency-key': 'disabled-test' },
+    const auth = await account.headers(base);
+    assert.equal((await fetch(`${base}/v1/liquidity`, { headers: { cookie: auth.cookie } })).status, 503);
+    const disabled = await fetch(`${base}/v1/swaps/reverse`, { method: 'POST', headers: { ...auth, 'content-type': 'application/json', 'idempotency-key': 'disabled-test' },
       body: JSON.stringify({ quoteId: f.quote.id, paymentHash: f.contract.paymentHash, claimPublicKey: f.contract.claimPublicKey }) });
     assert.equal(disabled.status, 503);
     assert.match((await disabled.json()).error, /LIVE_SWAPS_DISABLED/);
@@ -163,8 +165,9 @@ test('unsynced preflight is 503 while UI, liveness and quotes remain available',
 
 test('regtest HTTP preflight matches health mode and keeps the reverse gate at 503', async () => {
   const f = await setup(); const probes = fixtures();
+  const account = await testAccount(f.directory, 'USER');
   const server = createApi(f.manager, async () => ({ onchainSats: 0, incomingSats: 0 }),
-    () => preflight(probes.transport, probes.transport, 'lqwd-lab', 'regtest'), 'regtest');
+    () => preflight(probes.transport, probes.transport, 'lqwd-lab', 'regtest'), 'regtest', { auth: { storePath: account.storePath } });
   server.listen(0, '127.0.0.1'); await once(server, 'listening');
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   try {
@@ -175,7 +178,7 @@ test('regtest HTTP preflight matches health mode and keeps the reverse gate at 5
     const report = await response.json();
     assert.equal(report.mode, 'regtest-read-only');
     assert.equal(report.liveSwapsEnabled, false);
-    const disabled = await fetch(`${base}/v1/swaps/reverse`, { method: 'POST', headers: { 'content-type': 'application/json', 'idempotency-key': 'regtest-label-test' },
+    const disabled = await fetch(`${base}/v1/swaps/reverse`, { method: 'POST', headers: { ...await account.headers(base), 'content-type': 'application/json', 'idempotency-key': 'regtest-label-test' },
       body: JSON.stringify({ quoteId: f.quote.id, paymentHash: f.contract.paymentHash, claimPublicKey: f.contract.claimPublicKey }) });
     assert.equal(disabled.status, 503);
     assert.match((await disabled.json()).error, /LIVE_SWAPS_DISABLED/);

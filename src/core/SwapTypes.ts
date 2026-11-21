@@ -1,9 +1,14 @@
 import type { Contract } from '../bitcoin/HtlcBuilder.js';
+import type { ReverseRouting } from './ReverseTestPlan.js';
 
 export const states = ['CREATED', 'QUOTED', 'INVOICE_CREATED', 'INVOICE_ACCEPTED', 'LOCKUP_BROADCAST', 'LOCKUP_CONFIRMED', 'CLAIM_DETECTED', 'LIGHTNING_SETTLED', 'COMPLETED', 'EXPIRED', 'REFUND_PENDING', 'REFUNDED', 'FAILED', 'MANUAL_REVIEW'] as const;
 export type SwapState = typeof states[number];
 export const terminal = new Set<SwapState>(['COMPLETED', 'EXPIRED', 'REFUNDED', 'FAILED']);
 export type Quote = { id: string; amountSats: number; serviceFeeSats: number; invoiceSats: number; fundingReserveSats: number; claimFeeSats: number; expiresAt: number };
+/** Sanitized lookup evidence only: adapters must omit payment preimages and raw RPC responses. */
+export type ReversePaymentStatus = { hash: string; status: 'IN_FLIGHT' | 'SUCCEEDED' | 'FAILED' | 'UNKNOWN'; valueSats: number; feeSats?: number };
+export type ReverseReconciledState = 'INVOICE_ACCEPTED' | 'LOCKUP_CONFIRMED' | 'CLAIM_DETECTED' | 'COMPLETED' | 'REFUNDED' | 'MANUAL_REVIEW';
+export type ReverseReconciliation = { swap: Swap; next: 'FUND' | 'CLAIM' | 'SETTLE' | 'DONE' | 'MANUAL_REVIEW' };
 export type Swap = {
   id: string; idempotencyKey: string; fingerprint: string; quote: Quote; contract: Contract;
   state: SwapState; revision: number; createdAt: number; updatedAt: number;
@@ -21,4 +26,37 @@ export type Swap = {
 export type ChainObservation = { fromHeight: number; height: number; blockHash: string;
   spend?: { txid: string; blockHash: string; height: number } };
 export type Database = { schema: 1; quotes: Record<string, Quote>; swaps: Record<string, Swap>;
+  guestAdmissions?: Record<string, { id: string; requestKey: string; fingerprint: string; tokenHash: string;
+    status: 'QUOTED'; createdAt: number; expiresAt: number;
+    terms: { network: 'regtest'; liquidity: 'UNRESERVED'; destination: string; paymentHash: string; claimPublicKey: string;
+      amountSats: number; invoiceSats: number; serviceFeeSats: number; claimFeeSats: number; fundingReserveSats: number } }>;
+  guestSwaps?: Record<string, { id: string; admissionId: string; requestKey: string; fingerprint: string;
+    recoveryCommitment: string; status: 'PREPARING' | 'INVOICE_CREATED' | 'PREPARATION_UNKNOWN' | 'EXPIRED';
+    attemptId: string; runDirectory: string; swapId?: string; invoice?: string; invoiceExpiresAt?: number;
+    timeoutHeight?: number; createdAt: number; updatedAt: number;
+    claim?: { requestKey: string; fingerprint: string; txid: string; destination: string; feeSats: number;
+      status: 'INTENT' | 'BROADCAST' | 'UNKNOWN' } }>;
+  guestFundingReservations?: Record<string, { admissionId: string; outpoint: string;
+    status: 'RESERVED' | 'RELEASED'; createdAt: number; updatedAt: number }>;
+  ownedPreparations?: Record<string, { ownerId: string; fingerprint: string; attemptId: string; createdAt: number;
+    sourceAmountSats?: number;
+    status: 'INTENT' | 'READY' | 'UNKNOWN' | 'COMPLETED' | 'EXPIRED' | 'REJECTED'; swapId?: string;
+    reviews?: Record<string, { attemptId: string; status: 'INTENT' | 'READY' | 'UNKNOWN' }> }>;
+  ownedReverse?: { owners: Record<string, { ownerId: string; paymentHash: string; claimDestination: string; contractDigest: string }>;
+    requests: Record<string, { ownerId: string; swapId: string; kind: 'EXECUTE' | 'RECONCILE'; fingerprint: string;
+      attemptId: string; expectedRevision: number; createdAt: number; status: 'INTENT' | 'SUCCEEDED' | 'UNKNOWN'; result?: unknown }> };
+  jitExecutions?: Record<string, { termsDigest: string; swapId: string; priorRevision: number; startedAt: number;
+    authorization: import('./JustInTimeReverse.js').JitAuthorization;
+    priorPlan: import('./ReverseTestPlan.js').ReverseTestPlan; status: 'INTENT' | 'QUOTED' | 'EXECUTING' | 'COMPLETED' | 'UNKNOWN';
+    plan?: import('./ReverseTestPlan.js').ReverseTestPlan; revision?: number;
+    approval?: import('./ControlledReverseBackend.js').ControlledRunApproval }>;
+  reversePreparations?: Record<string, { specDigest: string; attemptId: string; status: 'INTENT' | 'RECONCILING' | 'READY' | 'UNKNOWN';
+    plan?: import('./ReverseTestPlan.js').ReverseTestPlan; swapId?: string;
+    invoiceAttempt?: { attemptId: string; revision: number; wireAuthorized: boolean };
+    executionRequest?: import('./ControlledReverseBackend.js').ControlledRunApproval }>;
+  controlledExecutions?: Record<string, { swapId: string; planDigest: string; isolationId: string;
+    routing?: ReverseRouting; providerNode?: string; payerNode?: string;
+    status: 'INTENT' | 'COMPLETED' | 'UNKNOWN'; blocksRequested: number;
+    runtimeActions?: Record<string, { attemptId: string; status: 'INTENT' | 'DONE' | 'UNKNOWN' }>;
+    payerSend?: { attemptId: string; hash: string; status: 'INTENT' | 'SUCCEEDED' | 'FAILED' | 'UNKNOWN' } }>;
   chainObservations?: Record<string, ChainObservation> };

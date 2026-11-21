@@ -2,7 +2,7 @@ export const get = <T extends HTMLElement = HTMLElement>(id: string) => document
 export const text = (id: string, value: string) => { get(id).textContent = value; };
 
 const number = new Intl.NumberFormat('en-US');
-export const sats = (value: number) => number.format(value) + ' sats';
+export const sats = (value: number | bigint) => number.format(value) + ' sats';
 export const integer = (value: number | null) => value === null ? '—' : number.format(value);
 export const message = (error: unknown) => error instanceof DOMException && error.name === 'TimeoutError'
   ? 'The request timed out. Try again.'

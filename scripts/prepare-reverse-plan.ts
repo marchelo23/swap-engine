@@ -11,7 +11,7 @@ import { preflight } from '../src/diagnostics/preflight.js';
 import { ClaimWallet } from '../src/client/ClaimWallet.js';
 import { RefundKeyVault } from '../src/bitcoin/RefundKeyVault.js';
 import { SecretVault } from '../src/persistence/SecretVault.js';
-import { createReverseTestPlan } from '../src/core/ReverseTestPlan.js';
+import { createReverseTestPlan, reverseRoutingSchema } from '../src/core/ReverseTestPlan.js';
 import { QuoteResponse } from '../src/api/schemas.js';
 
 // Operator CLI only. Password arrives over stdin, never argv, environment or output.
@@ -30,6 +30,14 @@ try {
   if (reports.some(r => !r.prerequisitesSatisfied)) throw new Error('Node readiness unresolved');
   const nodeSchema = z.object({ identity_pubkey: z.string().regex(/^(02|03)[a-f0-9]{64}$/) });
   const p = nodeSchema.parse(await provider.call('/v1/getinfo')); const a = nodeSchema.parse(await payer.call('/v1/getinfo'));
+  step = 'channel';
+  const channelSchema = z.object({ channels: z.array(z.object({ active: z.boolean(), chan_id: z.string(), channel_point: z.string(), remote_pubkey: z.string() })) });
+  const providerChannels = channelSchema.parse(await provider.call('/v1/channels')).channels.filter(ch => ch.active && ch.remote_pubkey === a.identity_pubkey);
+  const payerChannels = channelSchema.parse(await payer.call('/v1/channels')).channels.filter(ch => ch.active && ch.remote_pubkey === p.identity_pubkey);
+  if (providerChannels.length !== 1 || payerChannels.length !== 1 || providerChannels[0]!.chan_id !== payerChannels[0]!.chan_id ||
+    providerChannels[0]!.channel_point !== payerChannels[0]!.channel_point) throw new Error('Exact direct channel unavailable');
+  const routing = reverseRoutingSchema.parse({ channelId: payerChannels[0]!.chan_id, channelPoint: payerChannels[0]!.channel_point,
+    bitcoinOrigin: bitcoin.origin, providerOrigin: provider.origin, payerOrigin: payer.origin });
   const tip = z.object({ chain: z.literal('regtest'), blocks: z.number().int().positive() }).parse(await bitcoin.call('getblockchaininfo'));
   step = 'destinations';
   // Retrieve exact bytes from the existing wallet, never copy an address from wrapped terminal output.
@@ -57,7 +65,7 @@ try {
   step = 'contract';
   const plan = createReverseTestPlan(quote, tip.blocks, client.toJSON(), refund.publicKey,
     { claim: claimDestination, refund: refundDestination },
-    { provider: p.identity_pubkey, payer: a.identity_pubkey });
+    { provider: p.identity_pubkey, payer: a.identity_pubkey }, routing);
   const path = join(c.directory, 'reverse-test-plan.json');
   step = 'public_plan';
   const file = await open(path, 'wx', 0o600);

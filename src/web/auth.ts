@@ -1,7 +1,7 @@
 import { api, type Session } from './api.js';
 import { get, text } from './ui.js';
 
-export function mountAuth(onAdminChange: (allowed: boolean) => void) {
+export function mountAuth(onSessionChange: (session: Session | null) => void) {
   const form = get<HTMLFormElement>('login-form');
   const username = get<HTMLInputElement>('username');
   const password = get<HTMLInputElement>('password');
@@ -10,12 +10,12 @@ export function mountAuth(onAdminChange: (allowed: boolean) => void) {
   let session: Session | null = null;
   let expiry: number | undefined;
   let busy = false;
-  let available = false;
 
   function setBusy(value: boolean) {
     busy = value;
-    username.disabled = password.disabled = submit.disabled = value || !available;
+    submit.disabled = value;
     logout.disabled = value;
+    form.setAttribute('aria-busy', String(value));
   }
 
   function render(next: Session | null) {
@@ -34,7 +34,7 @@ export function mountAuth(onAdminChange: (allowed: boolean) => void) {
     text('account-role', next ? (admin ? 'Administrator' : 'User') : '');
     text('admin-status', next ? 'Administrator role required.' : 'Sign in with an administrator account.');
     if (recoverFocus) document.querySelector<HTMLElement>('[data-view]:not([hidden]) h1')?.focus();
-    onAdminChange(admin);
+    onSessionChange(next);
     if (next) {
       expiry = window.setTimeout(() => {
         if (session !== next) return;
@@ -47,7 +47,6 @@ export function mountAuth(onAdminChange: (allowed: boolean) => void) {
 
   async function verify() {
     const verified = await api.session();
-    available = true;
     render(verified);
     return verified;
   }
@@ -57,21 +56,26 @@ export function mountAuth(onAdminChange: (allowed: boolean) => void) {
     if (!verified) text('login-status', 'Enter your account credentials.');
   }).catch(() => {
     render(null);
-    text('login-status', 'The session service is unavailable.');
+    text('login-status', 'The session service is unavailable. You can try signing in.');
     text('admin-status', 'The session service is unavailable.');
   }).finally(() => setBusy(false));
 
   form.addEventListener('submit', async event => {
     event.preventDefault();
-    if (busy || session || !available || !form.reportValidity()) return;
+    if (busy || session || !form.reportValidity()) return;
     const enteredPassword = password.value;
     const enteredUsername = username.value;
     password.value = '';
     setBusy(true);
     text('login-status', 'Signing in…');
     try {
-      if (!await api.login(enteredUsername, enteredPassword)) {
-        text('login-status', 'Sign-in failed. Check your credentials.');
+      try {
+        if (!await api.login(enteredUsername, enteredPassword)) {
+          text('login-status', 'Sign-in failed. Check your credentials.');
+          return;
+        }
+      } catch {
+        text('login-status', 'Sign-in service unavailable. Try again.');
         return;
       }
       if (!await verify()) {
@@ -79,6 +83,7 @@ export function mountAuth(onAdminChange: (allowed: boolean) => void) {
         return;
       }
       username.value = '';
+      password.value = '';
       text('account-status', 'Signed in.');
       if (!get('account').hidden) get('account-overview').focus();
     } catch {

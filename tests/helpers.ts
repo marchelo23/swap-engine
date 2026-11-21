@@ -1,6 +1,8 @@
 import { randomBytes } from 'node:crypto';
-import { mkdir, mkdtemp, rm } from 'node:fs/promises';
+import assert from 'node:assert/strict';
+import { mkdtemp, realpath, rm } from 'node:fs/promises';
 import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import * as btc from 'bitcoinjs-lib';
 import { ECPairFactory } from 'ecpair';
 import * as ecc from 'tiny-secp256k1';
@@ -9,8 +11,39 @@ import { Store } from '../src/persistence/Store.js';
 import { SwapManager } from '../src/core/SwapManager.js';
 import type { Invoice } from '../src/lightning/LndClient.js';
 import type { SwapPorts } from '../src/core/SwapCoordinator.js';
+import { provisionAccount } from '../scripts/provision-auth.js';
+import { SessionResponse } from '../src/api/schemas.js';
+
+export async function testAccount(directory: string, role: 'USER' | 'ADMIN') {
+  const storePath = join(directory, 'test-auth.json');
+  const username = 'test-operator';
+  const password = randomBytes(24).toString('base64url');
+  await provisionAccount(storePath, username, role, password);
+  return {
+    storePath, username, password,
+    async headers(origin: string) {
+      const response = await fetch(`${origin}/v1/auth/login`, {
+        method: 'POST', headers: { 'content-type': 'application/json', origin },
+        body: JSON.stringify({ username, password }),
+      });
+      assert.equal(response.status, 200);
+      const { csrfToken } = SessionResponse.parse(await response.json());
+      return { origin, cookie: response.headers.get('set-cookie')!.split(';')[0]!, 'x-csrf-token': csrfToken };
+    },
+  };
+}
 
 export const keys = ECPairFactory(ecc);
+/** Operator fixtures need a private canonical path, even when the checkout is
+ * group-writable. Keep the production ancestor/ownership guards unchanged. */
+export async function privateTestDirectory(prefix: string) {
+  if (!/^[a-z0-9-]+$/.test(prefix)) throw new Error('Invalid test directory prefix');
+  return mkdtemp(join(await realpath(tmpdir()), `lqwd-${prefix}-`));
+}
+export function routingFixture(channelPoint = 'ef'.repeat(32) + ':0') {
+  return { channelId: '12345', channelPoint, bitcoinOrigin: 'http://127.0.0.1:18443',
+    providerOrigin: 'https://127.0.0.1:8080', payerOrigin: 'https://127.0.0.1:8081' };
+}
 export function fixture() {
   const claimKey = keys.makeRandom(); const refundKey = keys.makeRandom();
   const preimage = randomBytes(32).toString('hex');
@@ -22,11 +55,11 @@ export function fixture() {
   return { claimKey, refundKey, preimage, contract, htlc, tx, destination,
     spend: { contract, lockupTxHex: tx.toHex(), vout: 0, destination, feeSats: 500, privateKey: claimKey.privateKey! } };
 }
-export async function setup() {
-  await mkdir('data/tests', { recursive: true });
-  const directory = await mkdtemp(join(process.cwd(), 'data', 'tests', 'lqwd-'));
+export async function setup(sourceAmountSats?: number) {
+  const directory = await privateTestDirectory('fixture');
   const store = await Store.open(directory); const manager = new SwapManager(store); const f = fixture();
-  const quote = await manager.quote(50_000);
+  const quote = sourceAmountSats === undefined ? await manager.quote(50_000) : await manager.quoteInvoice(sourceAmountSats);
+  if (sourceAmountSats !== undefined) { f.tx.outs[0]!.value = BigInt(quote.amountSats); f.spend.lockupTxHex = f.tx.toHex(); }
   const swap = await manager.create(quote.id, 'request-1234', f.contract, 100, { onchainSats: 1_000_000, incomingSats: 1_000_000 });
   let invoiceState: Invoice['state'] = 'ACCEPTED';
   const ledger = new Map<string, { hex: string; confirmations: number }>();

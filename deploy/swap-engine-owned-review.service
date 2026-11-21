@@ -1,0 +1,23 @@
+[Unit]
+Description=Swap Engine isolated regtest review candidate
+After=network.target
+
+[Service]
+Type=simple
+User=truja
+Group=truja
+WorkingDirectory=/home/truja/reverse-ui-review/current
+ExecStart=/usr/bin/node --env-file=/home/truja/reverse-ui-review/review.env --import tsx src/main.ts
+Restart=no
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/truja/reverse-ui-review/data
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+IPAddressDeny=any
+IPAddressAllow=localhost
+
+[Install]
+WantedBy=multi-user.target

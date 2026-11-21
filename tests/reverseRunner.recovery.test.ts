@@ -7,6 +7,7 @@ import { runControlledReverse, type ReverseTestControls, type PaymentEvidence } 
 import { createClaim } from '../src/bitcoin/ClaimManager.js';
 import type { Invoice } from '../src/lightning/LndClient.js';
 import type { Swap } from '../src/core/SwapTypes.js';
+import { transition, updateSwapRevision } from '../src/core/SwapStateMachine.js';
 
 type StartHandle = { result: Promise<PaymentEvidence>; stopClient(): void };
 type RunnerOptions = {
@@ -78,6 +79,31 @@ async function runnerFixture(options: RunnerOptions = {}) {
     setEvidence: (patch: Partial<PaymentEvidence>) => { evidence = { ...evidence, ...patch }; },
   };
 }
+
+test('two runners racing before payment intent start at most one payer', async () => {
+  const x = await runnerFixture({ waitAccepted: async () => { throw new Error('stop after payer admission'); } });
+  try {
+    const invoice = x.f.ports.invoice;
+    let arrivals = 0;
+    let release!: () => void;
+    const barrier = new Promise<void>(resolve => { release = resolve; });
+    x.f.ports.invoice = async hash => {
+      const value = await invoice(hash);
+      if (++arrivals === 2) release();
+      await barrier;
+      return value;
+    };
+    const outcomes = await Promise.allSettled([
+      runControlledReverse(x.f.store, x.f.ports, x.controls, x.f.swap.id),
+      runControlledReverse(x.f.store, x.f.ports, x.controls, x.f.swap.id),
+    ]);
+    assert.equal(arrivals, 2);
+    assert.equal(outcomes.filter(result => result.status === 'rejected').length, 2);
+    assert.equal(x.counters.started, 1);
+    assert.equal(x.f.calls.funding, 0);
+    assert.equal(x.f.store.read().swaps[x.f.swap.id]!.clientPayment?.status, 'UNKNOWN');
+  } finally { await x.f.cleanup(); }
+});
 
 test('runner refuses canceled, expired, substituted, overpaid and already-held invoices before any payer or funding action', async () => {
   const cases: Array<{ name: string; change: (invoice: Invoice) => Invoice }> = [
@@ -177,21 +203,22 @@ test('unknown startPayment RPC outcome leaves an UNKNOWN durable payment and blo
   } finally { await x.f.cleanup(); }
 });
 
-test('unknown payer result outcome stops the client and keeps the observed claim in manual review', async () => {
+test('unknown payer result outcome stops the client before any funding or claim action', async () => {
   const x = await runnerFixture({
     startPayment: async () => ({
       result: Promise.reject(new Error('Payer result RPC reply lost')), stopClient: () => {},
     }),
   });
   try {
-    await assert.rejects(runControlledReverse(x.f.store, x.f.ports, x.controls, x.f.swap.id), /Payer result RPC reply lost/);
+    await assert.rejects(runControlledReverse(x.f.store, x.f.ports, x.controls, x.f.swap.id), /Payer outcome uncertain/);
     const swap = x.f.manager.get(x.f.swap.id)!;
     assert.equal(swap.state, 'MANUAL_REVIEW');
     assert.equal(swap.clientPayment!.status, 'UNKNOWN');
-    assert.equal(swap.clientClaimIntent!.status, 'BROADCAST');
+    assert.equal(swap.clientClaimIntent, undefined);
     assert.equal(x.counters.stopped, 1);
-    assert.equal(x.counters.settles, 1);
-    assert.equal(x.counters.claimBroadcasts, 1);
+    assert.equal(x.counters.settles, 0);
+    assert.equal(x.counters.claimBroadcasts, 0);
+    assert.equal(x.f.calls.funding, 0);
   } finally { await x.f.cleanup(); }
 });
 
@@ -204,7 +231,8 @@ test('unknown funding preparation outcome retains PREPARE_LOCKUP and never broad
     const swap = x.f.manager.get(x.f.swap.id)!;
     assert.equal(swap.state, 'MANUAL_REVIEW');
     assert.equal(swap.pendingAction, 'PREPARE_LOCKUP');
-    assert.equal(swap.clientPayment!.status, 'UNKNOWN');
+    // Coordinator owns the newer uncertain intent; runner cleanup must not rewrite it.
+    assert.equal(swap.clientPayment!.status, 'IN_FLIGHT');
     assert.equal(swap.lockup, undefined);
     assert.equal(attempts, 1);
     assert.equal(x.f.calls.funding, 0);
@@ -225,7 +253,7 @@ test('unknown funding broadcast outcome retains the signed lockup and BROADCAST_
     assert.equal(swap.state, 'MANUAL_REVIEW');
     assert.equal(swap.pendingAction, 'BROADCAST_LOCKUP');
     assert.ok(swap.lockup);
-    assert.equal(swap.clientPayment!.status, 'UNKNOWN');
+    assert.equal(swap.clientPayment!.status, 'IN_FLIGHT');
     assert.equal(attempts, 1);
     assert.equal(x.f.calls.funding, 1);
     assert.equal(x.counters.claimBroadcasts, 0);
@@ -373,5 +401,117 @@ test('completed swap keeps durable payment and claim evidence and refuses anothe
     assert.equal(x.counters.started, 1);
     assert.equal(x.counters.claimBroadcasts, 1);
     assert.equal(x.counters.settles, 1);
+  } finally { await x.f.cleanup(); }
+});
+
+test('failed runner preserves every newer actor payment journal and never starts another payment', async () => {
+  for (const status of ['FAILED', 'IN_FLIGHT', 'UNKNOWN', 'SUCCEEDED'] as const) {
+    const x = await runnerFixture();
+    const failure = new Error('Acceptance observation became uncertain');
+    let concurrent: Swap | undefined;
+    x.controls.waitAccepted = async () => {
+      const current = x.f.manager.get(x.f.swap.id)!;
+      concurrent = await updateSwapRevision(x.f.store, current.id, current.revision, s => {
+        s.clientPayment!.status = status;
+        if (status === 'SUCCEEDED') s.clientPayment!.feeSats = 3;
+        s.pendingAction = 'PREPARE_LOCKUP';
+        transition(s, 'MANUAL_REVIEW');
+      });
+      throw failure;
+    };
+    try {
+      await assert.rejects(runControlledReverse(x.f.store, x.f.ports, x.controls, x.f.swap.id), error => error === failure);
+      assert.deepEqual(x.f.manager.get(x.f.swap.id), concurrent, status);
+      assert.equal(x.counters.stopped, 1);
+      await assert.rejects(runControlledReverse(x.f.store, x.f.ports, x.controls, x.f.swap.id), /reconcile/);
+      assert.equal(x.counters.started, 1);
+      assert.deepEqual(x.f.calls, { funding: 0, broadcast: 0, settle: 0 });
+    } finally { await x.f.cleanup(); }
+  }
+});
+
+test('actor update queued during client cleanup wins the atomic failure-journal race', async () => {
+  const failure = new Error('Acceptance lookup reply lost');
+  let concurrent: Promise<Swap> | undefined;
+  const x = await runnerFixture({ waitAccepted: async () => { throw failure; } });
+  const start = x.controls.startPayment;
+  x.controls.startPayment = async swap => {
+    const handle = await start(swap);
+    return { result: handle.result, stopClient: () => {
+      handle.stopClient();
+      const current = x.f.manager.get(x.f.swap.id)!;
+      concurrent = updateSwapRevision(x.f.store, current.id, current.revision, s => {
+        s.clientPayment!.status = 'FAILED';
+        transition(s, 'MANUAL_REVIEW');
+      });
+    } };
+  };
+  try {
+    await assert.rejects(runControlledReverse(x.f.store, x.f.ports, x.controls, x.f.swap.id), error => error === failure);
+    assert.ok(concurrent);
+    assert.deepEqual(x.f.manager.get(x.f.swap.id), await concurrent);
+    await assert.rejects(runControlledReverse(x.f.store, x.f.ports, x.controls, x.f.swap.id), /reconcile/);
+    assert.equal(x.counters.started, 1);
+    assert.equal(x.f.calls.funding, 0);
+  } finally { await concurrent; await x.f.cleanup(); }
+});
+
+test('legacy unversioned actor changes also survive failure cleanup without replay', async () => {
+  const failure = new Error('Acceptance stream disconnected');
+  const x = await runnerFixture();
+  let concurrent: Swap | undefined;
+  x.controls.waitAccepted = async () => {
+    concurrent = await x.f.store.transaction(db => {
+      const s = db.swaps[x.f.swap.id]!;
+      s.clientPayment!.status = 'FAILED';
+      return s; // Existing adapters can still mutate journals without a revision bump.
+    });
+    throw failure;
+  };
+  try {
+    await assert.rejects(runControlledReverse(x.f.store, x.f.ports, x.controls, x.f.swap.id), error => error === failure);
+    assert.deepEqual(x.f.manager.get(x.f.swap.id), concurrent);
+    await assert.rejects(runControlledReverse(x.f.store, x.f.ports, x.controls, x.f.swap.id), /reconcile/);
+    assert.equal(x.counters.started, 1);
+    assert.equal(x.f.calls.funding, 0);
+  } finally { await x.f.cleanup(); }
+});
+
+test('throwing client cleanup cannot prevent UNKNOWN payment journaling or hide the original ambiguity', async () => {
+  const failure = new Error('Acceptance outcome unknown');
+  const x = await runnerFixture({
+    startPayment: async () => ({ result: new Promise<PaymentEvidence>(() => {}),
+      stopClient: () => { throw new Error('Client cleanup failed'); } }),
+    waitAccepted: async () => { throw failure; },
+  });
+  try {
+    await assert.rejects(runControlledReverse(x.f.store, x.f.ports, x.controls, x.f.swap.id), error => error === failure);
+    const failed = x.f.manager.get(x.f.swap.id)!;
+    assert.equal(failed.state, 'MANUAL_REVIEW');
+    assert.equal(failed.clientPayment!.status, 'UNKNOWN');
+    await assert.rejects(runControlledReverse(x.f.store, x.f.ports, x.controls, x.f.swap.id), /reconcile/);
+    assert.equal(x.counters.started, 1);
+    assert.equal(x.f.calls.funding, 0);
+  } finally { await x.f.cleanup(); }
+});
+
+test('payer observation failure during funding preparation stops the pending funding broadcast without retry', async () => {
+  let rejectResult!: (error: Error) => void;
+  const result = new Promise<PaymentEvidence>((_, reject) => { rejectResult = reject; });
+  const x = await runnerFixture({ startPayment: async () => ({ result, stopClient: () => {} }) });
+  const prepare = x.f.ports.prepareLockup;
+  x.f.ports.prepareLockup = async swap => {
+    const funding = await prepare(swap);
+    rejectResult(new Error('Payment stream disconnected'));
+    return funding;
+  };
+  try {
+    await assert.rejects(runControlledReverse(x.f.store, x.f.ports, x.controls, x.f.swap.id), /Payer outcome uncertain/);
+    const failed = x.f.manager.get(x.f.swap.id)!;
+    assert.equal(failed.state, 'MANUAL_REVIEW'); assert.equal(failed.pendingAction, 'BROADCAST_LOCKUP');
+    assert.ok(failed.lockup); assert.equal(x.f.calls.funding, 1); assert.equal(x.f.calls.broadcast, 0);
+    assert.equal(x.counters.claimBroadcasts, 0); assert.equal(x.counters.settles, 0);
+    await assert.rejects(runControlledReverse(x.f.store, x.f.ports, x.controls, x.f.swap.id), /reconcile/);
+    assert.equal(x.counters.started, 1); assert.equal(x.f.calls.funding, 1);
   } finally { await x.f.cleanup(); }
 });

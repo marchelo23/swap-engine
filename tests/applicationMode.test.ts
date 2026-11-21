@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import type { AddressInfo } from 'node:net';
-import { setup } from './helpers.js';
+import { setup, testAccount } from './helpers.js';
 import { createApi } from '../src/api/server.js';
 import { applicationMode, config, type ApplicationMode } from '../src/config.js';
 import type { SwapManager } from '../src/core/SwapManager.js';
@@ -33,8 +33,8 @@ test('ENABLE_LIVE_SWAPS=true remains a startup refusal in both application modes
   }
 });
 
-async function serve(mode: ApplicationMode, manager: SwapManager, diagnostics?: () => any) {
-  const server = createApi(manager, async () => ({ onchainSats: 1_000_000, incomingSats: 1_000_000 }), diagnostics, mode);
+async function serve(mode: ApplicationMode, manager: SwapManager, diagnostics?: () => any, storePath?: string) {
+  const server = createApi(manager, async () => ({ onchainSats: 1_000_000, incomingSats: 1_000_000 }), diagnostics, mode, { auth: { storePath } });
   server.listen(0, '127.0.0.1'); await once(server, 'listening');
   return {
     base: `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
@@ -59,13 +59,14 @@ test('health clearly labels simulation and regtest read-only modes without enabl
 test('reverse-swap execution gate stays at 503 in simulation and regtest modes', async () => {
   const f = await setup();
   try {
+    const account = await testAccount(f.directory, 'USER');
     const before = Object.keys(f.store.read().swaps).length;
     for (const mode of ['simulation', 'regtest'] as const) {
-      const app = await serve(mode, f.manager);
+      const app = await serve(mode, f.manager, undefined, account.storePath);
       try {
         const response = await fetch(`${app.base}/v1/swaps/reverse`, {
           method: 'POST',
-          headers: { 'content-type': 'application/json', 'idempotency-key': `gate-${mode}-1` },
+          headers: { ...await account.headers(app.base), 'content-type': 'application/json', 'idempotency-key': `gate-${mode}-1` },
           body: JSON.stringify({ quoteId: f.quote.id, paymentHash: f.contract.paymentHash, claimPublicKey: f.contract.claimPublicKey }),
         });
         assert.equal(response.status, 503);

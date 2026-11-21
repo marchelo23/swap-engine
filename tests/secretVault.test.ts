@@ -59,6 +59,7 @@ test('POSIX vault enforces private modes and refuses unsafe directories, records
     await symlink(target, path); await assert.rejects(vault.read('client', id));
     await assert.rejects(vault.read('client', '../bad'), /identifier/);
     const unsafe = join(directory, 'unsafe'); await mkdir(unsafe, { mode: 0o755 });
+    await chmod(unsafe, 0o755); // A restrictive process umask must not turn the unsafe fixture into a safe directory.
     await assert.rejects(SecretVault.open(unsafe, password), /permissions/);
   } finally { vault.close(); await rm(directory, { recursive: true, force: true }); }
 });

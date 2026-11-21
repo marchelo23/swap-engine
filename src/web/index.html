@@ -10,115 +10,126 @@
   <script type="module" src="/app.js"></script>
 </head>
 <body>
+<svg class="icon-library" width="0" height="0" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
+  <symbol id="icon-onchain" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9.5"/><path d="M8.5 7.5h5a2.25 2.25 0 1 1 0 4.5h-4m0 0h4.75a2.25 2.25 0 1 1 0 4.5H8.5m1-9v9m1.5-11v2m2.5-2v2M11 16.5v2m2.5-2v2"/></symbol>
+  <symbol id="icon-lightning" viewBox="0 0 24 24"><path fill="currentColor" fill-opacity=".12" d="M13.5 2.75 5 13h6l-.5 8.25L19 11h-6z"/></symbol>
+  <symbol id="icon-liquid" viewBox="0 0 24 24"><path d="M12 3c2.3 3.3 6.5 6.8 6.5 11a6.5 6.5 0 0 1-13 0c0-4.2 4.2-7.7 6.5-11Z"/><path d="M6 14c2.1-1.4 4.1-1.4 6 0s4 1.4 6 0"/></symbol>
+  <symbol id="icon-swap" viewBox="0 0 24 24"><path d="M4 8h15m-4-4 4 4-4 4m5 4H5m4-4-4 4 4 4"/></symbol>
+  <symbol id="icon-down" viewBox="0 0 24 24"><path d="M12 4v15m-5-5 5 5 5-5"/></symbol>
+  <symbol id="icon-next" viewBox="0 0 24 24"><path d="M4 12h15m-5-5 5 5-5 5"/></symbol>
+  <symbol id="icon-select" viewBox="0 0 24 24"><path d="m7 10 5 5 5-5"/></symbol>
+</svg>
+<div id="opening-overlay" hidden>
+  <canvas id="opening" aria-hidden="true"></canvas>
+  <button id="skip-intro" type="button">Skip intro <span aria-hidden="true">&#8599;</span></button>
+</div>
+<div id="workspace-shell">
 <a class="skip" href="#main">Skip to content</a>
 <header class="top">
-  <div class="wrap top-inner">
-    <a class="brand" href="#swap"><span class="mark" aria-hidden="true"><i></i><i></i></span>SWAP<span>ENGINE</span></a>
+  <div class="top-inner">
     <nav aria-label="Workspace">
       <a href="#swap" aria-current="page">Swap</a><a href="#account">Account</a><a href="#operations">Operations</a>
     </nav>
-    <span class="pill" id="mode"><i></i> CHECKING MODE</span>
   </div>
 </header>
 <main id="main" tabindex="-1" class="wrap">
-  <noscript><p class="notice">JavaScript enables quotes, swap lookup and environment checks.</p></noscript>
+  <noscript><p class="notice">JavaScript enables cube controls, quotes and environment checks.</p></noscript>
   <section id="swap" data-view aria-labelledby="swap-title">
-    <div class="workspace">
-      <div class="intro">
-        <h1 id="swap-title" tabindex="-1" class="hero-title">Swaps</h1>
-        <div class="sculpture" id="sculpture" data-rail="lightning">
-          <svg class="blocks" viewBox="0 0 620 276" role="presentation" aria-hidden="true">
-            <defs>
-              <linearGradient id="top-tone" x2="0" y2="1"><stop stop-color="#fafafa"/><stop offset="1" stop-color="#e5e5e5"/></linearGradient>
-              <linearGradient id="face-tone" x2="1" y2="1"><stop stop-color="#e8e8e8"/><stop offset="1" stop-color="#bababa"/></linearGradient>
-              <linearGradient id="dark-tone" x2="1" y2="1"><stop stop-color="#424242"/><stop offset="1" stop-color="#171717"/></linearGradient>
-              <pattern id="front-lines" width="4" height="4" patternUnits="userSpaceOnUse"><path d="M0 4h4" stroke="#111" stroke-opacity=".12" stroke-width=".5"/></pattern>
-              <pattern id="top-lines" width="7" height="7" patternUnits="userSpaceOnUse" patternTransform="skewX(-45)"><path d="M0 0V7" stroke="#111" stroke-opacity=".19" stroke-width=".8"/></pattern>
-              <pattern id="dark-lines" width="5" height="5" patternUnits="userSpaceOnUse"><path d="M0 5h5" stroke="white" stroke-opacity=".10" stroke-width=".65"/></pattern>
-              <radialGradient id="floor-shadow"><stop stop-opacity=".17"/><stop offset="1" stop-opacity="0"/></radialGradient>
-            </defs>
-            <g class="registration" fill="none" stroke="#d3d3d3">
-              <path d="M24 35v-9h9m554 0h9v9M24 242v9h9m554 0h9v-9M310 21v10m-5-5h10M310 245v10m-5-5h10"/>
-              <path d="M38 227h544" stroke-dasharray="2 6"/>
-            </g>
-            <ellipse cx="308" cy="223" rx="253" ry="23" fill="url(#floor-shadow)"/>
-            <g class="cube cube-liquid">
-              <path class="cube-top" d="M382 108l39-39h140l-39 39z"/><path class="top-lines" d="M382 108l39-39h140l-39 39z"/>
-              <path class="cube-side" d="M522 108l39-39v109l-39 39z"/><path class="front-lines" d="M522 108l39-39v109l-39 39z"/>
-              <path class="cube-front" d="M382 108h140v109H382z"/><path class="front-lines" d="M382 108h140v109H382z"/>
-              <path class="cube-icon" d="M441 156l11-11 11 11-11 11zm-7 8 18 18 18-18"/>
-            </g>
-            <g class="cube cube-lightning">
-              <path class="cube-top" d="M242 108l39-39h140l-39 39z"/><path class="top-lines" d="M242 108l39-39h140l-39 39z"/>
-              <path class="cube-side" d="M382 108l39-39v109l-39 39z"/>
-              <path class="cube-front" d="M242 108h140v109H242z"/><path class="front-lines dark-lines" d="M242 108h140v109H242z"/>
-              <path class="cube-icon" d="M319 143l-19 22h12l-6 17 19-24h-12z"/>
-            </g>
-            <g class="cube cube-onchain">
-              <path class="cube-top" d="M102 108l39-39h140l-39 39z"/><path class="top-lines" d="M102 108l39-39h140l-39 39z"/>
-              <path class="cube-side" d="M242 108l39-39v109l-39 39z"/>
-              <path class="cube-front" d="M102 108h140v109H102z"/><path class="front-lines" d="M102 108h140v109H102z"/>
-              <path class="cube-icon" d="M172 145l15 8.5v17l-15 8.5-15-8.5v-17zm-15 8.5 15 8.5 15-8.5m-15 8.5v17"/>
-            </g>
-          </svg>
-          <canvas id="opening" hidden aria-hidden="true"></canvas>
-        </div>
-        <div class="rail-selector" role="group" aria-label="Source rail">
-          <button type="button" id="rail-onchain" aria-pressed="false">On-chain</button>
-          <button type="button" id="rail-lightning" aria-pressed="true">Lightning</button>
-          <button type="button" id="rail-liquid" aria-describedby="liquid-state" disabled>Liquid</button>
-          <span class="sr-only" id="liquid-state">Unavailable</span>
-        </div>
-      </div>
-      <article class="panel exchange" aria-labelledby="exchange-title">
-        <div class="panel-header"><h2 id="exchange-title">Route preview</h2><span class="tag">EXECUTION DISABLED</span></div>
-        <form id="quote-form" novalidate>
-          <div class="asset">
-            <label class="label" for="amount">From <span class="sr-only">— quote principal in sats</span></label>
-            <div class="asset-row"><div class="amount"><input id="amount" name="amount" value="50000" inputmode="numeric" maxlength="7" aria-describedby="amount-help" autocomplete="off"><span>sats</span></div><span class="asset-name"><b data-icon aria-hidden="true">ϟ</b><span id="source">Lightning</span></span></div>
+    <div class="cube-stage">
+      <h1 id="swap-title" class="sr-only" tabindex="-1">Swap Engine</h1>
+      <p id="rotation-help" class="sr-only">Scroll, drag or swipe vertically. Press Down for the next network or Up for the previous network.</p>
+      <svg class="stage-grid" viewBox="0 0 1160 470" fill="none" aria-hidden="true">
+        <path d="M40 72h1080M40 391h1080M142 30v410M1018 30v410M580 37v17m-8-8h16M580 418v17m-8-8h16" stroke="#d8d8d8" stroke-dasharray="3 7"/>
+        <path d="M40 91V72h19m1042 0h19v19M40 372v19h19m1042 0h19v-19" stroke="#9c9c9c"/>
+        <path d="M175 425h810l-116-71H292zM317 425l83-71m91 71 27-71m151 71-26-71m200 71-82-71M231 390h696" stroke="#dedede"/>
+      </svg>
+      <div class="stage-shadow" aria-hidden="true"></div>
+      <form id="quote-form" class="cube-scene" novalidate aria-label="Swap quote">
+      <article class="cube-unit cube-outer cube-send" id="send-cube" aria-labelledby="send-label">
+        <div class="cube-rotor">
+          <div class="cube-plane plane-top" aria-hidden="true"><span class="plane-mark">S / 01</span><span class="turn-label"></span></div>
+          <div class="cube-plane plane-bottom" aria-hidden="true"><span class="plane-mark">+</span><span class="turn-label"></span></div>
+          <div class="cube-plane plane-back" aria-hidden="true"><span class="plane-mark">+</span></div>
+          <div class="cube-plane plane-left" aria-hidden="true"><span class="plane-mark">+</span><span class="turn-label"></span></div>
+          <div class="cube-plane plane-right" aria-hidden="true"><span class="plane-mark">+</span><span class="turn-label"></span></div>
+          <div class="cube-plane plane-front">
+            <header class="face-header"><h2 id="send-label">SEND</h2></header>
+            <div class="rail-field"><svg class="rail-icon icon" aria-hidden="true"><use id="send-icon" href="#icon-lightning"/></svg><label class="sr-only" for="send-network">Send network</label><select id="send-network" name="send-network"><option value="onchain">On-chain</option><option value="lightning" selected>Lightning</option><option value="liquid">Liquid</option></select><svg class="select-icon icon" aria-hidden="true"><use href="#icon-select"/></svg></div>
+            <div class="face-value"><label for="amount" class="sr-only">Quote principal in sats</label><input id="amount" name="amount" value="50000" inputmode="numeric" maxlength="7" aria-describedby="amount-help" autocomplete="off"><span aria-hidden="true">sats</span></div><p id="amount-help" class="face-note">10,000&ndash;1,000,000 sats</p>
+            <button type="button" class="rail-grip" id="send-grip" aria-label="Rotate send cube" aria-describedby="rotation-help"><svg class="icon" aria-hidden="true"><use href="#icon-down"/></svg></button>
           </div>
-          <div class="reverse-row"><button class="icon-button" type="button" id="reverse" aria-label="Reverse swap direction">⇅</button></div>
-          <div class="asset">
-            <p class="label">Estimated receipt</p>
-            <div class="asset-row"><div class="amount" id="received-preview">—</div><span class="asset-name"><b data-icon aria-hidden="true">₿</b><span id="destination">On-chain</span></span></div>
-          </div>
-          <p id="amount-help" class="hint">Quote principal · 10,000–1,000,000 sats</p>
-          <dl class="fees">
-            <div><dt>Service fee</dt><dd id="service">—</dd></div>
-            <div><dt>Estimated on-chain claim fee</dt><dd id="claim">—</dd></div>
-            <div><dt>Total Lightning payment</dt><dd id="invoice">—</dd></div>
-            <div><dt>Estimated cost</dt><dd id="cost">—</dd></div>
-            <div><dt>Lightning routing fee</dt><dd>Unknown</dd></div>
-          </dl>
-          <button id="estimate" class="primary" type="submit">Get quote <span aria-hidden="true">↗</span></button>
-          <button id="review" class="secondary full" type="button" hidden>Review quote</button>
-          <p id="quote-status" class="status" role="status">Execution is disabled in this environment.</p>
-        </form>
+        </div>
       </article>
-    </div>
-    <div class="environment">
-      <div><span class="micro">ENVIRONMENT</span><strong id="environment-label">Checking backend</strong></div>
-      <div><span class="micro">NETWORK</span><strong id="network">Awaiting verification</strong></div>
-      <div><span class="micro">MAINNET</span><strong>Unavailable</strong></div>
-      <a class="text-link" href="#track">Swap status <span aria-hidden="true">↗</span></a>
+      <article class="cube-unit cube-outer cube-receive" id="receive-cube" aria-labelledby="receive-label">
+        <div class="cube-rotor">
+          <div class="cube-plane plane-top" aria-hidden="true"><span class="plane-mark">R / 03</span><span class="turn-label"></span></div>
+          <div class="cube-plane plane-bottom" aria-hidden="true"><span class="plane-mark">+</span><span class="turn-label"></span></div>
+          <div class="cube-plane plane-back" aria-hidden="true"><span class="plane-mark">+</span></div>
+          <div class="cube-plane plane-left" aria-hidden="true"><span class="plane-mark">+</span><span class="turn-label"></span></div>
+          <div class="cube-plane plane-right" aria-hidden="true"><span class="plane-mark">+</span><span class="turn-label"></span></div>
+          <div class="cube-plane plane-front">
+            <header class="face-header"><h2 id="receive-label">RECEIVE</h2></header>
+            <div class="rail-field"><svg class="rail-icon icon" aria-hidden="true"><use id="receive-icon" href="#icon-onchain"/></svg><label class="sr-only" for="receive-network">Receive network</label><select id="receive-network" name="receive-network"><option value="onchain" selected>On-chain</option><option value="lightning">Lightning</option><option value="liquid">Liquid</option></select><svg class="select-icon icon" aria-hidden="true"><use href="#icon-select"/></svg></div>
+            <div class="face-value"><output id="received-preview" for="amount" aria-label="Estimated receipt in sats" aria-live="off">&mdash;</output><span aria-hidden="true">sats</span></div><p class="face-note">Estimated receipt</p>
+            <button type="button" class="rail-grip" id="receive-grip" aria-label="Rotate receive cube" aria-describedby="rotation-help"><svg class="icon" aria-hidden="true"><use href="#icon-down"/></svg></button>
+          </div>
+        </div>
+      </article>
+      <article class="cube-unit cube-swap" aria-labelledby="swap-label">
+        <div class="cube-rotor">
+          <div class="cube-plane plane-top" aria-hidden="true"><span class="plane-mark">X / 02</span></div>
+          <div class="cube-plane plane-bottom" aria-hidden="true"><span class="plane-mark">+</span></div>
+          <div class="cube-plane plane-back" aria-hidden="true"><span class="plane-mark">+</span></div>
+          <div class="cube-plane plane-left" aria-hidden="true"><span class="plane-mark">+</span></div>
+          <div class="cube-plane plane-right" aria-hidden="true"><span class="plane-mark">+</span></div>
+          <div class="cube-plane plane-front">
+            <header class="face-header"><h2 id="swap-label">SWAP</h2><svg class="face-index icon" aria-hidden="true"><use href="#icon-swap"/></svg></header>
+            <dl class="cube-fees">
+              <div><dt>Service fee</dt><dd id="service">&mdash;</dd></div>
+              <div><dt>Network fee <span>(est.)</span></dt><dd id="claim">&mdash;</dd></div>
+              <div><dt>Total est. cost</dt><dd id="cost">&mdash;</dd></div>
+            </dl>
+            <button id="swap-action" type="submit" disabled>SWAP <svg class="icon" aria-hidden="true"><use href="#icon-next"/></svg></button>
+            <p id="quote-status" class="face-note" role="status">Checking quote&hellip;</p>
+          </div>
+        </div>
+      </article>
+      </form>
+      <a id="prepared-swap-link" class="text-link prepared-link" href="#track" hidden>Review prepared swaps</a>
     </div>
   </section>
 
   <section id="track" data-view hidden aria-labelledby="track-title" class="subpage">
     <h1 id="track-title" tabindex="-1">Swap status.</h1>
-    <article class="panel inset">
-      <div class="panel-header"><h2>Transaction lookup</h2><span class="tag">UNAVAILABLE</span></div>
-      <p class="muted">Transaction status requires verified swap ownership.</p>
+    <article id="owned-swap-panel" class="panel inset">
+      <div class="panel-header">
+        <h2>Transaction lookup</h2>
+        <div class="owned-header-actions">
+          <span id="owned-tag" class="tag">UNAVAILABLE</span>
+          <button id="owned-refresh" type="button" class="secondary" hidden>Refresh status</button>
+        </div>
+      </div>
+      <p id="owned-status" class="status" role="status">Transaction status requires verified swap ownership.</p>
+      <div id="owned-controls" hidden>
+        <div class="owned-toolbar">
+          <div><label for="prepared-swap">Prepared swap</label><select id="prepared-swap"></select></div>
+        </div>
+        <dl id="owned-evidence" class="details"></dl>
+        <div class="owned-actions">
+          <button id="owned-review" type="button" class="primary" disabled>Review prepared swap</button>
+          <button id="owned-reconcile" type="button" class="secondary" disabled>Check recovery evidence</button>
+        </div>
+      </div>
     </article>
   </section>
 
   <section id="account" data-view hidden aria-labelledby="account-title" class="subpage">
     <h1 id="account-title" tabindex="-1">Account.</h1>
     <article class="panel inset" id="signin">
-      <div class="panel-header"><h2>Secure sign-in</h2></div>
-      <form id="login-form" class="stack-form" method="post" action="/v1/auth/login">
-        <div><label for="username">Username</label><input type="text" id="username" name="username" autocomplete="username" required disabled></div>
-        <div><label for="password">Password</label><input type="password" id="password" name="password" autocomplete="current-password" required disabled></div>
+      <div class="panel-header"><h2 id="signin-title">Secure sign-in</h2></div>
+      <form id="login-form" class="stack-form" method="post" action="/v1/auth/login" aria-labelledby="signin-title" aria-describedby="login-status">
+        <div><label for="username">Username</label><input type="text" id="username" name="username" autocomplete="username" autocapitalize="none" spellcheck="false" required></div>
+        <div><label for="password">Password</label><input type="password" id="password" name="password" autocomplete="current-password" required></div>
         <button type="submit" class="primary" disabled>Sign in <span aria-hidden="true">↗</span></button>
       </form>
       <p id="login-status" class="status" role="status">Checking session…</p>
@@ -146,6 +157,43 @@
       <a class="text-link" href="#account">Open account <span aria-hidden="true">↗</span></a>
     </article>
     <div id="admin-dashboard" hidden>
+    <article class="panel inset" aria-labelledby="balance-title">
+      <div class="panel-header">
+        <h2 id="balance-title">Wallets and Lightning liquidity</h2>
+        <button class="secondary" id="balance-refresh" type="button">Refresh balances</button>
+      </div>
+      <div class="balance-meta">
+        <p class="status" id="balance-status" role="status">Balance snapshot unavailable.</p>
+        <time id="balance-time" hidden></time>
+      </div>
+      <section class="balance-group" id="balance-piles" aria-labelledby="balance-piles-title">
+        <h3 id="balance-piles-title">Wallet balances</h3>
+        <p class="balance-scale">On-chain fill is relative to the larger known confirmed balance shown here.</p>
+        <p class="balance-scale">Lightning fill uses each node’s reported local + remote capacity. Dark is local and gray is remote.</p>
+        <div class="balance-grid">
+          <div class="balance-node balance-wallet">
+            <h4>Bitcoin Core Provider <span>On-chain</span></h4>
+            <div class="wallet-pile" id="core-pile" data-state="unavailable" aria-hidden="true"><span></span></div>
+            <dl><div><dt>Confirmed</dt><dd id="core-confirmed">Unavailable</dd></div><div><dt>Unconfirmed</dt><dd id="core-unconfirmed">Unavailable</dd></div></dl>
+          </div>
+          <div class="balance-node balance-wallet">
+            <h4>LND Provider <span>Lightning</span></h4>
+            <div class="wallet-pile wallet-pile-lightning" id="provider-lightning-pile" data-state="unavailable" aria-hidden="true"><span></span></div>
+            <dl><div><dt>Local</dt><dd id="provider-local">Unavailable</dd></div><div><dt>Remote</dt><dd id="provider-remote">Unavailable</dd></div><div><dt>Reported capacity</dt><dd id="provider-capacity">Unavailable</dd></div></dl>
+          </div>
+          <div class="balance-node balance-wallet">
+            <h4>LND Alice <span>Lightning</span></h4>
+            <div class="wallet-pile wallet-pile-lightning" id="alice-lightning-pile" data-state="unavailable" aria-hidden="true"><span></span></div>
+            <dl><div><dt>Local</dt><dd id="alice-local">Unavailable</dd></div><div><dt>Remote</dt><dd id="alice-remote">Unavailable</dd></div><div><dt>Reported capacity</dt><dd id="alice-capacity">Unavailable</dd></div></dl>
+          </div>
+          <div class="balance-node balance-wallet">
+            <h4>LND Alice <span>On-chain</span></h4>
+            <div class="wallet-pile" id="alice-pile" data-state="unavailable" aria-hidden="true"><span></span></div>
+            <dl><div><dt>Confirmed</dt><dd id="alice-confirmed">Unavailable</dd></div><div><dt>Unconfirmed</dt><dd id="alice-unconfirmed">Unavailable</dd></div></dl>
+          </div>
+        </div>
+      </section>
+    </article>
     <article class="panel inset">
       <div class="panel-header"><h2>Regtest preflight</h2><button class="secondary" id="refresh" type="button">Refresh</button></div>
       <p class="status" id="diagnostic-status" role="status">Checking diagnostic availability…</p>
@@ -166,22 +214,69 @@
       <dl class="metric-grid"><div><dt>Collected service fees</dt><dd>—</dd></div><div><dt>Actual network fees</dt><dd>—</dd></div><div><dt>Net operational revenue</dt><dd>—</dd></div></dl>
     </article>
     <article class="panel inset">
-      <div class="panel-header"><h2>Channel liquidity</h2><span class="tag">DIRECTIONAL DATA UNAVAILABLE</span></div>
-      <dl class="metric-grid"><div><dt>Inbound liquidity</dt><dd>—</dd></div><div><dt>Outbound liquidity</dt><dd>—</dd></div></dl>
-    </article>
-    <article class="panel inset">
       <div class="panel-header"><h2>Transactions</h2><span class="tag">REPORTING UNAVAILABLE</span></div>
       <p class="muted">The backend does not provide an administrator transaction list.</p>
     </article>
     </div>
   </section>
 </main>
-<footer class="wrap footer"><span>SWAP ENGINE</span><span>BITCOIN / LIGHTNING</span></footer>
+<footer class="footer" id="mode">
+  <div class="footer-squares" data-view-active="swap" aria-hidden="true"><i data-square="swap"></i><i data-square="account"></i><i data-square="operations"></i></div>
+  <span id="network" class="footer-network" title="Regtest network">REGTEST</span>
+</footer>
+</div>
 <dialog id="review-dialog" aria-labelledby="review-title">
   <h2 id="review-title">Review quote</h2>
   <dl class="details" id="review-details"></dl>
-  <p class="muted">Execution disabled.</p>
+  <p id="execution-status" class="muted">Execution disabled.</p>
   <form class="dialog-actions" method="dialog"><button class="secondary" type="button" disabled>Start swap</button><button class="primary" autofocus>Close review</button></form>
+</dialog>
+<dialog id="owned-review-dialog" aria-labelledby="owned-review-title">
+  <h2 id="owned-review-title">Confirm prepared swap</h2>
+  <dl id="owned-review-details" class="details"></dl>
+  <p class="status">Regtest only. Execution uses a fresh quote with the prepared terms.</p>
+  <div class="dialog-actions">
+    <form method="dialog"><button type="submit" class="secondary" autofocus>Cancel</button></form>
+    <button id="owned-confirm" type="button" class="primary" disabled>Start prepared swap</button>
+  </div>
+</dialog>
+<dialog id="guest-dialog" aria-labelledby="guest-title">
+  <h2 id="guest-title">Guest swap recovery</h2>
+  <dl id="guest-details" class="details"></dl>
+  <form id="guest-recovery-form" class="stack-form">
+    <div id="guest-destination-field" hidden>
+      <label for="guest-destination">Bitcoin regtest payout address</label>
+      <input id="guest-destination" type="text" maxlength="90" autocomplete="off" autocapitalize="off" spellcheck="false" aria-describedby="guest-destination-help guest-destination-status" required disabled>
+      <p id="guest-destination-help" class="status">Enter or paste a Bitcoin regtest address beginning with <code>bcrt1</code>.</p>
+      <p id="guest-destination-status" class="status" role="status"></p>
+    </div>
+    <div><label for="guest-passphrase">Recovery passphrase</label><input id="guest-passphrase" type="password" minlength="8" maxlength="4096" autocomplete="new-password" required></div>
+    <div><label for="guest-passphrase-confirm">Confirm passphrase</label><input id="guest-passphrase-confirm" type="password" minlength="8" maxlength="4096" autocomplete="new-password" required></div>
+    <p id="guest-status" class="status" role="status">Create an encrypted recovery export before paying.</p>
+    <div class="dialog-actions"><button id="guest-cancel" type="button" class="secondary">Close</button><button id="guest-prepare" type="submit" class="primary">Create invoice</button></div>
+  </form>
+  <section id="guest-export" hidden>
+    <p id="guest-export-status" class="status" role="status">Download or copy this encrypted recovery file. The server never receives its passphrase, keys or preimage.</p>
+    <label for="guest-export-text">Encrypted recovery export</label>
+    <textarea id="guest-export-text" rows="6" readonly></textarea>
+    <div><label for="guest-restore-passphrase">Re-enter passphrase to verify restore</label><input id="guest-restore-passphrase" type="password" minlength="8" maxlength="4096" autocomplete="off"></div>
+    <div class="dialog-actions"><button id="guest-download" type="button" class="secondary">Download encrypted recovery</button><button id="guest-copy" type="button" class="secondary">Copy</button><button id="guest-verify" type="button" class="primary" disabled>Verify restore</button></div>
+  </section>
+  <section id="guest-payment" hidden>
+    <p id="guest-payment-status" class="status" role="status"></p>
+    <p id="guest-invoice-unavailable" class="status" role="status"></p>
+    <div id="guest-invoice-content">
+      <dl id="guest-invoice-terms" class="details" hidden>
+        <div><dt>Lightning amount</dt><dd id="guest-invoice-amount"></dd></div>
+        <div><dt>Expires</dt><dd><time id="guest-invoice-expiry"></time></dd></div>
+      </dl>
+      <canvas id="guest-invoice-qr" role="img" aria-label="Lightning invoice QR code" hidden></canvas>
+      <label for="guest-invoice">Pay this BOLT11 invoice</label>
+      <textarea id="guest-invoice" rows="5" readonly></textarea>
+      <button id="guest-copy-invoice" type="button" class="secondary">Copy invoice</button>
+    </div>
+    <div class="dialog-actions"><button id="guest-claim" type="button" class="primary" hidden>Claim funds</button><button id="guest-close" type="button" class="secondary">Close</button></div>
+  </section>
 </dialog>
 </body>
 </html>

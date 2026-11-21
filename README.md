@@ -73,8 +73,11 @@ The sample uses Bitcoin cookie authentication with the existing `lqwd-lab` walle
 LND must already have a **local HTTPS REST listener** (usually 8080), a matching
 TLS certificate and a readable macaroon. The supplied gRPC port 10009 is not a
 REST endpoint. Discovery and configuration are manual; this project never edits
-LND configuration. The application defaults to the existing read-only macaroon;
-credentials stay on the VM and are never copied into the repository.
+LND configuration. The example uses a read-only macaroon. For an optional Alice
+balance source, set `ALICE_LND_REST_URL`, `ALICE_LND_TLS_CERT_PATH`, and
+`ALICE_LND_MACAROON_PATH` together to use Alice's loopback HTTPS listener,
+certificate, and read-only macaroon.
+Node credentials stay on the VM and are never copied into the repository.
 
 The API binds only to `127.0.0.1:3000`. `ENABLE_LIVE_SWAPS=true` causes startup to
 fail, rather than bypassing the incomplete observer/recovery boundary. The explicit
@@ -83,6 +86,35 @@ health and startup output) or `regtest` (read-only deployment; loopback-only
 Core/LND clients and real preflight diagnostics). `mainnet` and other modes are
 rejected. Health reports component mode; it does not claim the nodes are ready. For
 live preflight and exact next steps see [the VM runbook](docs/regtest-runbook.md).
+
+### Provision a local account
+
+Run the provisioning script in an interactive terminal from the repository root.
+
+```bash
+npm exec -- tsx scripts/provision-auth.ts
+```
+
+Enter your chosen username, the `ADMIN` role, and a password of at least 12
+characters. The password prompt hides input. Repeat with the `USER` role if you
+need an account without access to operational liquidity. The script saves salted
+scrypt hashes in `data/auth/users.json` by default. If you set `AUTH_STORE_PATH`,
+use the same path when provisioning and starting the server. When the override is
+in `.env`, provision with `node --env-file=.env --import tsx scripts/provision-auth.ts`.
+
+For an isolated simulation or read-only regtest lab, the explicit
+`--allow-short-lab-password` option accepts at least four characters for an
+`ADMIN` account. Use the same hidden prompt and keep the preview on direct
+loopback HTTP, without a proxy or tunnel. Accounts provisioned with this option
+are restricted to direct loopback requests. The default remains 12 characters.
+
+```bash
+npm exec -- tsx scripts/provision-auth.ts --allow-short-lab-password
+```
+
+The API loads local accounts on sign-in. Sessions last one hour and expire on
+server restart. Keep the API on the isolated regtest loopback interface and use
+the same origin for the application and API requests.
 
 ## API documentation
 
@@ -122,18 +154,37 @@ All amounts are integer satoshis; timestamps are Unix milliseconds. Requests use
 Schemas are in `src/api/schemas.ts`. Responses never contain private keys or a
 preimage. Quotes are estimates; they do not reserve liquidity.
 
-| Method and route | Request | Response |
-| --- | --- | --- |
-| `POST /v1/quotes` | `{ "amountSats": 50000 }` | 201: quote below |
-| `POST /v1/swaps/reverse` | `{ "quoteId": "UUID", "paymentHash": "64 lowercase hex", "claimPublicKey": "compressed hex key" }`, `Idempotency-Key: unique-key` | 503: `LIVE_SWAPS_DISABLED_OBSERVER_AND_RECOVERY_NOT_VERIFIED` |
-| `GET /v1/swaps/:id` | UUID path | 200: public state, quote, contract, optional invoice and transaction IDs; 404 if absent |
-| `GET /v1/health` | None | 200: `{ "status": "components-only", "liveSwapsEnabled": false, "readOnly": true, "network": "regtest", "mode": "simulation" }` (or `"mode": "regtest"`) |
-| `GET /v1/liquidity` | None | 200: available onchainSats/incomingSats after reservations; 503 if nodes unavailable |
+| Method and route | Access | Request | Response |
+| --- | --- | --- | --- |
+| `POST /v1/auth/login` | Public and rate-limited | JSON fields `username` and `password` | 200 with session fields and a session cookie, or generic 401 |
+| `GET /v1/auth/session` | Signed in | Session cookie | 200 with session fields, or 401 |
+| `POST /v1/auth/logout` | Signed in | Session cookie, origin, and CSRF token | 204, revokes the session and clears the cookie |
+| `POST /v1/quotes` | Public | `{ "amountSats": 50000 }` | 201 with the quote below |
+| `POST /v1/swaps/reverse` | `USER` or `ADMIN` | `{ "quoteId": "UUID", "paymentHash": "64 lowercase hex", "claimPublicKey": "compressed hex key" }` and the `Idempotency-Key` header | 503 `LIVE_SWAPS_DISABLED_OBSERVER_AND_RECOVERY_NOT_VERIFIED` for a valid request |
+| `GET /v1/swaps/:id` | Disabled | UUID path | 404 until swap ownership is persisted |
+| `GET /v1/health` | Public | None | 200 with `{ "status": "components-only", "liveSwapsEnabled": false, "readOnly": true, "network": "regtest", "mode": "simulation" }` (or `"mode": "regtest"`) |
+| `GET /v1/preflight` | Public | None | 200 if read-only regtest prerequisites are met, or 503 |
+| `GET /v1/liquidity` | `ADMIN` | Session cookie | 200 with available `onchainSats` and `incomingSats` after reservations, or 503 if nodes are unavailable |
+| `GET /v1/operations/balances` | `ADMIN` | Session cookie | 200 with a read-only regtest snapshot of Core, provider LND, and optional Alice LND |
+| `/v1/admin/*` | `ADMIN` | Session cookie | 503 until an admin handler is available |
+
+Sign-in and session inspection return `{ user: { id, username, role }, csrfToken, expiresAt }`.
+The browser stores the session cookie with `HttpOnly` and `SameSite=Strict`.
+Send the cookie with protected requests and include `x-csrf-token` with the
+returned token on protected POSTs. Those requests also require an exact
+same-origin `Origin` header, which the browser sends on POSTs. Protected
+routes return 401 for missing or expired sessions and 403 for insufficient
+roles or failed CSRF checks.
+
+The operations snapshot includes `network`, the UTC timestamp `capturedAt`,
+and separate `core`, `provider`, and `alice` entries. Each wallet entry has
+`confirmedSats` and `unconfirmedSats`. LND entries also have `localSats` and
+`remoteSats` across all channels. Missing values are `null`, and a fully
+unavailable LND entry is `null`. Each source must identify as Bitcoin regtest
+before the server requests its balances.
 
 ```bash
 curl -s http://127.0.0.1:3000/v1/health
-curl -s -X POST http://127.0.0.1:3000/v1/quotes \
-  -H 'Content-Type: application/json' -d '{"amountSats":50000}'
 ```
 
 The 50,000-sat quote has `serviceFeeSats: 750`, `invoiceSats: 50750`,

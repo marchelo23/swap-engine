@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { setup } from './helpers.js';
+import { setup, routingFixture } from './helpers.js';
 import { createReverseTestPlan } from '../src/core/ReverseTestPlan.js';
 import { invoiceOnlyPorts } from '../src/core/InvoiceOnlyPorts.js';
 import { SwapCoordinator } from '../src/core/SwapCoordinator.js';
@@ -27,7 +27,7 @@ test('independent invoice checks reject amount, hash, payee, network, deadline a
 async function portsFixture() {
   const f = await setup(); let created = 0; let fail = false; let network = 'regtest';
   const plan = createReverseTestPlan(f.quote, 100, { paymentHash: f.contract.paymentHash, claimPublicKey: f.contract.claimPublicKey },
-    f.contract.refundPublicKey, { claim: f.destination, refund: f.destination }, { provider: f.contract.claimPublicKey, payer: f.contract.refundPublicKey });
+    f.contract.refundPublicKey, { claim: f.destination, refund: f.destination }, { provider: f.contract.claimPublicKey, payer: f.contract.refundPublicKey }, routingFixture());
   const assertRegtest = async () => ({ chains: [{ chain: 'bitcoin', network: 'regtest' }], synced_to_chain: true });
   const provider = { assertRegtest,
     async call<T>(path: string): Promise<T> { assert.equal(path, '/v1/getinfo'); return { identity_pubkey: plan.providerNode, wallet_synced: true } as T; },

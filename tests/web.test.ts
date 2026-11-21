@@ -5,6 +5,28 @@ import type { AddressInfo } from 'node:net';
 import { setup } from './helpers.js';
 import { createApi } from '../src/api/server.js';
 import { quoteTotals } from '../src/web/api.js';
+import { canQuote, defaultPair, linkRail, rails, stepRail } from '../src/web/rails.js';
+
+test('rail turns follow the cycle and linked selection always honors the explicit side', () => {
+  assert.equal(stepRail('onchain', 1), 'lightning');
+  assert.equal(stepRail('onchain', -1), 'liquid');
+  assert.equal(stepRail('liquid', 1), 'onchain');
+  const forward = { send: 'onchain', receive: 'lightning' } as const;
+  assert.deepEqual(linkRail(defaultPair, 'send', 'onchain'), forward);
+  assert.deepEqual(linkRail(forward, 'receive', 'onchain'), defaultPair);
+  for (const send of rails) for (const receive of rails) for (const rail of rails) {
+    if (send === receive) continue;
+    for (const side of ['send', 'receive'] as const) {
+      const opposite = side === 'send' ? 'receive' : 'send';
+      const next = linkRail({ send, receive }, side, rail);
+      assert.equal(next[side], rail);
+      assert.notEqual(next.send, next.receive);
+      const prior = { send, receive }[opposite];
+      assert.equal(next[opposite], rail === prior ? stepRail(rail, 1) : prior);
+      assert.equal(canQuote(next), next.send === 'lightning' && next.receive === 'onchain');
+    }
+  }
+});
 
 test('quote totals use integer API fees and exclude the provider funding reserve', async () => {
   const f = await setup();

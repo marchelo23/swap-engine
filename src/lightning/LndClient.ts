@@ -11,6 +11,8 @@ export type Invoice = {
 
 /** Uses local LND REST with certificate validation. Never disables TLS verification. */
 export class LndClient {
+  /** Public endpoint identity only; credentials and local paths are never exposed. */
+  get origin(): string { return new URL(this.url).origin; }
   constructor(private url: string, private certPath: string, private macaroonPath: string) {
     const parsed = new URL(url);
     if (parsed.protocol !== 'https:' || !['127.0.0.1', 'localhost', '[::1]'].includes(parsed.hostname) || parsed.username || parsed.password) throw new Error('LND must use loopback HTTPS');

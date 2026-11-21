@@ -5,12 +5,26 @@ import { Store } from '../persistence/Store.js';
 import { transition } from './SwapStateMachine.js';
 import type { Quote, Swap } from './SwapTypes.js';
 
+/** User-specified Lightning debit, bounded by the existing controlled regtest profile. */
+export function invoiceBudget(invoiceSats: number) {
+  if (!Number.isSafeInteger(invoiceSats) || invoiceSats < 11_000 || invoiceSats > 50_000) throw new Error('Amount must be 11000..50000 sats');
+  const serviceFeeSats = 500 + Math.ceil(invoiceSats / 200);
+  return { amountSats: invoiceSats - serviceFeeSats, serviceFeeSats, invoiceSats, fundingReserveSats: 1000, claimFeeSats: 500 };
+}
+
 export class SwapManager {
   constructor(readonly store: Store) {}
   async quote(amountSats: number, now = Date.now()): Promise<Quote> {
     if (!Number.isSafeInteger(amountSats) || amountSats < 10_000 || amountSats > 1_000_000) throw new Error('Amount must be 10000..1000000 sats');
     const serviceFeeSats = 500 + Math.ceil(amountSats * 0.005);
     const quote = { id: randomUUID(), amountSats, serviceFeeSats, invoiceSats: amountSats + serviceFeeSats, fundingReserveSats: 1000, claimFeeSats: 500, expiresAt: now + 120_000 };
+    return this.store.transaction(db => {
+      for (const [id, q] of Object.entries(db.quotes)) if (q.expiresAt < now) delete db.quotes[id];
+      db.quotes[quote.id] = quote; return quote;
+    });
+  }
+  async quoteInvoice(invoiceSats: number, now = Date.now()): Promise<Quote> {
+    const quote = { id: randomUUID(), ...invoiceBudget(invoiceSats), expiresAt: now + 120_000 };
     return this.store.transaction(db => {
       for (const [id, q] of Object.entries(db.quotes)) if (q.expiresAt < now) delete db.quotes[id];
       db.quotes[quote.id] = quote; return quote;

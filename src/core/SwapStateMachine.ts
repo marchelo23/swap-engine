@@ -1,4 +1,38 @@
-import { terminal, type Swap, type SwapState } from './SwapTypes.js';
+import { terminal, type Swap, type SwapState, type ReverseReconciledState } from './SwapTypes.js';
+import type { Store } from '../persistence/Store.js';
+
+export class SwapRevisionConflict extends Error {
+  constructor() { super('Stale swap revision; reconcile again'); this.name = 'SwapRevisionConflict'; }
+}
+
+/** Compare-and-swap all journal mutations, including intents that do not change state. */
+export function updateSwapRevision(store: Store, id: string, expectedRevision: number, fn: (swap: Swap) => void) {
+  return store.transaction(db => {
+    const swap = db.swaps[id];
+    if (!swap || swap.revision !== expectedRevision) throw new SwapRevisionConflict();
+    const before = JSON.stringify(swap);
+    fn(swap);
+    if (JSON.stringify(swap) !== before && swap.revision === expectedRevision) { swap.revision++; swap.updatedAt = Date.now(); }
+    return swap;
+  });
+}
+
+/** Only the evidence reconciler may leave MANUAL_REVIEW; normal transitions stay closed. */
+export function reconcileTransition(swap: Swap, next: ReverseReconciledState) {
+  if (swap.state === next) return;
+  if (['FAILED', 'EXPIRED'].includes(swap.state)) throw new Error('Cannot resume released swap');
+  if (terminal.has(swap.state) && next !== 'MANUAL_REVIEW') throw new Error('Cannot replace terminal evidence');
+  if (next !== 'MANUAL_REVIEW') {
+    if (!swap.clientPayment || !swap.invoice || swap.pendingAction) throw new Error('Reconciliation context missing');
+    if (next === 'INVOICE_ACCEPTED' && (swap.lockup || swap.fundingIntent || swap.clientPayment.status !== 'IN_FLIGHT')) throw new Error('Unsafe funding resume');
+    if (next !== 'INVOICE_ACCEPTED' && !swap.lockup) throw new Error('Reconciliation funding missing');
+    if (['CLAIM_DETECTED', 'COMPLETED'].includes(next) && !swap.claimTxid) throw new Error('Reconciliation claim missing');
+    if (next === 'COMPLETED' && swap.clientPayment.status !== 'SUCCEEDED') throw new Error('Payer settlement missing');
+    if (next === 'REFUNDED' && (!swap.refundTxid || swap.clientPayment.status !== 'FAILED')) throw new Error('Refund context missing');
+  }
+  swap.state = next; swap.revision++; swap.updatedAt = Date.now();
+  swap.history.push({ state: next, at: swap.updatedAt });
+}
 
 const allowed: Record<SwapState, SwapState[]> = {
   CREATED: ['QUOTED', 'FAILED'], QUOTED: ['INVOICE_CREATED', 'EXPIRED', 'FAILED'],

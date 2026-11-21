@@ -1,24 +1,45 @@
-import { api } from './api.js';
+import { api, type Session } from './api.js';
+import { prepareForReview } from './preparation.js';
 import { mountAuth } from './auth.js';
 import { fonts } from './fonts.js';
 import { playOpening } from './opening.js';
+import { mountOperationsBalances } from './operations.js';
+import { mountGuest } from './guest.js';
+import { createGuestPresentation } from './guestUi.js';
+import { mountOwnedReverse } from './ownedReverse.js';
 import { mountQuote } from './quote.js';
 import { get, integer, text } from './ui.js';
 
-mountQuote();
+const guest = mountGuest(createGuestPresentation());
+const quotes = mountQuote(async (stillVisible, amountSats) => {
+  const owner = session;
+  if (!owner) throw new Error('Sign in to prepare a regtest swap.');
+  const availability = await api.reverseAvailability(new AbortController().signal);
+  const id = await prepareForReview(owner, availability, amountSats);
+  if (session !== owner || !stillVisible()) return;
+  location.hash = 'track'; await reverse.reviewPrepared(id);
+}, guest);
+let session: Session | null = null;
+const reverse = mountOwnedReverse((configured, availability) => {
+  get('prepared-swap-link').hidden = configured !== true;
+  quotes.setContext(configured, session?.csrfToken, availability?.preparationAvailable === true);
+});
+const setBalancesActive = mountOperationsBalances();
 void fonts;
+void api.guestAvailability().then(availability => {
+  guest.setAvailability(availability.configured, availability.watching);
+  quotes.setGuestContext(availability.configured, availability.watching);
+}).catch(() => {
+  guest.setAvailability(false, false);
+  quotes.setGuestContext(false, false);
+});
 const environment = api.health().then(health => {
-  const mode = health.mode === 'simulation' ? 'Simulation' : 'Regtest read-only';
-  get('mode').lastChild!.textContent = ' ' + mode.toUpperCase();
   get('mode').dataset.mode = health.mode;
-  text('environment-label', mode);
-  text('network', 'Bitcoin regtest');
+  get('network').title = 'Bitcoin regtest';
   text('account-network', 'Bitcoin regtest');
   return health.mode;
 }).catch(() => {
-  get('mode').lastChild!.textContent = ' BACKEND UNAVAILABLE';
-  text('environment-label', 'Backend unavailable');
-  text('network', 'Unverified');
+  get('network').title = 'Regtest backend unavailable';
   return undefined;
 });
 
@@ -71,6 +92,10 @@ function navigate(focus: boolean) {
   if (location.hash === '#main') return;
   const current = views.find(view => '#' + view.id === location.hash) ?? views[0]!;
   for (const view of views) view.hidden = current !== view;
+  document.querySelector<HTMLElement>('.footer-squares')!.dataset.viewActive = current.id === 'track' ? 'account' : current.id;
+  quotes.setVisible(current.id === 'swap');
+  reverse.setVisible(current.id === 'track');
+  setBalancesActive(current.id === 'operations' && admin);
   for (const link of document.querySelectorAll('nav a')) {
     if (link.getAttribute('href') === '#' + current.id) link.setAttribute('aria-current', 'page');
     else link.removeAttribute('aria-current');
@@ -85,7 +110,13 @@ refresh.addEventListener('click', () => void loadDiagnostics());
 window.addEventListener('hashchange', () => navigate(true));
 navigate(false);
 if (!get('swap').hidden) playOpening();
-mountAuth(allowed => {
-  admin = allowed;
+mountAuth(next => {
+  if (session !== next) {
+    session = next;
+    quotes.setContext(next ? null : false, next?.csrfToken);
+  } else if (!next) quotes.setContext(false);
+  reverse.setSession(next);
+  admin = next?.user.role === 'ADMIN';
+  setBalancesActive(admin && !get('operations').hidden);
   if (admin && !get('operations').hidden) void loadDiagnostics();
 });
