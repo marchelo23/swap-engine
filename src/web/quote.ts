@@ -106,8 +106,7 @@ export function mountQuote(prepare?: (stillVisible: () => boolean, amountSats: n
       if (!aligned) { status('Aligning rails…'); return; }
       if (!canQuote(pair)) { status('Route unavailable'); return; }
       if (value === undefined) { status('Enter 11,000–50,000 sats'); return; }
-      if (!quote && !preparing) debounce = window.setTimeout(() => void load(value), delay);
-      status(preparing ? 'Opening guest recovery…' : 'Guest quote ready · encrypted recovery required before payment.');
+      status(preparing ? 'Opening guest recovery…' : 'Guest recovery required before the invoice is shown.');
       return;
     }
     if (controlled !== false) {
