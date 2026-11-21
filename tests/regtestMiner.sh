@@ -157,6 +157,18 @@ test_crash_boundary_keeps_pending() {
   MOCK_MODE=normal; run_miner --once; assert_failed AMBIGUOUS_UNRECONCILED; [[ -f "$DATA/pending.json" ]] || fail 'pending cleared without evidence'; [[ "$(state_value .mineCalls)" -eq 0 ]] || fail 'mined after unresolved pending'
 }
 
+test_crash_after_state_commit_before_pending_cleanup() {
+  reset_state; MOCK_MODE=ambiguous; run_miner --on-demand; assert_failed AMBIGUOUS_MINE
+  # Simulate a crash after record_success committed the same block but before pending cleanup.
+  committed_hash=$(hash_for 240)
+  jq --arg hash "$committed_hash" '.lastHeight=140 | .lastBlockHash=$hash | .blocksMined=1' "$STATE" > "$TMP/s" && mv "$TMP/s" "$STATE"
+  [[ -f "$DATA/pending.json" ]] || fail 'pending missing for crash simulation'
+  MOCK_MODE=normal; run_miner --once
+  [[ "$OUT" == *'"status":"reconciled"'* ]] || fail "crash reconcile: $OUT"
+  [[ "$(state_value .blocksMined)" -eq 1 ]] || fail "double-counted block: $(state_value .blocksMined)"
+  [[ ! -e "$DATA/pending.json" ]] || fail 'pending not cleaned after idempotent reconcile'
+}
+
 test_one_address_two_ticks
 test_wrong_chain_and_wallet
 test_address_ownership
@@ -165,4 +177,5 @@ test_slow_holder_and_concurrent_lock
 test_ambiguous_reconcile
 test_unrelated_block_and_reorg_reconciliation
 test_crash_boundary_keeps_pending
+test_crash_after_state_commit_before_pending_cleanup
 echo "regtest miner shell tests: PASS"

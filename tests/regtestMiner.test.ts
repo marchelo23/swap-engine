@@ -17,6 +17,9 @@ test('regtest miner deployment uses kernel flock and existing release path', asy
   assert.match(script, /scriptPubKey\.address/);
   assert.match(script, /sync_path "\$tmp"/);
   assert.match(script, /sync_path "\$DATA_DIR"/);
+  assert.match(script, /sync_path "\$ADDRESS_FILE"/);
+  assert.match(script, /\.blocksMined = \(if \.lastBlockHash == \$hash/);
+  assert.match(script, /rm -f "\$PENDING_FILE"\s*\n\s*sync_path "\$DATA_DIR"/);
   assert.match(service, /Type=oneshot/);
   assert.match(service, /%h\/deployments\/lqwd-swap-engine-434f519\/scripts\/regtest-block-miner\.sh/);
   assert.match(timer, /OnUnitActiveSec=10min/);

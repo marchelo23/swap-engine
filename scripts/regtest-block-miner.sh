@@ -53,7 +53,7 @@ record_success() {
   local height="$1" hash="$2" address="$3" at; at=$(now)
   local tmp; tmp=$(mktemp "$STATE_FILE.XXXXXX")
   jq --arg at "$at" --argjson height "$height" --arg hash "$hash" --arg address "$address" --arg wallet "$WALLET" \
-    '.chain="regtest" | .wallet=$wallet | .address=$address | .lastAttemptAt=$at | .lastSuccessAt=$at | .lastHeight=$height | .lastBlockHash=$hash | .blocksMined += 1 | .coinbaseMaturityHeight=($height+100) | .paused=false | .pausedAt=null | .pausedReason=null' \
+    '.blocksMined = (if .lastBlockHash == $hash then .blocksMined else (.blocksMined + 1) end) | .chain="regtest" | .wallet=$wallet | .address=$address | .lastAttemptAt=$at | .lastSuccessAt=$at | .lastHeight=$height | .lastBlockHash=$hash | .coinbaseMaturityHeight=($height+100) | .paused=false | .pausedAt=null | .pausedReason=null' \
     "$STATE_FILE" > "$tmp"
   chmod 600 "$tmp"; sync_path "$tmp"; mv "$tmp" "$STATE_FILE"; sync_path "$DATA_DIR"
 }
@@ -114,6 +114,7 @@ reconcile_pending() {
     fi
     record_success "$height" "$hash" "$address"
     rm -f "$PENDING_FILE"
+    sync_path "$DATA_DIR"
     log_event reconciled --argjson height "$height" --arg hash "$hash" --arg reason 'ambiguous-generate-verified'
     printf '%s\n' "{\"status\":\"reconciled\",\"height\":$height,\"blockHash\":\"$hash\"}"
     exit 0
@@ -225,7 +226,7 @@ if [[ -e "$ADDRESS_FILE" ]]; then
 else
   address=$(core_wallet getnewaddress "$ADDRESS_LABEL" bech32 2>/dev/null || true)
   if [[ -z "$address" ]]; then record_failure ADDRESS_UNAVAILABLE; echo '{"status":"failed","failure":"ADDRESS_UNAVAILABLE"}'; exit 1; fi
-  tmp=$(mktemp "$ADDRESS_FILE.XXXXXX"); printf '%s\n' "$address" > "$tmp"; chmod 600 "$tmp"; mv "$tmp" "$ADDRESS_FILE"
+  tmp=$(mktemp "$ADDRESS_FILE.XXXXXX"); printf '%s\n' "$address" > "$tmp"; chmod 600 "$tmp"; sync_path "$tmp"; mv "$tmp" "$ADDRESS_FILE"; sync_path "$DATA_DIR"
 fi
 if [[ ! "$address" =~ ^bcrt1[0-9a-z]{20,}$ ]]; then
   record_failure ADDRESS_NOT_REGTEST; echo '{"status":"failed","failure":"ADDRESS_NOT_REGTEST"}'; exit 1
@@ -234,6 +235,7 @@ address_info=$(core_wallet getaddressinfo "$address" 2>/dev/null || true)
 if ! jq -e '.ismine == true and (.iswatchonly != true)' <<< "$address_info" >/dev/null 2>&1; then
   record_failure ADDRESS_NOT_OWNED; echo '{"status":"failed","failure":"ADDRESS_NOT_OWNED"}'; exit 1
 fi
+sync_path "$ADDRESS_FILE"
 
 pre_height=$(jq -r '.blocks' <<< "$chain")
 pre_hash=$(jq -r '.bestblockhash' <<< "$chain")
@@ -260,5 +262,6 @@ fi
 
 record_success "$after_height" "$hash" "$address"
 rm -f "$PENDING_FILE"
+sync_path "$DATA_DIR"
 log_event mined --argjson height "$after_height" --arg hash "$hash" --arg address "$address"
 printf '%s\n' "{\"status\":\"mined\",\"height\":$after_height,\"blockHash\":\"$hash\",\"address\":\"$address\"}"

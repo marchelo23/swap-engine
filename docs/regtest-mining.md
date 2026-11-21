@@ -63,9 +63,10 @@ Default data directory: `/home/truja/.local/share/lqwd-regtest-miner` (mode 700)
 
 ## Ambiguous generate reconciliation
 
-Before `generatetoaddress`, the script writes `pending.json` with the pre-height
-and pre-hash, fsyncs the temporary file and the data directory, then renames it
-into place before the RPC. If the reply is lost or malformed:
+Before `generatetoaddress`, the script ensures the persistent address file is
+fsynced, then writes `pending.json` with the pre-height and pre-hash, fsyncs the
+temporary file and the data directory, and renames it into place before the RPC.
+If the reply is lost or malformed:
 
 - Next invocation first reconciles the pending attempt.
 - Exactly +1 height, `getblockhash(preHeight) == preHash`, the block header
@@ -79,7 +80,11 @@ into place before the RPC. If the reply is lost or malformed:
 
 This prevents an external miner or reorg from being misattributed to this
 miner, and prevents future ticks from mining again before an ambiguous
-generation is understood.
+generation is understood. `blocksMined` is idempotent by `lastBlockHash`, so a
+crash after the state commit but before pending cleanup cannot count the same
+block twice. Pending removal is followed by a directory fsync; if the cleanup
+fsync fails, the next invocation still sees the same committed hash and does not
+increment again.
 
 ## Commands
 
@@ -128,6 +133,7 @@ operator action, not an automatic confirmation loop.
 cover: one address/two ticks, wrong chain/wallet rejection before generation,
 shared-lock exclusion with a slow holder, concurrent acquisition, pause vs
 on-demand, ambiguous generation reconciliation, unrelated block/coinbase,
-parent/reorg mismatch and crash-boundary pending retention. `tests/
+parent/reorg mismatch, crash-boundary pending retention and a crash after state
+commit but before pending cleanup (idempotent `blocksMined`). `tests/
 regtestMiner.test.ts` runs it on Linux. No VM service, timer, wallet or real
 node was changed by this task.
