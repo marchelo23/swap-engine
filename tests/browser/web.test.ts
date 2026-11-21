@@ -154,6 +154,22 @@ test('three faces quote a real route and preserve keyboard, account and responsi
   await audit(page);
   await page.screenshot({ path: evidence + '/operations.png' });
   await page.getByRole('link', { name: 'Swap', exact: true }).click();
+  const beforeArk = quoteRequests.length;
+  await page.getByLabel('Send network').selectOption('ark');
+  await waitForRails(page, 'ark', 'onchain');
+  assert.equal(await page.locator('#send-icon').getAttribute('href'), '#icon-ark');
+  const arkNotice = page.getByText('Solo regtest · swaps no disponibles', { exact: true });
+  await arkNotice.waitFor();
+  await page.getByLabel('Receive network').selectOption('ark');
+  await waitForRails(page, 'onchain', 'ark');
+  await amount.fill('80000');
+  await amount.press('Enter');
+  await page.clock.fastForward(1000);
+  await arkNotice.waitFor();
+  assert.equal(await swap.isDisabled(), true);
+  assert.equal(await page.locator('#received-preview').textContent(), '—');
+  assert.equal(await page.locator('#receive-icon').getAttribute('href'), '#icon-ark');
+  assert.equal(quoteRequests.length, beforeArk);
   for (const [width, height] of [[320, 700], [390, 844], [701, 844], [768, 844], [1024, 600], [1366, 768], [1440, 900]] as const) {
     await page.setViewportSize({ width, height });
     const bounds = await page.evaluate(() => ({
@@ -190,6 +206,7 @@ test('regtest page renders a real preflight 503 report with offline test ports',
   await page.route('**/v1/auth/session', route => route.fulfill({ json: session('ADMIN') }));
   await page.goto(`http://127.0.0.1:${(server.address() as AddressInfo).port}/#operations`);
   await page.getByText('Regtest setup requires attention.').waitFor();
+  assert.equal(await page.locator('#ark-panel').isVisible(), true);
   await page.getByText('Balance snapshot unavailable.', { exact: true }).waitFor();
   assert.equal(await page.locator('#core-confirmed').textContent(), 'Unavailable');
   assert.equal(await page.locator('#balance-time').isVisible(), false);
@@ -670,7 +687,7 @@ test('actual mouse and touch gestures rotate in both directions and linked anima
   const details = page.locator('.cube-send .face-value');
   assert.match(await details.evaluate(face => getComputedStyle(face).transitionTimingFunction), /ease-in-out/);
   await page.waitForFunction(() => getComputedStyle(document.querySelector('.cube-send .face-value')!).opacity === '1');
-  assert.deepEqual(await page.locator('#send-cube').evaluate(cube => Reflect.get(cube, 'observed')), ['liquid', 'onchain']);
+  assert.deepEqual(await page.locator('#send-cube').evaluate(cube => Reflect.get(cube, 'observed')), ['liquid', 'ark', 'onchain']);
   assert.equal(observations.length, 1);
 
   const sendGrip = page.getByRole('button', { name: 'Rotate send cube' });
@@ -698,11 +715,14 @@ test('actual mouse and touch gestures rotate in both directions and linked anima
   await sendGrip.press('ArrowDown');
   await sendGrip.press('ArrowDown');
   await page.getByRole('button', { name: 'Rotate receive cube' }).press('ArrowUp');
-  await waitForRails(page, 'onchain', 'liquid');
+  await waitForRails(page, 'liquid', 'ark');
+  await page.getByText('Solo regtest · swaps no disponibles', { exact: true }).waitFor();
   assert.equal(await page.getByRole('button', { name: 'SWAP', exact: true }).isDisabled(), true);
   assert.equal(await page.locator('#received-preview').textContent(), '\u2014');
   assert.equal(observations.length, 2);
   const receiveGrip = page.getByRole('button', { name: 'Rotate receive cube' });
+  await send.selectOption('onchain');
+  await waitForRails(page, 'onchain', 'ark');
   await receiveGrip.hover();
   await page.mouse.wheel(0, 80);
   await page.mouse.wheel(0, 80);
@@ -710,7 +730,7 @@ test('actual mouse and touch gestures rotate in both directions and linked anima
   await page.getByText('49,500', { exact: true }).waitFor();
   await receiveGrip.hover();
   await page.mouse.wheel(0, -80);
-  await waitForRails(page, 'lightning', 'liquid');
+  await waitForRails(page, 'lightning', 'ark');
   assert.equal(observations.length, 3);
   const video = page.video();
   await desktop.close();

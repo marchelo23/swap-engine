@@ -35,7 +35,9 @@ Verified on Windows with Node.js 24 and Edge. The build succeeded, the Node suit
 
 SEND holds the principal and source selector. SWAP holds the fee breakdown and confirmation action. RECEIVE holds the destination selector and estimated receipt. Change a network in its native selector or use the cube's rotation control. On desktop, drag or scroll vertically, or use Down and Up. On phones, the cubes stack vertically. Swipe the outer cubes right to advance or left to go back, or use the corresponding arrow keys. A tap on the rotation arrow moves forward.
 
-The rotation cycle is On-chain → Lightning → Liquid → On-chain. A direct selector change takes forward quarter turns through each intermediate rail. If both selected rails coincide, the opposite cube rotates forward to the next rail. Quotes wait for both outer cubes to settle. Existing quotes are discarded on rail and amount changes. Amount edits share a short debounce, and a stale response cannot update the face values.
+The rotation cycle is On-chain → Lightning → Liquid → Ark → On-chain. A direct selector change takes forward quarter turns through each intermediate rail. If both selected rails coincide, the opposite cube rotates forward to the next non-Ark rail. Quotes wait for both outer cubes to settle. Existing quotes are discarded on rail and amount changes. Amount edits share a short debounce, and a stale response cannot update the face values.
+
+Selecting Ark on either side shows “Solo regtest · swaps no disponibles” and disables quoting and swapping. The read-only Ark panel in administrator Operations explains that there is no connected adapter or telemetry.
 
 ## Product contracts
 

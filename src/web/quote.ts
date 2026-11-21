@@ -88,20 +88,23 @@ export function mountQuote(prepare?: (stillVisible: () => boolean, amountSats: n
 
   function schedule(delay: number) {
     if (!visible) return;
+    const value = principal();
+    if (value === undefined) amount.setAttribute('aria-invalid', 'true'); else amount.removeAttribute('aria-invalid');
+    if (aligned && (pair.send === 'ark' || pair.receive === 'ark')) {
+      action.disabled = true;
+      successNotice = false;
+      status('Solo regtest · swaps no disponibles');
+      return;
+    }
     if (controlled !== false) {
-      const value = principal();
       action.disabled = preparing || controlled !== true || !aligned || !canQuote(pair) || (canPrepare && (!value || !quote || quote.invoiceSats !== value));
-      if (value === undefined) amount.setAttribute('aria-invalid', 'true'); else amount.removeAttribute('aria-invalid');
       if (controlled === true && canPrepare && aligned && canQuote(pair) && value !== undefined && !quote && !preparing) {
         status('Updating quote…'); debounce = window.setTimeout(() => void load(value), delay);
       } else status(controlled === true ? preparing ? 'Preparing your regtest swap for review…' : value === undefined ? 'Enter 11,000–50,000 sats' : canPrepare ? 'Quote ready · review before swapping' : 'Review a prepared swap.'
         : controlled === 'unavailable' ? 'Quote service unavailable.' : 'Checking quote availability…');
       return;
     }
-    const value = principal();
     action.disabled = !aligned || !canQuote(pair) || value === undefined;
-    if (value === undefined) amount.setAttribute('aria-invalid', 'true');
-    else amount.removeAttribute('aria-invalid');
     if (!aligned) { status('Aligning rails…'); return; }
     if (!canQuote(pair)) { status('Route unavailable'); return; }
     if (value === undefined) { status('Enter 10,000–1,000,000 sats'); return; }

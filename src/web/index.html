@@ -13,6 +13,7 @@
 <svg class="icon-library" width="0" height="0" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
   <symbol id="icon-onchain" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9.5"/><path d="M8.5 7.5h5a2.25 2.25 0 1 1 0 4.5h-4m0 0h4.75a2.25 2.25 0 1 1 0 4.5H8.5m1-9v9m1.5-11v2m2.5-2v2M11 16.5v2m2.5-2v2"/></symbol>
   <symbol id="icon-lightning" viewBox="0 0 24 24"><path fill="currentColor" fill-opacity=".12" d="M13.5 2.75 5 13h6l-.5 8.25L19 11h-6z"/></symbol>
+  <symbol id="icon-ark" viewBox="0 0 24 24"><path d="m3 19 9-15 9 15M7 15h10"/></symbol>
   <symbol id="icon-liquid" viewBox="0 0 24 24"><path d="M12 3c2.3 3.3 6.5 6.8 6.5 11a6.5 6.5 0 0 1-13 0c0-4.2 4.2-7.7 6.5-11Z"/><path d="M6 14c2.1-1.4 4.1-1.4 6 0s4 1.4 6 0"/></symbol>
   <symbol id="icon-swap" viewBox="0 0 24 24"><path d="M4 8h15m-4-4 4 4-4 4m5 4H5m4-4-4 4 4 4"/></symbol>
   <symbol id="icon-down" viewBox="0 0 24 24"><path d="M12 4v15m-5-5 5 5 5-5"/></symbol>
@@ -54,7 +55,7 @@
           <div class="cube-plane plane-right" aria-hidden="true"><span class="plane-mark">+</span><span class="turn-label"></span></div>
           <div class="cube-plane plane-front">
             <header class="face-header"><h2 id="send-label">SEND</h2></header>
-            <div class="rail-field"><svg class="rail-icon icon" aria-hidden="true"><use id="send-icon" href="#icon-lightning"/></svg><label class="sr-only" for="send-network">Send network</label><select id="send-network" name="send-network"><option value="onchain">On-chain</option><option value="lightning" selected>Lightning</option><option value="liquid">Liquid</option></select><svg class="select-icon icon" aria-hidden="true"><use href="#icon-select"/></svg></div>
+            <div class="rail-field"><svg class="rail-icon icon" aria-hidden="true"><use id="send-icon" href="#icon-lightning"/></svg><label class="sr-only" for="send-network">Send network</label><select id="send-network" name="send-network"><option value="onchain">On-chain</option><option value="lightning" selected>Lightning</option><option value="liquid">Liquid</option><option value="ark">Ark</option></select><svg class="select-icon icon" aria-hidden="true"><use href="#icon-select"/></svg></div>
             <div class="face-value"><label for="amount" class="sr-only">Quote principal in sats</label><input id="amount" name="amount" value="50000" inputmode="numeric" maxlength="7" aria-describedby="amount-help" autocomplete="off"><span aria-hidden="true">sats</span></div><p id="amount-help" class="face-note">10,000&ndash;1,000,000 sats</p>
             <button type="button" class="rail-grip" id="send-grip" aria-label="Rotate send cube" aria-describedby="rotation-help"><svg class="icon" aria-hidden="true"><use href="#icon-down"/></svg></button>
           </div>
@@ -69,7 +70,7 @@
           <div class="cube-plane plane-right" aria-hidden="true"><span class="plane-mark">+</span><span class="turn-label"></span></div>
           <div class="cube-plane plane-front">
             <header class="face-header"><h2 id="receive-label">RECEIVE</h2></header>
-            <div class="rail-field"><svg class="rail-icon icon" aria-hidden="true"><use id="receive-icon" href="#icon-onchain"/></svg><label class="sr-only" for="receive-network">Receive network</label><select id="receive-network" name="receive-network"><option value="onchain" selected>On-chain</option><option value="lightning">Lightning</option><option value="liquid">Liquid</option></select><svg class="select-icon icon" aria-hidden="true"><use href="#icon-select"/></svg></div>
+            <div class="rail-field"><svg class="rail-icon icon" aria-hidden="true"><use id="receive-icon" href="#icon-onchain"/></svg><label class="sr-only" for="receive-network">Receive network</label><select id="receive-network" name="receive-network"><option value="onchain" selected>On-chain</option><option value="lightning">Lightning</option><option value="liquid">Liquid</option><option value="ark">Ark</option></select><svg class="select-icon icon" aria-hidden="true"><use href="#icon-select"/></svg></div>
             <div class="face-value"><output id="received-preview" for="amount" aria-label="Estimated receipt in sats" aria-live="off">&mdash;</output><span aria-hidden="true">sats</span></div><p class="face-note">Estimated receipt</p>
             <button type="button" class="rail-grip" id="receive-grip" aria-label="Rotate receive cube" aria-describedby="rotation-help"><svg class="icon" aria-hidden="true"><use href="#icon-down"/></svg></button>
           </div>
@@ -203,6 +204,10 @@
         <div><dt>LND Alice</dt><dd>—</dd></div><div><dt>Pending HTLCs</dt><dd>—</dd></div><div><dt>Node tips match</dt><dd id="tips">—</dd></div>
       </dl>
       <ul id="blockers" class="blockers" hidden></ul>
+    </article>
+    <article class="panel inset" id="ark-panel" aria-labelledby="ark-title">
+      <div class="panel-header"><h2 id="ark-title">Ark adapter</h2><span class="tag">READ-ONLY</span></div>
+      <p class="muted">No Ark adapter is connected. Regtest telemetry and Ark swaps are unavailable.</p>
     </article>
     <article class="panel inset">
       <div class="panel-header"><h2>Swap activity</h2><span class="tag">REPORTING UNAVAILABLE</span></div>

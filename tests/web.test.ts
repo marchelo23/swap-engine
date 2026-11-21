@@ -9,8 +9,9 @@ import { canQuote, defaultPair, linkRail, rails, stepRail } from '../src/web/rai
 
 test('rail turns follow the cycle and linked selection always honors the explicit side', () => {
   assert.equal(stepRail('onchain', 1), 'lightning');
-  assert.equal(stepRail('onchain', -1), 'liquid');
-  assert.equal(stepRail('liquid', 1), 'onchain');
+  assert.equal(stepRail('onchain', -1), 'ark');
+  assert.equal(stepRail('liquid', 1), 'ark');
+  assert.equal(stepRail('ark', 1), 'onchain');
   const forward = { send: 'onchain', receive: 'lightning' } as const;
   assert.deepEqual(linkRail(defaultPair, 'send', 'onchain'), forward);
   assert.deepEqual(linkRail(forward, 'receive', 'onchain'), defaultPair);
@@ -22,7 +23,8 @@ test('rail turns follow the cycle and linked selection always honors the explici
       assert.equal(next[side], rail);
       assert.notEqual(next.send, next.receive);
       const prior = { send, receive }[opposite];
-      assert.equal(next[opposite], rail === prior ? stepRail(rail, 1) : prior);
+      const fallback = { lightning: 'liquid', liquid: 'onchain', onchain: 'lightning', ark: 'onchain' } as const;
+      assert.equal(next[opposite], rail === prior ? fallback[rail] : prior);
       assert.equal(canQuote(next), next.send === 'lightning' && next.receive === 'onchain');
     }
   }
