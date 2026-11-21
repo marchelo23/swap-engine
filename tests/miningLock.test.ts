@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
-import { rm } from 'node:fs/promises';
+import { open, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import assert from 'node:assert/strict';
@@ -29,10 +29,15 @@ async function startFlockHolder(lockFile: string): Promise<ChildProcess> {
   throw new Error('flock holder did not acquire');
 }
 
+function waitExit(child: ChildProcess): Promise<void> {
+  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
+  return once(child, 'exit').then(() => {});
+}
+
 async function stopHolder(child: ChildProcess) {
   if (child.exitCode !== null || child.pid === undefined) return;
   try { process.kill(-child.pid, 'SIGKILL'); } catch { try { child.kill('SIGKILL'); } catch { /* already gone */ } }
-  await once(child, 'exit').catch(() => {});
+  await waitExit(child).catch(() => {});
 }
 
 async function waitUntilFree(lockFile: string) {
@@ -60,6 +65,21 @@ test('timer and on-demand style mining cannot acquire the lock while execution h
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
+test('the acquisition helper exits before the work and the descriptor keeps the flock', { skip: !linux }, async () => {
+  const directory = await privateTestDirectory('mining-lock'); const lockFile = join(directory, 'miner.lock');
+  try {
+    const handle = await open(lockFile, 'a+', 0o600);
+    try {
+      const helper = spawn('flock', ['-n', '3'], { stdio: ['ignore', 'ignore', 'ignore', handle.fd] });
+      const [code] = await once(helper, 'exit');
+      assert.equal(code, 0); assert.notEqual(helper.exitCode, null);
+      const blocked = await miner(lockFile);
+      assert.notEqual(blocked.code, 0); assert.equal(blocked.output.includes('mined'), false);
+    } finally { await handle.close(); }
+    const free = await miner(lockFile); assert.equal(free.code, 0);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
 test('execution cannot proceed while a miner holds the lock, then recovers after crash', { skip: !linux }, async () => {
   const directory = await privateTestDirectory('mining-lock'); const lockFile = join(directory, 'miner.lock');
   const holder = await startFlockHolder(lockFile);
@@ -84,7 +104,7 @@ test('a crashed execution process releases the kernel lock for the miner and nex
     for (let attempt = 0; attempt < 100 && !ready.includes('locked'); attempt++) await delay(50);
     assert.ok(ready.includes('locked'), 'holder did not signal the acquired lock');
     try { process.kill(-child.pid!, 'SIGKILL'); } catch { child.kill('SIGKILL'); }
-    await once(child, 'exit').catch(() => {});
+    await waitExit(child).catch(() => {});
     await waitUntilFree(lockFile);
     const free = await miner(lockFile); assert.equal(free.code, 0); assert.ok(free.output.includes('mined'));
   } finally { await rm(directory, { recursive: true, force: true }); }

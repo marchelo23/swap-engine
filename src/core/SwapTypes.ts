@@ -33,7 +33,7 @@ export type Database = { schema: 1; quotes: Record<string, Quote>; swaps: Record
   guestSwaps?: Record<string, { id: string; admissionId: string; requestKey: string; fingerprint: string;
     recoveryCommitment: string; status: 'PREPARING' | 'INVOICE_CREATED' | 'PREPARATION_UNKNOWN' | 'EXPIRED';
     attemptId: string; runDirectory: string; swapId?: string; invoice?: string; invoiceExpiresAt?: number;
-    createdAt: number; updatedAt: number;
+    timeoutHeight?: number; createdAt: number; updatedAt: number;
     claim?: { requestKey: string; fingerprint: string; txid: string; destination: string; feeSats: number;
       status: 'INTENT' | 'BROADCAST' | 'UNKNOWN' } }>;
   ownedPreparations?: Record<string, { ownerId: string; fingerprint: string; attemptId: string; createdAt: number;

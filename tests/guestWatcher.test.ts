@@ -1,5 +1,5 @@
 import { randomBytes, randomUUID } from 'node:crypto';
-import { rm } from 'node:fs/promises';
+import { readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
@@ -21,7 +21,7 @@ const GUEST_INVOICE_SATS = 50000;
 
 async function fixture(options: { withExecution?: boolean } = {}) {
   const f = await setup(); const runsDirectory = await privateTestDirectory('guest-watch-runs'); const routing = routingFixture();
-  let invoiceState: Invoice['state'] = 'OPEN'; let calls = 0;
+  let invoiceState: Invoice['state'] = 'OPEN'; let calls = 0; let tip = 100;
   const ledger = new Map<string, { hex: string; confirmations: number }>(); const actions: string[] = [];
   const invoice = (): Invoice => ({ state: invoiceState, r_hash: Buffer.from(f.contract.paymentHash, 'hex').toString('base64'),
     value: String(GUEST_INVOICE_SATS), amt_paid_sat: invoiceState === 'SETTLED' ? String(GUEST_INVOICE_SATS) : '0',
@@ -36,7 +36,7 @@ async function fixture(options: { withExecution?: boolean } = {}) {
       assertRegtest: async () => ({ chains: [{ chain: 'bitcoin', network: 'regtest' }], synced_to_chain: true }) },
     invoices: { origin: routing.providerOrigin, create: async () => { throw new Error('unexpected invoice create'); },
       lookup: async () => ({ status: 'PRESENT' as const, invoice: invoice() }) },
-    tip: async () => 100, now: () => 1000,
+    tip: async () => tip, now: () => 1000,
   };
   const execution: GuestExecution = {
     async fund(store, swap) { actions.push('fund'); return updateSwapRevision(store, swap.id, swap.revision, value => {
@@ -73,11 +73,13 @@ async function fixture(options: { withExecution?: boolean } = {}) {
     payerNode: '03' + '22'.repeat(32), routing, refundPublicKey: f.contract.refundPublicKey,
     refundDestination: f.destination, funding: { txid: 'ab'.repeat(32), vout: 0, valueSats: 100000 }, runsDirectory };
   const service = new GuestReverse(f.store, policy, clients, { preparation,
-    broadcast: async hex => Transaction.fromHex(hex).getId(), execution: options.withExecution ? execution : undefined });
+    broadcast: async hex => Transaction.fromHex(hex).getId(), pauseFile: join(runsDirectory, 'pause.json'),
+    execution: options.withExecution ? execution : undefined });
   const token = randomBytes(32).toString('base64url'); const auth = `Bearer ${token}`;
   const quote = await service.quote(auth, 'guest-quote-key', { destination: f.destination, amountSats: GUEST_INVOICE_SATS,
     paymentHash: f.contract.paymentHash, claimPublicKey: f.contract.claimPublicKey });
-  return { f, service, quote, auth, token, runsDirectory, ledger, actions,
+  return { f, service, quote, auth, token, runsDirectory, ledger, actions, pauseFile: join(runsDirectory, 'pause.json'),
+    setTip: (value: number) => { tip = value; },
     prepare: (key = 'guest-prepare-key') => service.prepare(quote.id, auth, key, { recoveryCommitment: 'ab'.repeat(32) }),
     setInvoice: (state: Invoice['state']) => { invoiceState = state; }, calls: () => calls,
     cleanup: async () => { await f.cleanup(); await rm(runsDirectory, { recursive: true, force: true }); } };
@@ -195,5 +197,37 @@ test('controlled guest execution uses the existing coordinator for fund/confirm/
       current = await execution.complete(run, current, plan); assert.equal(current.state, 'COMPLETED');
       assert.ok(lockCalls >= 3);
     } finally { await run.close(); }
+  } finally { await x.cleanup(); }
+});
+
+test('multiple pending swaps update one durable timer pause and terminal swaps release it', async () => {
+  const x = await fixture(); try {
+    await x.prepare('prepare-1');
+    x.setTip(105);
+    const token2 = randomBytes(32).toString('base64url'); const auth2 = `Bearer ${token2}`;
+    const quote2 = await x.service.quote(auth2, 'guest-quote-key-2', {
+      destination: x.f.destination, amountSats: GUEST_INVOICE_SATS,
+      paymentHash: x.f.contract.paymentHash, claimPublicKey: x.f.contract.claimPublicKey });
+    await x.service.prepare(quote2.id, auth2, 'prepare-2', { recoveryCommitment: 'cd'.repeat(32) });
+    x.setInvoice('ACCEPTED');
+    await x.service.reconcile();
+    const paused = JSON.parse(await readFile(x.pauseFile, 'utf8')) as any;
+    assert.equal(Object.keys(paused.activeSwapPolicy.swaps).length, 2);
+    assert.match(paused.reason, /active-swap_2_earliest_130/);
+    const records = Object.values(paused.activeSwapPolicy.swaps) as any[];
+    const first = records.find(record => record.timeoutHeight === 130)!;
+    const second = records.find(record => record.timeoutHeight === 135)!;
+    const firstRun = await Store.open(join(x.runsDirectory, x.quote.id));
+    try { await firstRun.transaction(db => { db.swaps[first.id]!.state = 'COMPLETED'; db.swaps[first.id]!.revision++; }); }
+    finally { await firstRun.close(); }
+    await x.service.reconcile();
+    const after = JSON.parse(await readFile(x.pauseFile, 'utf8')) as any;
+    assert.deepEqual(Object.keys(after.activeSwapPolicy.swaps), [second.id]);
+    assert.match(after.reason, /earliest_135/);
+    const secondRun = await Store.open(join(x.runsDirectory, quote2.id));
+    try { await secondRun.transaction(db => { db.swaps[second.id]!.state = 'COMPLETED'; db.swaps[second.id]!.revision++; }); }
+    finally { await secondRun.close(); }
+    await x.service.refreshMiningPause();
+    await assert.rejects(readFile(x.pauseFile), { code: 'ENOENT' });
   } finally { await x.cleanup(); }
 });

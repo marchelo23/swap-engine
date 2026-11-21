@@ -64,7 +64,7 @@ async function fixture(options: { failAfterCreate?: boolean; noBroadcast?: boole
     refundDestination: f.destination, funding: { txid: 'ab'.repeat(32), vout: 0, valueSats: 100000 },
     runsDirectory };
   const service = new GuestReverse(f.store, policy, clients, { preparation,
-    broadcast: options.noBroadcast ? undefined : broadcast,
+    broadcast: options.noBroadcast ? undefined : broadcast, pauseFile: join(runsDirectory, 'pause.json'),
     lock: async work => { lockCalls++; return work(); } });
   const token = randomBytes(32).toString('base64url'); const auth = `Bearer ${token}`;
   const quote = await service.quote(auth, 'guest-quote-key', { destination: f.destination, amountSats: GUEST_INVOICE_SATS,

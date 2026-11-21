@@ -17,6 +17,7 @@ import { updateSwapRevision } from '../core/SwapStateMachine.js';
 import type { Invoice } from '../lightning/LndClient.js';
 import type { GuestExecution } from './GuestExecution.js';
 import { MiningLockBusyError, withMiningLock } from '../mining/MiningLock.js';
+import { minerPauseFile, updateActiveSwapPause, type ActiveSwap } from '../mining/ActiveSwapPolicy.js';
 
 const hash = z.string().regex(/^[a-f0-9]{64}$/);
 const pubkey = z.string().regex(/^(02|03)[a-f0-9]{64}$/);
@@ -103,13 +104,14 @@ export class GuestReverse {
   private readonly now: () => number;
   private readonly execution?: GuestExecution;
   private readonly lock: <T>(work: () => Promise<T>) => Promise<T>;
+  private readonly pauseFile: string;
   private readonly queues = new Map<string, Promise<unknown>>();
   private timer?: ReturnType<typeof setInterval>;
 
   constructor(private readonly store: Store, policy: unknown, clients: GuestReverseClients,
     options: { preparation?: GuestPreparationFactory; broadcast?: (hex: string) => Promise<string>;
       storeFactory?: GuestStoreFactory; execution?: GuestExecution;
-      lock?: <T>(work: () => Promise<T>) => Promise<T>; lockFile?: string } = {}) {
+      lock?: <T>(work: () => Promise<T>) => Promise<T>; lockFile?: string; pauseFile?: string } = {}) {
     this.policy = guestReversePolicySchema.parse(policy);
     if (this.policy.providerNode === this.policy.payerNode ||
       this.policy.routing.providerOrigin === this.policy.routing.payerOrigin ||
@@ -121,6 +123,7 @@ export class GuestReverse {
     this.broadcast = options.broadcast; this.storeFactory = options.storeFactory ?? (directory => StoreFile.open(directory));
     this.execution = options.execution;
     this.lock = options.lock ?? (<T>(work: () => Promise<T>) => withMiningLock(work, { lockFile: options.lockFile }));
+    this.pauseFile = options.pauseFile ?? minerPauseFile();
     this.now = clients.now ?? Date.now; this.admission = new GuestAdmission(store, this.now);
   }
 
@@ -187,7 +190,8 @@ export class GuestReverse {
       const row = db.guestSwaps?.[admissionId];
       if (!row || row.attemptId !== attemptId || row.status !== 'PREPARING') throw new GuestReverseError(503, 'GUEST_PREPARATION_UNCERTAIN');
       row.status = 'INVOICE_CREATED'; row.swapId = prepared.swapId; row.invoice = prepared.invoice;
-      row.invoiceExpiresAt = prepared.invoiceExpiresAt; row.updatedAt = this.now();
+      row.invoiceExpiresAt = prepared.invoiceExpiresAt; row.timeoutHeight = prepared.plan.contract.timeoutHeight;
+      row.updatedAt = this.now();
     });
     return this.status(admissionId, authorization);
   }
@@ -238,7 +242,7 @@ export class GuestReverse {
       if (row.claim.status === 'UNKNOWN') throw new GuestReverseError(503, 'GUEST_CLAIM_UNCERTAIN');
       throw new GuestReverseError(409, 'GUEST_CLAIM_IN_PROGRESS');
     }
-    return this.withRun(admissionId, row.runDirectory, async runStore => {
+    const result = await this.withRun(admissionId, row.runDirectory, async runStore => {
       try {
         return await this.lock(async () => {
           const swap = runStore.read().swaps[row.swapId!];
@@ -288,6 +292,8 @@ export class GuestReverse {
         throw error;
       }
     });
+    await this.refreshMiningPause().catch(() => {});
+    return result;
   }
 
   private async assertAccepted(admission: NonNullable<ReturnType<GuestAdmission['status']>>, swap: Swap) {
@@ -405,9 +411,40 @@ export class GuestReverse {
     });
   }
 
+  /** Recompute the DS-02 timer pause marker from durable guest rows and live
+   * invoice evidence. It never overwrites an explicit operator pause. */
+  async refreshMiningPause() {
+    const active: ActiveSwap[] = [];
+    for (const row of Object.values(this.store.read().guestSwaps ?? {})) {
+      if (row.status !== 'INVOICE_CREATED') continue;
+      let swap: Swap | undefined;
+      try {
+        swap = await this.withRun(row.id, row.runDirectory, async runStore =>
+          row.swapId ? runStore.read().swaps[row.swapId] : undefined);
+      } catch { /* keep the conservative row deadline below */ }
+      if (!swap) {
+        active.push({ id: row.id, state: 'UNKNOWN', timeoutHeight: row.timeoutHeight ?? Number.MAX_SAFE_INTEGER, updatedAt: this.now() });
+        continue;
+      }
+      let invoiceState = 'UNKNOWN';
+      try {
+        const found = await this.clients.invoices.lookup(swap.contract.paymentHash);
+        invoiceState = found.status === 'PRESENT' ? found.invoice.state : 'ABSENT';
+      } catch { invoiceState = 'UNKNOWN'; }
+      const terminal = ['COMPLETED', 'REFUNDED', 'EXPIRED', 'FAILED'].includes(swap.state);
+      const heightRisk = !!swap.clientPayment || !!swap.lockup || !!swap.fundingIntent ||
+        ['INVOICE_ACCEPTED', 'LOCKUP_BROADCAST', 'LOCKUP_CONFIRMED', 'CLAIM_DETECTED', 'LIGHTNING_SETTLED',
+          'MANUAL_REVIEW', 'REFUND_PENDING'].includes(swap.state) || invoiceState === 'ACCEPTED' || invoiceState === 'UNKNOWN';
+      if (!terminal && heightRisk) active.push({ id: swap.id, state: swap.state,
+        timeoutHeight: swap.contract.timeoutHeight, updatedAt: this.now() });
+    }
+    await updateActiveSwapPause(this.pauseFile, active);
+  }
+
   /** Disabled-by-default lifecycle watcher. With no injected execution this
    * only reads evidence; it never funds, settles, completes or expires. */
   async runOnce() {
+    await this.refreshMiningPause();
     let scanned = 0; let updated = 0;
     for (const row of Object.values(this.store.read().guestSwaps ?? {})) {
       if (row.status !== 'INVOICE_CREATED' || !row.swapId) continue;
