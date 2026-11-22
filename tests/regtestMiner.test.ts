@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 
-test('regtest miner deployment uses kernel flock and existing release path', async () => {
+test('regtest miner deployment uses kernel flock and a portable user release path', async () => {
   const script = await readFile('scripts/regtest-block-miner.sh', 'utf8');
   const service = await readFile('deploy/regtest-block-miner.service', 'utf8');
   const timer = await readFile('deploy/regtest-block-miner.timer', 'utf8');
@@ -25,7 +25,7 @@ test('regtest miner deployment uses kernel flock and existing release path', asy
   assert.match(script, /ON_DEMAND_NOT_AUTHORIZED/);
   assert.match(script, /activeSwapPolicy/);
   assert.match(service, /Type=oneshot/);
-  assert.match(service, /%h\/deployments\/lqwd-swap-engine-434f519\/scripts\/regtest-block-miner\.sh/);
+  assert.match(service, /^ExecStart=\/bin\/bash %h\/swap-engine\/scripts\/regtest-block-miner\.sh --once\r?$/m);
   assert.match(timer, /OnUnitActiveSec=10min/);
   assert.match(timer, /Persistent=true/);
 });

@@ -112,7 +112,7 @@ export async function startApplication(env: NodeJS.ProcessEnv = process.env, arg
   if (ownedArgs && !reverseMutationAllowed) throw new Error('OWNED_EXECUTION_DISABLED');
   if (operatorArgs && parseOperatorCommand(operatorArgs).mode === 'serve' && !reverseMutationAllowed)
     throw new Error('CONTROLLED_EXECUTION_DISABLED');
-  if ((ownedArgs || (operatorArgs && parseOperatorCommand(operatorArgs).mode === 'serve')) && !isLegacyEconomics(c.economics))
+  if ((guestArgs || ownedArgs || (operatorArgs && parseOperatorCommand(operatorArgs).mode === 'serve')) && !isLegacyEconomics(c.economics))
     throw new Error('EXECUTION_ECONOMICS_UNSUPPORTED');
   if (guestArgs && (c.spendPolicy !== 'regtest-only' || !c.features.guest)) throw new Error('GUEST_EXECUTION_DISABLED');
   let liquidity: () => Promise<Balances>; let diagnostics: (() => ReturnType<typeof preflight>) | undefined;
