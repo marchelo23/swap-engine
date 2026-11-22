@@ -72,7 +72,7 @@ export async function startApplication(env: NodeJS.ProcessEnv = process.env, arg
   let bitcoin: ReadOnlyBitcoinClient | null = null; let lnd: ReadOnlyLndClient | null = null;
   let alice: ReadOnlyLndClient | null = null;
   if (dependencies.reads) ({ liquidity, diagnostics, operations } = dependencies.reads);
-  else if (c.mode === 'regtest') {
+  else if (c.bitcoinNetwork && (c.rails.onchain.enabled || c.rails.lightning.enabled)) {
     bitcoin = c.rails.onchain.enabled ? new ReadOnlyBitcoinClient(c.rails.onchain.url, c.rails.onchain.cookie, c.rails.onchain.wallet) : null;
     lnd = c.rails.lightning.enabled ? new ReadOnlyLndClient(c.rails.lightning.provider.url, c.rails.lightning.provider.cert, c.rails.lightning.provider.macaroon) : null;
     alice = c.rails.lightning.enabled && c.rails.lightning.alice

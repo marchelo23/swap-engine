@@ -84,6 +84,27 @@ test('attests configured mainnet and signet profiles read-only, including the si
   } finally { main.server.close(); signet.server.close(); await rm(directory, { recursive: true, force: true }); }
 });
 
+test('startApplication attests a configured mainnet profile before serving read-only capabilities', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'swap-attestation-mainnet-serve-'));
+  const mainnetGenesis = '000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f';
+  const core = await coreMock({ chainName: 'main', genesis: mainnetGenesis });
+  try {
+    const cookiePath = await cookie(directory); const data = join(directory, 'data');
+    const app = await startApplication({ APP_ENV: 'mainnet', APP_MODE: undefined, DEPLOYMENT_ID: 'mainnet-serve',
+      DATA_DIR: data, AUTH_STORE_PATH: join(directory, 'auth.json'), AUTH_ORIGIN: 'http://127.0.0.1:3000',
+      BITCOIN_RPC_URL: core.url, BITCOIN_COOKIE_PATH: cookiePath, BITCOIN_WALLET: 'test-wallet' }, [], { port: 0 });
+    try {
+      const base = `http://127.0.0.1:${(app.server.address() as AddressInfo).port}`;
+      const response = await fetch(`${base}/v1/capabilities`); assert.equal(response.status, 200);
+      const capabilities = await response.json() as any;
+      assert.equal(capabilities.environment, 'mainnet');
+      assert.equal(capabilities.rails.onchain.configured, true); assert.equal(capabilities.rails.onchain.verified, true);
+      assert.equal(capabilities.rails.onchain.available, true); assert.equal(capabilities.execution.enabled, false);
+      assert.equal(capabilities.rails.lightning.available, false);
+    } finally { await app.close(); }
+  } finally { core.server.close(); await rm(directory, { recursive: true, force: true }); }
+});
+
 test('startApplication rejects a wrong Core identity before creating the journal or lock', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'swap-attestation-start-')); const core = await coreMock({ genesis: 'ef'.repeat(32) });
   try {
