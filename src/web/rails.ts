@@ -31,3 +31,10 @@ export function arkRoute({ send, receive }: Pair): 'onchain-to-ark' | 'ark-to-on
 export function canQuote(pair: Pair) {
   return (pair.send === 'lightning' && pair.receive === 'onchain') || isArkOnchainPair(pair);
 }
+
+export function unsupportedRoute({ send, receive }: Pair) {
+  if ((send === 'ark' && receive === 'lightning') || (send === 'lightning' && receive === 'ark')) {
+    return `${railLabel[send]} → ${railLabel[receive]} unsupported`;
+  }
+  return 'Route unavailable';
+}

@@ -261,6 +261,7 @@ export const api = {
     return parse(response, arkSwapStatus);
   },
   arkSwaps: (signal: AbortSignal) => request('/v1/ark/swaps', arkSwapList, { signal }),
+  arkSwapStatus: (id: string, signal: AbortSignal) => request(`/v1/ark/swaps/${encodeURIComponent(id)}`, arkSwapStatus, { signal }),
   arkAdminReport: (signal: AbortSignal) => request('/v1/admin/ark/swaps', arkAdminReport, { signal }),
   arkTelemetry: (signal: AbortSignal) => request('/v1/ark/telemetry', arkTelemetry, { signal }, true),
   guestAvailability: (signal?: AbortSignal) => request('/v1/guest/availability', guestAvailability, { signal }),

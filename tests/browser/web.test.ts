@@ -47,12 +47,14 @@ test('three faces quote a real route and preserve keyboard, account and responsi
   await page.clock.install();
   await page.route('**/v1/auth/session', route => route.fulfill({ status: 401, json: {} }));
   const quoteRequests: number[] = [];
+  const arkQuoteRequests: unknown[] = [];
   const swapRequests: string[] = [];
   const errors: string[] = [];
   page.on('pageerror', error => errors.push(error.message));
   page.on('request', request => {
     const path = new URL(request.url()).pathname;
     if (path === '/v1/quotes') quoteRequests.push(request.postDataJSON().amountSats);
+    if (path === '/v1/ark/quotes') arkQuoteRequests.push(request.postDataJSON());
     if (path.startsWith('/v1/swaps')) swapRequests.push(path);
   });
 
@@ -173,14 +175,14 @@ test('three faces quote a real route and preserve keyboard, account and responsi
   assert.equal(await page.locator('#service').textContent(), '850 sats');
   assert.equal(await page.locator('#claim').textContent(), '241 sats');
   assert.equal(await page.locator('#cost').textContent(), '1,091 sats');
-  await page.getByText('Ark cooperative offboard quote ready · regtest only', { exact: true }).waitFor();
+  await page.getByText('Simulation · execution disabled', { exact: true }).waitFor();
   assert.equal(await swap.isDisabled(), false);
 
   await page.getByLabel('Receive network').selectOption('ark');
   await waitForRails(page, 'onchain', 'ark');
   await amount.fill('80000');
   await page.getByText('78,838', { exact: true }).waitFor();
-  await page.getByText('Ark boarding quote ready · regtest only', { exact: true }).waitFor();
+  await page.getByText('Simulation · execution disabled', { exact: true }).waitFor();
   assert.equal(await swap.isDisabled(), false);
   assert.equal(await page.locator('#service').textContent(), '900 sats');
   assert.equal(await page.locator('#claim').textContent(), '262 sats');
@@ -188,13 +190,20 @@ test('three faces quote a real route and preserve keyboard, account and responsi
   assert.equal(await page.locator('#receive-icon').getAttribute('href'), '#icon-ark');
   assert.equal(quoteRequests.length, beforeArk);
 
+  const beforeUnsupported = arkQuoteRequests.length;
   await page.getByLabel('Send network').selectOption('lightning');
   await waitForRails(page, 'lightning', 'ark');
-  const arkNotice = page.getByText('Solo regtest · swaps no disponibles', { exact: true });
-  await arkNotice.waitFor();
+  await page.getByText('Lightning → Ark unsupported', { exact: true }).waitFor();
+  assert.equal(await swap.isDisabled(), true);
+  await page.getByLabel('Receive network').selectOption('lightning');
+  await waitForRails(page, 'liquid', 'lightning');
+  await page.getByLabel('Send network').selectOption('ark');
+  await waitForRails(page, 'ark', 'lightning');
+  await page.getByText('Ark → Lightning unsupported', { exact: true }).waitFor();
   assert.equal(await swap.isDisabled(), true);
   assert.equal(await page.locator('#received-preview').textContent(), '—');
   assert.equal(quoteRequests.length, beforeArk);
+  assert.equal(arkQuoteRequests.length, beforeUnsupported);
   for (const [width, height] of [[320, 700], [390, 844], [701, 844], [768, 844], [1024, 600], [1366, 768], [1440, 900]] as const) {
     await page.setViewportSize({ width, height });
     const bounds = await page.evaluate(() => ({
@@ -801,7 +810,7 @@ test('actual mouse and touch gestures rotate in both directions and linked anima
   await sendGrip.press('ArrowDown');
   await page.getByRole('button', { name: 'Rotate receive cube' }).press('ArrowUp');
   await waitForRails(page, 'liquid', 'ark');
-  await page.getByText('Solo regtest · swaps no disponibles', { exact: true }).waitFor();
+  await page.getByText('Route unavailable', { exact: true }).waitFor();
   assert.equal(await page.getByRole('button', { name: 'SWAP', exact: true }).isDisabled(), true);
   assert.equal(await page.locator('#received-preview').textContent(), '\u2014');
   assert.equal(observations.length, 2);
@@ -817,7 +826,7 @@ test('actual mouse and touch gestures rotate in both directions and linked anima
   await receiveGrip.hover();
   await page.mouse.wheel(0, -80);
   await waitForRails(page, 'lightning', 'ark');
-  await page.getByText('Solo regtest · swaps no disponibles', { exact: true }).waitFor();
+  await page.getByText('Lightning → Ark unsupported', { exact: true }).waitFor();
   assert.equal(observations.length, 3);
   const video = page.video();
   await desktop.close();
@@ -867,7 +876,7 @@ test('actual mouse and touch gestures rotate in both directions and linked anima
   await mobile.close();
 });
 
-test('Ark regtest UI requires explicit inputs, keeps SUBMITTED pending without ¡Swap exitoso!, and updates UNAVAILABLE telemetry', async context => {
+test('Ark regtest UI gates execution, separates pending from confirmed, and updates unavailable telemetry', async context => {
   const f = await setup();
   context.after(f.cleanup);
   const adminAccount = await testAccount(f.directory, 'ADMIN');
@@ -925,19 +934,41 @@ test('Ark regtest UI requires explicit inputs, keeps SUBMITTED pending without �
   const errors: string[] = [];
   page.on('pageerror', err => errors.push(err.message));
 
-  // 1. Sign in as the authorized operator and submit an explicit boarding swap (202 SUBMITTED)
+  // 1. A session with an unavailable route can review, but cannot submit.
+  await page.route('**/v1/ark/availability', route => route.fulfill({ json: { executionAvailable: false } }));
   await page.goto(`${base}/#account`);
   await page.getByLabel('Username', { exact: true }).fill(adminAccount.username);
   await page.getByLabel('Password', { exact: true }).fill(adminAccount.password);
   await page.getByRole('button', { name: 'Sign in', exact: true }).click();
   await page.locator('#account-dashboard').waitFor({ state: 'visible' });
 
+  async function selectBoarding() {
+    await page.getByLabel('Send network').selectOption('onchain');
+    await waitForRails(page, 'onchain', 'lightning');
+    await page.getByLabel('Receive network').selectOption('ark');
+    await waitForRails(page, 'onchain', 'ark');
+    await page.getByText('48,988', { exact: true }).waitFor();
+  }
   await page.getByRole('link', { name: 'Swap', exact: true }).click();
-  await page.getByLabel('Send network').selectOption('onchain');
-  await waitForRails(page, 'onchain', 'lightning');
-  await page.getByLabel('Receive network').selectOption('ark');
-  await waitForRails(page, 'onchain', 'ark');
-  await page.getByText('48,988', { exact: true }).waitFor();
+  await selectBoarding();
+  await page.getByText('Ark execution unavailable for this account', { exact: true }).waitFor();
+  for (const [width, height] of [[320, 700], [701, 640], [1440, 900]] as const) {
+    await page.setViewportSize({ width, height });
+    assert.equal(await page.locator('.cube-swap .plane-front').evaluate(face => face.scrollHeight <= face.clientHeight), true,
+      `Route readiness overflows the face at ${width}×${height}`);
+  }
+  await page.getByRole('button', { name: 'SWAP', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'Review quote' });
+  const startSwap = dialog.getByRole('button', { name: 'Start swap', exact: true });
+  await dialog.getByText('Ark execution unavailable for this account', { exact: true }).waitFor();
+  assert.equal(await startSwap.isDisabled(), true);
+  assert.equal(await page.locator('#ark-execution-fields').isVisible(), false);
+
+  // Restore the baseline contract and submit boarding via the fake adapter.
+  await page.unroute('**/v1/ark/availability');
+  await page.reload();
+  await selectBoarding();
+  await page.getByText('Regtest execution available', { exact: true }).waitFor();
 
   const capturedSwaps: Array<{ key: string; csrf: string; body: unknown }> = [];
   page.on('request', req => {
@@ -948,12 +979,10 @@ test('Ark regtest UI requires explicit inputs, keeps SUBMITTED pending without �
   });
 
   await page.getByRole('button', { name: 'SWAP', exact: true }).click();
-  const dialog = page.getByRole('dialog', { name: 'Review quote' });
   await dialog.waitFor({ state: 'visible' });
   assert.equal(await page.locator('#ark-execution-fields').isVisible(), true);
   assert.equal(await page.locator('#ark-boarding-fields').isVisible(), true);
   assert.equal(await page.locator('#ark-offboard-fields').isVisible(), false);
-  const startSwap = dialog.getByRole('button', { name: 'Start swap', exact: true });
   assert.equal(await startSwap.isDisabled(), true);
   assert.equal(await page.getByLabel('Funding outpoint (txid:vout)').inputValue(), '');
 
@@ -966,8 +995,10 @@ test('Ark regtest UI requires explicit inputs, keeps SUBMITTED pending without �
   assert.equal(await startSwap.isDisabled(), false);
 
   await startSwap.click();
-  await dialog.getByText('Ark regtest swap submitted (pending settlement confirmation).', { exact: true }).waitFor();
-  assert.equal(await page.locator('#quote-status').textContent(), 'Ark regtest swap submitted · pending confirmation');
+  await dialog.locator('#execution-status').filter({ hasText: /^Boarding · pending confirmation$/ }).waitFor();
+  await mkdir(evidence, { recursive: true });
+  await page.screenshot({ path: evidence + '/mock-ark-boarding-pending.png' });
+  assert.equal(await page.locator('#quote-status').textContent(), 'Boarding · pending confirmation');
   assert.equal(await page.getByText('¡Swap exitoso!').count(), 0);
   assert.equal(capturedSwaps.length, 1);
   assert.match(capturedSwaps[0]!.key, /^[A-Za-z0-9_-]{8,128}$/);
@@ -981,6 +1012,7 @@ test('Ark regtest UI requires explicit inputs, keeps SUBMITTED pending without �
   assert.equal(await page.locator('#account-active-swaps').textContent(), '1');
   assert.equal(await page.locator('#account-completed-swaps').textContent(), '0');
   assert.equal(await page.locator('#account-failed-swaps').textContent(), '0');
+  assert.equal(await page.locator('#account-history-list .tag').textContent(), 'Boarding · pending confirmation');
 
   // 2. Sign in as ADMIN: verify Operations shows pending=1, completed=0, settled=0 sats, and live->unavailable telemetry
   await page.getByRole('button', { name: 'Sign out', exact: true }).click();
@@ -1010,30 +1042,39 @@ test('Ark regtest UI requires explicit inputs, keeps SUBMITTED pending without �
   await page.waitForFunction(() => document.getElementById('ark-tag')?.textContent === 'UNAVAILABLE');
   assert.equal(await page.locator('#ark-status').textContent(), 'Ark regtest operator telemetry is unavailable.');
 
-  // 3. Test 201 CONFIRMED cooperative offboarding flow + idempotency key reuse on retry + confirmed accounting
+  // 3. Mock cooperative offboarding progressing from a 202 to a confirmed status read.
   const confirmedQuote = buildArkQuote('ark-to-onchain', 50_000, Date.now());
+  const offboardId = '22222222-2222-4222-8222-222222222222';
+  const confirmedRecord = {
+    id: offboardId,
+    network: 'regtest',
+    route: 'ark-to-onchain',
+    method: 'cooperative-offboarding',
+    status: 'CONFIRMED',
+    quote: confirmedQuote,
+    inputOutpoint: offboardVtxo,
+    destination: offboardDestination,
+    commitmentTxid: offboardCommitment,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+  };
   let postAttempt = 0;
+  let statusReads = 0;
   const offboardKeys: string[] = [];
+  await page.route(`**/v1/ark/swaps/${offboardId}`, route => {
+    statusReads++;
+    assert.equal(route.request().method(), 'GET');
+    return route.fulfill({ json: { ...confirmedRecord, updatedAt: Date.now() } });
+  });
   await page.route('**/v1/ark/swaps', async route => {
     if (route.request().method() !== 'POST') return route.continue();
     postAttempt++;
     offboardKeys.push(route.request().headers()['idempotency-key']!);
     if (postAttempt === 1) return route.abort('failed');
+    confirmedRecord.quote.id = route.request().postDataJSON().quoteId;
     return route.fulfill({
-      status: 201,
-      json: {
-        id: '22222222-2222-4222-8222-222222222222',
-        network: 'regtest',
-        route: 'ark-to-onchain',
-        method: 'cooperative-offboarding',
-        status: 'CONFIRMED',
-        quote: confirmedQuote,
-        inputOutpoint: offboardVtxo,
-        destination: offboardDestination,
-        commitmentTxid: offboardCommitment,
-        createdAt: Date.now(),
-        updatedAt: Date.now(),
-      },
+      status: 202,
+      json: { ...confirmedRecord, status: 'SUBMITTED', updatedAt: Date.now() },
     });
   });
 
@@ -1058,26 +1099,17 @@ test('Ark regtest UI requires explicit inputs, keeps SUBMITTED pending without �
   assert.equal(await startSwap.isDisabled(), false);
 
   await startSwap.click();
-  await dialog.getByText('Ark regtest swap confirmed.', { exact: true }).waitFor();
-  assert.equal(await page.locator('#quote-status').textContent(), '¡Swap exitoso!');
+  await dialog.locator('#execution-status').filter({ hasText: /^Offboarding · pending confirmation$/ }).waitFor();
+  assert.equal(await page.locator('#quote-status').textContent(), 'Offboarding · pending confirmation');
+  await dialog.locator('#execution-status').filter({ hasText: /^Offboarding · confirmed$/ }).waitFor();
+  await page.screenshot({ path: evidence + '/mock-ark-offboarding-confirmed.png' });
+  assert.equal(await page.locator('#quote-status').textContent(), 'Offboarding · confirmed');
+  assert.equal(statusReads, 1);
   assert.equal(offboardKeys.length, 2);
   assert.equal(offboardKeys[1], offboardKeys[0]);
   await dialog.getByRole('button', { name: 'Close review', exact: true }).click();
 
   // Verify confirmed state reflection in Account & Admin when backend serves a CONFIRMED swap
-  const confirmedRecord = {
-    id: '22222222-2222-4222-8222-222222222222',
-    network: 'regtest',
-    route: 'ark-to-onchain',
-    method: 'cooperative-offboarding',
-    status: 'CONFIRMED',
-    quote: confirmedQuote,
-    inputOutpoint: offboardVtxo,
-    destination: offboardDestination,
-    commitmentTxid: offboardCommitment,
-    createdAt: Date.now(),
-    updatedAt: Date.now(),
-  };
   await page.route('**/v1/ark/swaps', route => route.request().method() === 'GET'
     ? route.fulfill({ json: { network: 'regtest', swaps: [confirmedRecord] } })
     : route.continue());

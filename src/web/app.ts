@@ -1,4 +1,5 @@
 import { api, type ArkSwapStatus, type Session } from './api.js';
+import { arkProgress, arkStatusLabel } from './arkStatus.js';
 import { railIds, type RailReason } from '../core/RailContract.js';
 import { prepareForReview } from './preparation.js';
 import { mountAuth } from './auth.js';
@@ -43,6 +44,7 @@ const environment = api.capabilities().then(capabilities => {
   if (railIds.some(id => capabilities.rails[id].id !== id)) throw new Error('Mismatched rail identifiers.');
   const { environment, chain, rails } = capabilities;
   get('mode').dataset.mode = environment;
+  quotes.setArkEnvironment(environment);
   const networkName = `${chainLabel[chain.kind]} ${chain.name}`;
   get('network').title = networkName;
   text('network', environment.toUpperCase());
@@ -54,6 +56,7 @@ const environment = api.capabilities().then(capabilities => {
   }
   return environment;
 }).catch(() => {
+  quotes.setArkEnvironment(undefined);
   get('network').title = 'Network capabilities unavailable';
   text('capabilities-status', 'Network capabilities unavailable.');
   return undefined;
@@ -82,7 +85,7 @@ function renderArkSwapList(list: HTMLElement, swaps: ArkSwapStatus[]) {
       : 'Ark → On-chain (Cooperative offboarding)';
     const badge = document.createElement('span');
     badge.className = 'tag';
-    badge.textContent = swap.status;
+    badge.textContent = arkStatusLabel(swap);
     const when = document.createElement('time');
     when.className = 'tx-time';
     when.dateTime = new Date(swap.createdAt).toISOString();
@@ -95,7 +98,7 @@ function renderArkSwapList(list: HTMLElement, swaps: ArkSwapStatus[]) {
       ['Principal', sats(swap.quote.amountSats)],
       ['Service fee', sats(swap.quote.serviceFeeSats)],
       ['Estimated network fee', sats(swap.quote.claimFeeSats)],
-      ['Net receipt', sats(swap.quote.netSats)],
+      ['Estimated net receipt', sats(swap.quote.netSats)],
       ['Destination', swap.destination],
       ['Commitment txid', swap.commitmentTxid ?? 'Pending batch round'],
     ]);
@@ -186,8 +189,8 @@ async function loadAccountHistory() {
   try {
     const { swaps } = await api.arkSwaps(controller.signal);
     if (accountHistoryController !== controller || session !== owner) return;
-    const completed = swaps.filter(s => s.status === 'CONFIRMED').length;
-    const failed = swaps.filter(s => s.status === 'REJECTED').length;
+    const completed = swaps.filter(s => arkProgress(s) === 'confirmed').length;
+    const failed = swaps.filter(s => arkProgress(s) === 'rejected').length;
     const active = swaps.length - completed - failed;
     text('account-history-tag', 'REGTEST · ARK');
     text('account-history-status', swaps.length > 0
@@ -308,10 +311,10 @@ if (!get('swap').hidden) playOpening();
 mountAuth(next => {
   if (session !== next) {
     session = next;
-    quotes.setArkExecutionAllowed(false);
+    quotes.setArkExecutionAllowed(next ? null : false);
     if (next) void api.arkAvailability().then(result => {
       if (session === next) quotes.setArkExecutionAllowed(result.executionAvailable);
-    }).catch(() => {});
+    }).catch(() => { if (session === next) quotes.setArkExecutionAllowed('unavailable'); });
     quotes.setContext(next ? null : false, next?.csrfToken);
   } else if (!next) quotes.setContext(false);
   reverse.setSession(next);

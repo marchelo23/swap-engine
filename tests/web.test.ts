@@ -5,8 +5,10 @@ import { createHash } from 'node:crypto';
 import type { AddressInfo } from 'node:net';
 import { setup } from './helpers.js';
 import { createApi } from '../src/api/server.js';
-import { quoteTotals } from '../src/web/api.js';
-import { canQuote, defaultPair, isArkOnchainPair, linkRail, rails, stepRail } from '../src/web/rails.js';
+import { buildArkQuote } from '../src/ark/ArkAdapter.js';
+import { quoteTotals, type ArkSwapStatus } from '../src/web/api.js';
+import { arkProgress, arkStatusLabel } from '../src/web/arkStatus.js';
+import { canQuote, defaultPair, isArkOnchainPair, linkRail, rails, stepRail, unsupportedRoute } from '../src/web/rails.js';
 
 test('rail turns follow the cycle and linked selection always honors the explicit side', () => {
   assert.equal(stepRail('onchain', 1), 'lightning');
@@ -33,6 +35,27 @@ test('rail turns follow the cycle and linked selection always honors the explici
       assert.equal(isArkOnchainPair(next), (next.send === 'onchain' && next.receive === 'ark') || (next.send === 'ark' && next.receive === 'onchain'));
     }
   }
+});
+
+test('Ark routes distinguish submission evidence, confirmation and ambiguous backend statuses', () => {
+  for (const route of ['onchain-to-ark', 'ark-to-onchain'] as const) {
+    const now = Date.now();
+    const quote = buildArkQuote(route, 50_000, now);
+    const submitted: ArkSwapStatus = {
+      id: '22222222-2222-4222-8222-222222222222', network: 'regtest', route, method: quote.method,
+      status: 'SUBMITTED', quote, commitmentTxid: 'a'.repeat(64), inputOutpoint: 'b'.repeat(64) + ':0',
+      destination: 'regtest fixture', createdAt: now, updatedAt: now,
+    };
+    const method = route === 'onchain-to-ark' ? 'Boarding' : 'Offboarding';
+    assert.equal(arkStatusLabel(submitted), `${method} · pending confirmation`);
+    assert.equal(arkProgress({ ...submitted, status: 'PREPARED', commitmentTxid: null }), 'pending');
+    assert.equal(arkStatusLabel({ ...submitted, status: 'CONFIRMED' }), `${method} · confirmed`);
+    assert.equal(arkProgress({ ...submitted, status: 'CONFIRMED', commitmentTxid: null }), 'uncertain');
+    assert.equal(arkProgress({ ...submitted, status: 'CONFIRMED', commitmentTxid: 'unverified' }), 'uncertain');
+    assert.equal(arkProgress({ ...submitted, status: 'REJECTED' }), 'rejected');
+  }
+  assert.equal(unsupportedRoute({ send: 'ark', receive: 'lightning' }), 'Ark → Lightning unsupported');
+  assert.equal(unsupportedRoute({ send: 'lightning', receive: 'ark' }), 'Lightning → Ark unsupported');
 });
 
 test('quote totals use integer API fees and exclude the provider funding reserve', async () => {
