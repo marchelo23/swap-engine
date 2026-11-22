@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { assertOperatorBinding } from '../src/environment/OperatorBinding.js';
 
-const expected = { wallet: 'wallet-a', bitcoinOrigin: 'http://127.0.0.1:18443', providerOrigin: 'https://127.0.0.1:8080',
+const expected = { wallet: 'wallet-a', genesisHash: '0f9188f13cb7b2c71f2a335e3a4fc328bf5beb436012afca590b1a11466e2206', bitcoinOrigin: 'http://127.0.0.1:18443', providerOrigin: 'https://127.0.0.1:8080',
   payerOrigin: 'https://127.0.0.1:8081', providerNode: '02' + '11'.repeat(32), payerNode: '03' + '22'.repeat(32),
   bitcoinCookiePath: '/abs/cookie', providerCertPath: '/abs/provider.cert',
   providerReadMacaroonPath: '/abs/provider.read', payerCertPath: '/abs/payer.cert', payerReadMacaroonPath: '/abs/payer.read' };

@@ -15,7 +15,7 @@ import { checkedJSON, protectedBytes } from './operator/OperatorFiles.js';
 import { createOwnedRuntimeFactory, ownedRuntimePolicySchema, type OwnedRuntimePolicy } from './operator/OwnedPreparationRuntime.js';
 import { createOwnedPreparation } from './api/ownedPreparation.js';
 import { assertStateScope } from './environment/StateScope.js';
-import { assertOperatorBinding } from './environment/OperatorBinding.js';
+import { assertOperatorBinding, type OperatorBindingExpectation } from './environment/OperatorBinding.js';
 import { preparationSpecSchema } from './core/ReversePreparation.js';
 import { readPathsSchema } from '../scripts/run-controlled-reverse.js';
 import { attestStartup, type StartupScope } from './environment/StartupAttestation.js';
@@ -38,6 +38,17 @@ function assertOwnedPolicyBinding(policy: OwnedRuntimePolicy, c: ReturnType<type
     policy.credentialPaths.payerCertPath !== c.rails.lightning.alice.cert ||
     policy.credentialPaths.payerReadMacaroonPath !== c.rails.lightning.alice.macaroon)
     throw new Error('OWNED_POLICY_IDENTITY_MISMATCH');
+}
+
+function operatorPolicy(c: ReturnType<typeof config>, identity: StartupScope): OperatorBindingExpectation {
+  if (!identity.providerNode || !identity.payerNode || !c.rails.onchain.enabled ||
+    !c.rails.lightning.enabled || !c.rails.lightning.alice || !c.bitcoinGenesisHash) throw new Error('OPERATOR_BINDING_UNAVAILABLE');
+  return { wallet: identity.wallet, genesisHash: c.bitcoinGenesisHash,
+    bitcoinOrigin: new URL(c.rails.onchain.url).origin, providerOrigin: new URL(c.rails.lightning.provider.url).origin,
+    payerOrigin: new URL(c.rails.lightning.alice.url).origin, providerNode: identity.providerNode, payerNode: identity.payerNode,
+    bitcoinCookiePath: c.rails.onchain.cookie, providerCertPath: c.rails.lightning.provider.cert,
+    providerReadMacaroonPath: c.rails.lightning.provider.macaroon, payerCertPath: c.rails.lightning.alice.cert,
+    payerReadMacaroonPath: c.rails.lightning.alice.macaroon };
 }
 
 export function ownedStartupArguments(args: string[], mode: ApplicationMode) {
@@ -108,7 +119,7 @@ export async function startApplication(env: NodeJS.ProcessEnv = process.env, arg
         !c.rails.lightning.enabled || !c.rails.lightning.alice) throw new Error('OPERATOR_BINDING_UNAVAILABLE');
       const spec = preparationSpecSchema.parse(await checkedJSON(join(command.directory, 'spec.json'), command.checksum));
       const paths = readPathsSchema.parse(JSON.parse((await protectedBytes(join(command.directory, 'credential-paths.json'))).toString('utf8')));
-      assertOperatorBinding(spec, paths, { wallet: identity.wallet, bitcoinOrigin: new URL(c.rails.onchain.url).origin,
+      assertOperatorBinding(spec, paths, { wallet: identity.wallet, genesisHash: c.bitcoinGenesisHash!, bitcoinOrigin: new URL(c.rails.onchain.url).origin,
         providerOrigin: new URL(c.rails.lightning.provider.url).origin, payerOrigin: new URL(c.rails.lightning.alice.url).origin,
         providerNode: identity.providerNode, payerNode: identity.payerNode, bitcoinCookiePath: c.rails.onchain.cookie,
         providerCertPath: c.rails.lightning.provider.cert, providerReadMacaroonPath: c.rails.lightning.provider.macaroon,
@@ -146,7 +157,11 @@ export async function startApplication(env: NodeJS.ProcessEnv = process.env, arg
     }
     await new Promise<void>((ready, reject) => { server.once('error', reject); server.listen(dependencies.port ?? c.port, '127.0.0.1', () => { server.off('error', reject); ready(); }); });
     // Failed readiness leaves the app usable with controlled execution closed; never retry.
-    const runtime = operatorArgs ? (dependencies.operator ?? runOperatorCLI)(operatorArgs, server.controlled.operatorIO) : undefined;
+    const runtime = operatorArgs
+      ? dependencies.operator
+        ? dependencies.operator(operatorArgs, server.controlled.operatorIO)
+        : runOperatorCLI(operatorArgs, server.controlled.operatorIO, operatorPolicy(c, identity!))
+      : undefined;
     void runtime?.catch(() => { console.error('CONTROLLED_RUNTIME_STOPPED: preserve intents; reconcile without retry'); });
     let shutdown: Promise<void> | undefined;
     return { server, store, runtime, mode: c.mode,

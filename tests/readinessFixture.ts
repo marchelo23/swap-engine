@@ -27,6 +27,7 @@ export async function readinessFixture() {
     f.contract.refundPublicKey, { claim: f.destination, refund: ownAddress },
     { provider: f.contract.claimPublicKey, payer: f.contract.refundPublicKey }, routingFixture(`${channelTx.getId()}:0`));
   const tipHash = 'cd'.repeat(32); const blockHash = 'ab'.repeat(32);
+  const genesisHash = '0f9188f13cb7b2c71f2a335e3a4fc328bf5beb436012afca590b1a11466e2206';
   const scope = { isolationId: randomUUID(), channelId: '12345', channelPoint: `${channelTx.getId()}:0`,
     bitcoinOrigin: 'http://127.0.0.1:18443', providerOrigin: 'https://127.0.0.1:8080', payerOrigin: 'https://127.0.0.1:8081' };
   const chain = { chain: 'regtest', blocks: 100, headers: 100, bestblockhash: tipHash, initialblockdownload: false };
@@ -74,7 +75,7 @@ export async function readinessFixture() {
     else if (method === 'getmempoolinfo') result = mempool;
     else if (method === 'getrawtransaction') { assert.equal(walletCall, false); result = rawTransactions.get(String(params[0])); }
     else if (method === 'getblockheader') result = { hash: blockHash, height: 99, confirmations: 2 };
-    else if (method === 'getblockhash') { assert.equal(params[0], 99); result = blockHash; }
+    else if (method === 'getblockhash') { assert.ok(params[0] === 0 || params[0] === 99); result = params[0] === 0 ? genesisHash : blockHash; }
     else if (method === 'gettxout') {
       assert.deepEqual(params, [params[0], 0, true]); result = params[0] === input.txid ? txout : channelOut;
     } else throw new Error(`Unexpected or mutating RPC ${method}`);

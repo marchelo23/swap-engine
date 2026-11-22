@@ -53,7 +53,12 @@ async function lifecycleFixture() {
     pay: { role: 'pay', permissions: ['offchain:read', 'offchain:write'], fingerprint: '34'.repeat(32) },
     providerCertFingerprint: '56'.repeat(32), payerCertFingerprint: '78'.repeat(32) };
   const info = async () => ({ chains: [{ chain: 'bitcoin', network: 'regtest' }], synced_to_chain: true });
-  const io: Partial<OperatorIO> = { password: () => { passwordReads++; return Buffer.from(password); },
+  const policy = { wallet: spec.wallet, genesisHash: '0f9188f13cb7b2c71f2a335e3a4fc328bf5beb436012afca590b1a11466e2206',
+    bitcoinOrigin: spec.routing.bitcoinOrigin, providerOrigin: spec.routing.providerOrigin, payerOrigin: spec.routing.payerOrigin,
+    providerNode: spec.providerNode, payerNode: spec.payerNode, bitcoinCookiePath: paths.bitcoinCookiePath,
+    providerCertPath: paths.providerCertPath, providerReadMacaroonPath: paths.providerReadMacaroonPath,
+    payerCertPath: paths.payerCertPath, payerReadMacaroonPath: paths.payerReadMacaroonPath };
+  const io: Partial<OperatorIO> = { policy, password: () => { passwordReads++; return Buffer.from(password); },
     clients: () => ({ bitcoin: { ...x.bitcoin, assertRegtest: async () => x.chain, confirmed: id => new BitcoinConfirmationLookup(x.bitcoin).confirmed(id) },
       provider: { ...x.provider, assertRegtest: info }, payer: { ...x.payer, assertRegtest: info },
       recoveryPayer: { ...x.payer, call: async <T>(path: string): Promise<T> => path.includes('/v1/payments?')

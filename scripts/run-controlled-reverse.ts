@@ -22,6 +22,8 @@ import { verifyReverseTestPlan } from '../src/core/ReverseTestPlan.js';
 import { operatorDirectory, protectedBytes, checkedJSON, operatorArtifact, sha256, operatorStopped } from '../src/operator/OperatorFiles.js';
 import { backupSchema, verifyCustodyBackup } from '../src/operator/CustodyBackup.js';
 import { actionPathsSchema, inspectNativeActions, probeCoreAction, nativeActionDependencies } from '../src/operator/NativeActionCredentials.js';
+import { attestOperatorBinding, type OperatorBindingExpectation } from '../src/environment/OperatorBinding.js';
+import { config } from '../src/config.js';
 
 const hash = z.string().regex(/^[a-f0-9]{64}$/); const absolute = z.string().refine(isAbsolute);
 export const readPathsSchema = z.object({ bitcoinCookiePath: absolute, providerCertPath: absolute, providerReadMacaroonPath: absolute,
@@ -78,13 +80,14 @@ function readClients(spec: PreparationSpec, paths: z.infer<typeof readPathsSchem
     recoveryPayer: new LndRecoveryClient(payer.origin, paths.payerCertPath, paths.payerReadMacaroonPath) };
 }
 export type OperatorIO = { password(): Buffer; clients: typeof readClients; inspectActions: typeof inspectNativeActions;
+  policy?: OperatorBindingExpectation;
   probeCore: typeof probeCoreAction; backup: typeof verifyCustodyBackup; actions: typeof nativeActionDependencies; executor: typeof createJitRuntimeExecutor;
   serve: typeof serveOwnedReverse; sessions?: OwnerSessions<{ account: { id: string; role: string } }> };
 const nativeIO: OperatorIO = { password: () => readFileSync(0), clients: readClients, inspectActions: inspectNativeActions,
   probeCore: probeCoreAction, backup: verifyCustodyBackup, actions: nativeActionDependencies, executor: createJitRuntimeExecutor, serve: serveOwnedReverse };
 
 /** Trusted test seams only. Native entrypoint never reads assembly code from args/env/config. */
-export async function runOperatorCLI(args: string[], overrides: Partial<OperatorIO> = {}): Promise<unknown> {
+export async function runOperatorCLI(args: string[], overrides: Partial<OperatorIO> = {}, suppliedPolicy?: OperatorBindingExpectation): Promise<unknown> {
   const command = parseOperatorCommand(args); if (command.mode === 'help') return { help: usage };
   if (process.platform !== 'linux' || !process.getuid) throw operatorStopped();
   const io = { ...nativeIO, ...overrides };
@@ -102,6 +105,11 @@ export async function runOperatorCLI(args: string[], overrides: Partial<Operator
   if (authorization && ((command.mode !== 'execute' && command.mode !== 'serve') || authorization.specSha256 !== command.checksum ||
     authorization.actionConfigSha256 !== command.actionHash || authorization.backupConfigSha256 !== command.backupHash ||
     authorization.authorization.issuedAt > Date.now() || authorization.authorization.startBefore <= Date.now())) throw operatorStopped();
+  if (command.mode === 'execute' || command.mode === 'serve') {
+    const policy = suppliedPolicy ?? io.policy;
+    if (!policy) throw operatorStopped();
+    await attestOperatorBinding(io.clients(spec, paths), spec, paths, policy);
+  }
   await operatorDirectory(join(directory, 'store')); await protectedBytes(join(directory, 'store/state.json'));
   let store: Store | undefined; let client: SecretVault | undefined; let refund: SecretVault | undefined; let password: Buffer | undefined;
   let executor: JitExecutor | undefined; let underlying: ReturnType<JitExecutor['execute']> | undefined; let interrupted = false;
@@ -188,7 +196,21 @@ export async function runOperatorCLI(args: string[], overrides: Partial<Operator
     password?.fill(0); client?.close(); refund?.close(); await store?.close();
   }
 }
+function entryPolicy(): OperatorBindingExpectation {
+  const c = config();
+  if (c.environment !== 'regtest' || c.spendPolicy !== 'regtest-only' || !c.features.reverse ||
+    !c.rails.onchain.enabled || !c.rails.lightning.enabled || !c.rails.lightning.alice || !c.bitcoinGenesisHash)
+    throw operatorStopped();
+  return { wallet: c.rails.onchain.wallet, genesisHash: c.bitcoinGenesisHash,
+    bitcoinOrigin: new URL(c.rails.onchain.url).origin, providerOrigin: new URL(c.rails.lightning.provider.url).origin,
+    payerOrigin: new URL(c.rails.lightning.alice.url).origin, bitcoinCookiePath: c.rails.onchain.cookie,
+    providerCertPath: c.rails.lightning.provider.cert, providerReadMacaroonPath: c.rails.lightning.provider.macaroon,
+    payerCertPath: c.rails.lightning.alice.cert, payerReadMacaroonPath: c.rails.lightning.alice.macaroon };
+}
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
-  void runOperatorCLI(process.argv.slice(2)).then(result => process.stdout.write(JSON.stringify(result) + '\n'))
+  const args = process.argv.slice(2); let policy: OperatorBindingExpectation | undefined;
+  try { const command = parseOperatorCommand(args); if (command.mode === 'execute' || command.mode === 'serve') policy = entryPolicy(); }
+  catch { /* Let the CLI parser return the canonical stopped result. */ }
+  void runOperatorCLI(args, {}, policy).then(result => process.stdout.write(JSON.stringify(result) + '\n'))
     .catch(() => { process.stderr.write('OPERATOR_STOPPED: preserve custody and intents; no automatic retry\n'); process.exitCode = 1; });
 }
