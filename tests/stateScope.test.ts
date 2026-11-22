@@ -11,10 +11,15 @@ test('state scope binds a journal to one deployment/chain/wallet and rejects mis
   const directory = await mkdtemp(join(tmpdir(), 'swap-scope-'));
   try {
     await assertStateScope(directory, scope);
-    assert.deepEqual(JSON.parse(await readFile(join(directory, '.environment.json'), 'utf8')), { version: 1, ...scope });
+    assert.deepEqual(JSON.parse(await readFile(join(directory, '.environment.json'), 'utf8')), { version: 2, ...scope });
+    await writeFile(join(directory, 'state.json'), '{"schema":1,"quotes":{},"swaps":{}}');
+    const before = await readFile(join(directory, 'state.json'), 'utf8');
     await assertStateScope(directory, scope);
     await assert.rejects(assertStateScope(directory, { ...scope, deploymentId: 'lab-b' }), /STATE_SCOPE_MISMATCH/);
     await assert.rejects(assertStateScope(directory, { ...scope, wallet: 'wallet-b' }), /STATE_SCOPE_MISMATCH/);
+    await assert.rejects(assertStateScope(directory, { ...scope, bitcoinOrigin: 'http://127.0.0.1:18444' }), /STATE_SCOPE_MISMATCH/);
+    await assert.rejects(assertStateScope(directory, { ...scope, providerNode: '02' + '22'.repeat(32) }), /STATE_SCOPE_MISMATCH/);
+    assert.equal(await readFile(join(directory, 'state.json'), 'utf8'), before);
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 

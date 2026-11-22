@@ -8,12 +8,16 @@ export type StateScope = { environment: string; deploymentId: string; genesisHas
 export type StateScopeOptions = { allowLegacyOfflineMigration?: boolean };
 
 const markerName = '.environment.json';
+const scopeVersion = 2;
 
 function sameScope(value: unknown, expected: StateScope): boolean {
   if (!value || typeof value !== 'object') return false;
   const record = value as Record<string, unknown>;
-  return record.environment === expected.environment && record.deploymentId === expected.deploymentId &&
-    record.genesisHash === expected.genesisHash && record.wallet === expected.wallet;
+  return record.version === scopeVersion && record.environment === expected.environment &&
+    record.deploymentId === expected.deploymentId && record.genesisHash === expected.genesisHash &&
+    record.wallet === expected.wallet && record.bitcoinOrigin === expected.bitcoinOrigin &&
+    record.providerOrigin === expected.providerOrigin && record.payerOrigin === expected.payerOrigin &&
+    record.providerNode === expected.providerNode && record.payerNode === expected.payerNode;
 }
 
 /** Binds an existing journal/lock directory to one explicit deployment and
@@ -42,7 +46,7 @@ export async function assertStateScope(directory: string, expected: StateScope, 
   catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw new Error('STATE_SCOPE_UNAVAILABLE'); }
   if (legacy && !options.allowLegacyOfflineMigration) throw new Error('STATE_SCOPE_MIGRATION_REQUIRED');
   const temp = `${marker}.${randomUUID()}.tmp`;
-  const contents = JSON.stringify({ version: 1, ...expected }) + '\n';
+  const contents = JSON.stringify({ version: scopeVersion, ...expected }) + '\n';
   const handle = await open(temp, 'wx', 0o600);
   try { await handle.writeFile(contents); await handle.sync(); } finally { await handle.close(); }
   try {
