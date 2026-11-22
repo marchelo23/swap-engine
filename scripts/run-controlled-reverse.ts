@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+﻿import { readFileSync } from 'node:fs';
 import { join, isAbsolute, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { z } from 'zod';
@@ -24,6 +24,7 @@ import { backupSchema, verifyCustodyBackup } from '../src/operator/CustodyBackup
 import { actionPathsSchema, inspectNativeActions, probeCoreAction, nativeActionDependencies } from '../src/operator/NativeActionCredentials.js';
 import { attestOperatorBinding, type OperatorBindingExpectation } from '../src/environment/OperatorBinding.js';
 import { config } from '../src/config.js';
+import { withMiningLock } from '../src/mining/MiningLock.js';
 
 const hash = z.string().regex(/^[a-f0-9]{64}$/); const absolute = z.string().refine(isAbsolute);
 export const readPathsSchema = z.object({ bitcoinCookiePath: absolute, providerCertPath: absolute, providerReadMacaroonPath: absolute,
@@ -183,11 +184,11 @@ export async function runOperatorCLI(args: string[], overrides: Partial<Operator
       await owned.bind(ui.ownerId, review.swapId, spec.claimDestination);
       owned.approve({ ownerId: ui.ownerId, swapId: review.swapId, expectedRevision: review.revision, termsDigest: review.termsDigest,
         expiresAt: authorization.authorization.startBefore,
-        execute: () => createJustInTimeReverse(currentStore, spec, readers, authorization.authorization, executor).run() });
+        execute: () => withMiningLock(() => createJustInTimeReverse(currentStore, spec, readers, authorization.authorization, executor).run()) });
       return await io.serve(store, owned, ui.port, stop);
     }
     return await executeControlledApi(store, review.swapId, review.revision,
-      () => createJustInTimeReverse(currentStore, spec, readers, authorization.authorization, executor).run());
+      () => withMiningLock(() => createJustInTimeReverse(currentStore, spec, readers, authorization.authorization, executor).run()));
   } finally {
     try { executor?.stopClient(); } catch { /* Keep the store locked until journaling settles. */ }
     // A timed-out executor can still be journaling its uncertain result. Never release the

@@ -137,6 +137,30 @@ const ownedSwap = z.object({
   allowedActions: z.array(z.enum(['EXECUTE', 'RECONCILE'])),
 });
 const ownedList = z.object({ network: z.literal('regtest'), swaps: z.array(ownedSwap) });
+const guestAvailability = z.object({ network: z.literal('regtest'), configured: z.boolean(), watching: z.boolean() });
+const guestQuote = z.object({ id: z.uuid(), status: z.string(), network: z.literal('regtest'), destination: z.string(),
+  paymentHash: z.string().check(z.regex(/^[a-f0-9]{64}$/)), claimPublicKey: z.string(),
+  amountSats: amount, invoiceSats: amount, serviceFeeSats: amount, claimFeeSats: amount,
+  fundingReserveSats: amount, expiresAt: amount });
+const guestClaimIntent = z.object({ txid: z.string().check(z.regex(/^[a-f0-9]{64}$/)),
+  status: z.enum(['INTENT', 'BROADCAST', 'UNKNOWN']), feeSats: amount });
+const guestClaimResponse = z.object({ id: z.uuid(), status: z.string(), network: z.literal('regtest'),
+  swapId: z.optional(z.nullable(z.uuid())), claimTxid: z.optional(z.nullable(z.string())),
+  revision: z.optional(z.nullable(amount)), invoiceState: z.optional(z.nullable(z.string())),
+  recoveryCommitment: z.optional(z.string()) });
+const guestStatus = z.object({ id: z.uuid(), status: z.string(), network: z.literal('regtest'), destination: z.string(),
+  paymentHash: z.string().check(z.regex(/^[a-f0-9]{64}$/)), claimPublicKey: z.string(),
+  refundPublicKey: z.optional(z.string()), amountSats: amount, invoiceSats: amount, serviceFeeSats: amount,
+  claimFeeSats: amount, fundingReserveSats: amount, expiresAt: amount,
+  recoveryCommitment: z.optional(z.string()), swapId: z.optional(z.nullable(z.uuid())),
+  invoice: z.optional(z.nullable(z.string())), invoiceExpiresAt: z.optional(z.nullable(amount)),
+  invoiceState: z.optional(z.nullable(z.string())), swapState: z.optional(z.nullable(z.enum(states))),
+  revision: z.optional(z.nullable(amount)), fundingTxid: z.optional(z.nullable(z.string())),
+  fundingVout: z.optional(z.nullable(amount)), fundingConfirmations: z.optional(z.nullable(amount)),
+  fundingValueSats: z.optional(z.nullable(amount)), lockupHex: z.optional(z.nullable(z.string())),
+  claimTxid: z.optional(z.nullable(z.string())), timeoutHeight: z.optional(z.nullable(amount)),
+  htlcAddress: z.optional(z.nullable(z.string())), witnessScript: z.optional(z.nullable(z.string())),
+  claimIntent: z.optional(z.nullable(guestClaimIntent)) });
 const operation = z.discriminatedUnion('status', [
   z.object({
     status: z.literal('SUCCEEDED'),
@@ -151,6 +175,10 @@ const operation = z.discriminatedUnion('status', [
 export type ReverseAvailability = z.infer<typeof reverseAvailability>;
 export type OwnedSwap = z.infer<typeof ownedSwap>;
 export type OwnedOperation = z.infer<typeof operation>;
+export type GuestAvailability = z.infer<typeof guestAvailability>;
+export type GuestQuote = z.infer<typeof guestQuote>;
+export type GuestStatus = z.infer<typeof guestStatus>;
+export type GuestClaimResponse = z.infer<typeof guestClaimResponse>;
 
 export class ApiResponseError extends Error {
   constructor(readonly status: number) { super('Backend unavailable. Try again.'); }
@@ -235,6 +263,27 @@ export const api = {
   arkSwaps: (signal: AbortSignal) => request('/v1/ark/swaps', arkSwapList, { signal }),
   arkAdminReport: (signal: AbortSignal) => request('/v1/admin/ark/swaps', arkAdminReport, { signal }),
   arkTelemetry: (signal: AbortSignal) => request('/v1/ark/telemetry', arkTelemetry, { signal }, true),
+  guestAvailability: (signal?: AbortSignal) => request('/v1/guest/availability', guestAvailability, { signal }),
+  guestQuote(identity: { capabilityToken: string; paymentHash: string; claimPublicKey: string },
+    destination: string, amountSats: number, key: string) {
+    return request('/v1/guest/quotes', guestQuote, { method: 'POST', headers: { 'Content-Type': 'application/json',
+      Authorization: `Bearer ${identity.capabilityToken}`, 'Idempotency-Key': key },
+      body: JSON.stringify({ destination, amountSats, paymentHash: identity.paymentHash, claimPublicKey: identity.claimPublicKey }) });
+  },
+  guestPrepare(id: string, capabilityToken: string, recoveryCommitment: string, key: string) {
+    return request('/v1/guest/quotes/' + encodeURIComponent(id) + '/prepare', guestStatus, { method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${capabilityToken}`,
+        'Idempotency-Key': key }, body: JSON.stringify({ recoveryCommitment }) });
+  },
+  guestStatus(id: string, capabilityToken: string, signal?: AbortSignal) {
+    return request('/v1/guest/quotes/' + encodeURIComponent(id), guestStatus,
+      { headers: { Authorization: `Bearer ${capabilityToken}` }, signal });
+  },
+  guestClaim(id: string, capabilityToken: string, signedClaimHex: string, expectedRevision: number, key: string) {
+    return request('/v1/guest/quotes/' + encodeURIComponent(id) + '/claim', guestClaimResponse, { method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${capabilityToken}`,
+        'Idempotency-Key': key }, body: JSON.stringify({ signedClaimHex, expectedRevision }) });
+  },
   reverseAvailability: (signal: AbortSignal) => request('/v1/reverse/availability', reverseAvailability, { signal }),
   preparation: (id: string, signal: AbortSignal) => request('/v1/reverse/preparations/' + encodeURIComponent(id), preparation, { signal }),
   prepare(key: string, csrf: string, amountSats: number) {

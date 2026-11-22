@@ -70,6 +70,24 @@ verification result and use the authenticated Operations view to check the
 operator and wallet balances. Ark writes remain unavailable in this deployment.
 A submission or a returned transaction ID alone cannot prove settlement.
 
+## Guest Lightning-to-on-chain swaps
+
+Enable Guest on an explicitly attested Bitcoin and Lightning regtest deployment.
+The preview with only Ark and Core cannot issue a Guest Lightning invoice.
+Set `APP_ENV=regtest`, `GUEST_SWAP_ENABLED=true` and `SPEND_POLICY=regtest-only`.
+Use the reviewed Guest policy whose wallet, Core URL, LND identities,
+certificate paths and read credentials match that deployment profile.
+
+```sh
+npm start -- --guest-regtest --policy-path /ABS/PATH/guest-policy.json \
+  --policy-sha256 REVIEWED_SHA256 --guest-watch
+```
+
+Guest uses a capability token and presents the encrypted recovery export before
+showing the payable invoice. The user chooses a regtest destination and keeps
+the recovery material. The authenticated controlled startup remains a separate
+operating mode with its own reviewed policy and authorization.
+
 ## Economics
 
 The profile templates pin the safe defaults for generic quotes and invoice

@@ -13,6 +13,8 @@ import { parseOperatorCommand, runOperatorCLI } from '../scripts/run-controlled-
 import { checkedJSON, protectedBytes } from './operator/OperatorFiles.js';
 import { createOwnedRuntimeFactory, ownedRuntimePolicySchema, type OwnedRuntimePolicy } from './operator/OwnedPreparationRuntime.js';
 import { createOwnedPreparation } from './api/ownedPreparation.js';
+import { createGuestRuntime, guestStartupPolicySchema, type GuestRuntime } from './guest/GuestStartup.js';
+
 import { assertStateScope } from './environment/StateScope.js';
 import { assertOperatorBinding, serveMutationPolicy, type OperatorBindingExpectation } from './environment/OperatorBinding.js';
 import { preparationSpecSchema } from './core/ReversePreparation.js';
@@ -52,6 +54,31 @@ function operatorPolicy(c: ReturnType<typeof config>, identity: StartupScope): O
     payerReadMacaroonPath: c.rails.lightning.alice.macaroon };
 }
 
+function assertGuestPolicyBinding(policy: import('./guest/GuestStartup.js').GuestStartupPolicy,
+  c: ReturnType<typeof config>, identity: StartupScope | undefined) {
+  if (!identity?.verified.onchain || !identity.verified.lightning ||
+    !identity.providerNode || !identity.payerNode || !c.rails.onchain.enabled ||
+    !c.rails.lightning.enabled || !c.rails.lightning.alice) throw new Error('GUEST_IDENTITY_UNAVAILABLE');
+  assertOperatorBinding({
+    wallet: policy.clients.bitcoin.wallet, providerNode: policy.providerNode,
+    payerNode: policy.payerNode, routing: policy.routing,
+  }, {
+    bitcoinCookiePath: policy.clients.credentials.bitcoinCookiePath,
+    providerCertPath: policy.clients.provider.certPath,
+    providerReadMacaroonPath: policy.clients.credentials.providerReadMacaroonPath,
+    payerCertPath: policy.clients.payer.certPath,
+    payerReadMacaroonPath: policy.clients.credentials.payerReadMacaroonPath,
+  }, operatorPolicy(c, identity));
+}
+
+export function guestStartupArguments(args: string[], mode: ApplicationMode) {
+  if (args[0] !== '--guest-regtest') return undefined;
+  if (mode !== 'regtest' || args.length < 5 || args[1] !== '--policy-path' || !isAbsolute(args[2] ?? '') ||
+    args[3] !== '--policy-sha256' || !/^[a-f0-9]{64}$/.test(args[4] ?? '')) throw new Error('GUEST_STARTUP_REJECTED');
+  if (args.length !== 5 && !(args.length === 6 && args[5] === '--guest-watch')) throw new Error('GUEST_STARTUP_REJECTED');
+  return { path: args[2]!, hash: args[4]!, watch: args[5] === '--guest-watch' };
+}
+
 export function ownedStartupArguments(args: string[], mode: ApplicationMode) {
   if (args[0] !== '--owned-regtest') return undefined;
   if (mode !== 'regtest' || args.length !== 5 || args[1] !== '--policy-path' || !isAbsolute(args[2] ?? '') ||
@@ -78,14 +105,16 @@ type Dependencies = {
 
 /** Real app entrypoint, also exercised offline with mock node/operator adapters. */
 export async function startApplication(env: NodeJS.ProcessEnv = process.env, args: string[] = [], dependencies: Dependencies = {}) {
-  const c = config(env); const ownedArgs = ownedStartupArguments(args, c.mode);
-  const operatorArgs = ownedArgs ? undefined : controlledStartupArguments(args, c.mode);
+  const c = config(env); const guestArgs = guestStartupArguments(args, c.mode);
+  const ownedArgs = guestArgs ? undefined : ownedStartupArguments(args, c.mode);
+  const operatorArgs = guestArgs || ownedArgs ? undefined : controlledStartupArguments(args, c.mode);
   const reverseMutationAllowed = c.spendPolicy === 'regtest-only' && c.features.reverse;
   if (ownedArgs && !reverseMutationAllowed) throw new Error('OWNED_EXECUTION_DISABLED');
   if (operatorArgs && parseOperatorCommand(operatorArgs).mode === 'serve' && !reverseMutationAllowed)
     throw new Error('CONTROLLED_EXECUTION_DISABLED');
   if ((ownedArgs || (operatorArgs && parseOperatorCommand(operatorArgs).mode === 'serve')) && !isLegacyEconomics(c.economics))
     throw new Error('EXECUTION_ECONOMICS_UNSUPPORTED');
+  if (guestArgs && (c.spendPolicy !== 'regtest-only' || !c.features.guest)) throw new Error('GUEST_EXECUTION_DISABLED');
   let liquidity: () => Promise<Balances>; let diagnostics: (() => ReturnType<typeof preflight>) | undefined;
   let operations: (() => Promise<OperationsBalances>) | undefined;
   let bitcoin: ReadOnlyBitcoinClient | null = null; let lnd: ReadOnlyLndClient | null = null;
@@ -152,8 +181,18 @@ export async function startApplication(env: NodeJS.ProcessEnv = process.env, arg
   const store = await Store.open(c.directory);
   try {
     await recoverInterruptedReverseRuns(store);
+    let guestRuntime: GuestRuntime | undefined;
+    if (guestArgs) {
+      try {
+        const policy = guestStartupPolicySchema.parse(await checkedJSON(guestArgs.path, guestArgs.hash));
+        assertGuestPolicyBinding(policy, c, identity);
+        guestRuntime = createGuestRuntime(store, policy, { watchRequested: guestArgs.watch });
+      } catch {
+        console.error('GUEST_STARTUP_STOPPED: no guest request, invoice or claim capability installed');
+      }
+    }
     const server = createApi(new SwapManager(store, c.economics), liquidity, diagnostics, c.mode,
-      { operations, ark, auth: { storePath: c.auth.storePath ?? undefined, origin: c.auth.origin ?? undefined }, capabilities: () => c.capabilities({ ...identity?.verified, ark: arkVerified }), environment: c.environment });
+      { operations, ark, guestReverse: guestRuntime?.guestReverse, auth: { storePath: c.auth.storePath ?? undefined, origin: c.auth.origin ?? undefined }, capabilities: () => c.capabilities({ ...identity?.verified, ark: arkVerified }), environment: c.environment });
     if (ownedArgs) {
       let factory: Awaited<ReturnType<typeof createOwnedRuntimeFactory>> | undefined;
       try {
@@ -170,6 +209,10 @@ export async function startApplication(env: NodeJS.ProcessEnv = process.env, arg
       }
     }
     await new Promise<void>((ready, reject) => { server.once('error', reject); server.listen(dependencies.port ?? c.port, '127.0.0.1', () => { server.off('error', reject); ready(); }); });
+    if (guestRuntime && guestArgs?.watch) {
+      try { guestRuntime.start(); }
+      catch { console.error('GUEST_WATCHER_STOPPED: guest request routes remain inert; reconcile without retry'); }
+    }
     // Failed readiness leaves the app usable with controlled execution closed; never retry.
     const operatorCommand = operatorArgs ? parseOperatorCommand(operatorArgs) : undefined;
     const runtime = operatorArgs
@@ -180,9 +223,10 @@ export async function startApplication(env: NodeJS.ProcessEnv = process.env, arg
       : undefined;
     void runtime?.catch(() => { console.error('CONTROLLED_RUNTIME_STOPPED: preserve intents; reconcile without retry'); });
     let shutdown: Promise<void> | undefined;
-    return { server, store, runtime, mode: c.mode,
+    return { server, store, runtime, guestRuntime, mode: c.mode,
       close(): Promise<void> {
         return shutdown ??= (async () => {
+          guestRuntime?.stop();
           const stopped = new Promise<void>(done => server.close(() => done()));
           await server.controlled.close(); await runtime?.catch(() => {}); await stopped; await store.close();
         })();

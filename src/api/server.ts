@@ -1,5 +1,5 @@
 import { createServer, type IncomingMessage } from 'node:http';
-import { available, type Balances } from '../liquidity/LiquidityManager.js';
+import { available, assertLiquidity, type Balances } from '../liquidity/LiquidityManager.js';
 import type { SwapManager } from '../core/SwapManager.js';
 import { Sessions, roleDenial, sessionResponse, type AuthOptions } from '../auth/session.js';
 import type { OperationsBalances } from '../operations/Balances.js';
@@ -12,6 +12,8 @@ import type { ApplicationMode } from '../config.js';
 import { createOwnedReverseGateway } from './ownedReverseGateway.js';
 import { historicalSwaps, HistoricalSwapResponse } from './historicalSwaps.js';
 import { ArkSwapService, toPublicArkSwap, type ArkRegtestPort } from '../ark/ArkAdapter.js';
+import { GuestAdmission, validateGuestQuote } from '../guest/GuestAdmission.js';
+import { GuestReverse, GuestReverseError } from '../guest/GuestReverse.js';
 
 const webAssets = new Map([
   ['/', ['index.html', 'text/html; charset=utf-8']],
@@ -38,7 +40,7 @@ export function createApi(
   liquidity: () => Promise<Balances>,
   diagnostics?: () => ReturnType<typeof preflight>,
   mode: ApplicationMode = 'simulation',
-  { auth: authOptions = {}, operations, history = historicalSwaps, capabilities, environment, ark: arkPort, arkStorePath, arkExecutionOwner }: {
+  { auth: authOptions = {}, operations, history = historicalSwaps, capabilities, environment, ark: arkPort, arkStorePath, arkExecutionOwner, guestQuotes = false, guestReverse }: {
     auth?: AuthOptions;
     operations?: () => Promise<OperationsBalances>;
     history?: () => unknown | Promise<unknown>;
@@ -47,6 +49,8 @@ export function createApi(
     ark?: ArkRegtestPort;
     arkStorePath?: string;
     arkExecutionOwner?: string;
+    guestQuotes?: boolean;
+    guestReverse?: GuestReverse;
   } = {},
 ) {
   const auth = new Sessions(authOptions, mode);
@@ -60,6 +64,9 @@ export function createApi(
   };
   const arkService = new ArkSwapService(arkPort, arkStorePath);
   const arkProfile = mode === 'regtest' || environment === 'ark-regtest';
+  if ((guestQuotes || guestReverse) && mode !== 'regtest') throw new Error('Guest quote admission requires regtest');
+  const guests = guestQuotes || guestReverse ? (guestReverse?.admission ?? new GuestAdmission(manager.store)) : undefined;
+  const guestAttempts = new Map<string, { until: number; count: number }>();
   const controlled = createOwnedReverseGateway(auth, { enabled: mode === 'regtest', delegateWhenInactive: true });
   const server = createServer(async (req, res) => {
     const send = (status: number, value: unknown) => { res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store' }); res.end(JSON.stringify(value)); };
@@ -67,7 +74,65 @@ export function createApi(
     const deny = (status: 401 | 403) => send(status, { error: status === 401 ? 'AUTH_REQUIRED' : 'FORBIDDEN' });
     try {
       if (await controlled.handle(req, res)) return;
-      const path = new URL(req.url ?? '/', 'http://localhost').pathname;
+      const url = new URL(req.url ?? '/', 'http://localhost'); const path = url.pathname;
+      if (req.method === 'GET' && path === '/v1/guest/availability') {
+        if (url.search) return send(403, { error: 'FORBIDDEN' });
+        return send(200, { network: 'regtest' as const, configured: guestReverse !== undefined,
+          watching: guestReverse?.watching === true });
+      }
+      if (path === '/v1/guest/quotes' || path.startsWith('/v1/guest/quotes/')) {
+        if (!guests && !guestReverse) return send(503, { error: 'GUEST_QUOTES_NOT_CONFIGURED' });
+        if (url.search || (req.headers.origin !== undefined && !auth.sameOrigin(req))) return send(403, { error: 'FORBIDDEN' });
+        const guestFailure = (error: unknown) => {
+          if (error instanceof GuestReverseError) return send(error.status, { error: error.code });
+          const invalid = error instanceof ZodError || error instanceof SyntaxError;
+          return send(invalid ? 400 : 503, { error: invalid ? 'INVALID_REQUEST' : 'GUEST_SERVICE_UNAVAILABLE' });
+        };
+        if (req.method === 'POST' && path === '/v1/guest/quotes') {
+          if (!guests) return send(503, { error: 'GUEST_QUOTES_NOT_CONFIGURED' });
+          if (!auth.sameOrigin(req)) return send(403, { error: 'FORBIDDEN' });
+          const now = Date.now(); const peer = req.socket.remoteAddress ?? '';
+          for (const [key, record] of guestAttempts) if (record.until <= now) guestAttempts.delete(key);
+          const previous = guestAttempts.get(peer);
+          if ((!previous && guestAttempts.size >= 256) || (previous && previous.count >= 10)) return send(429, { error: 'RATE_LIMITED' });
+          guestAttempts.set(peer, previous ? { ...previous, count: previous.count + 1 } : { until: now + 60000, count: 1 });
+          try {
+            const input = await body(req);
+            const key = String(req.headers['idempotency-key'] ?? '');
+            const budget = validateGuestQuote(req.headers.authorization, key, input);
+            try { assertLiquidity(manager.store.read(), await liquidity(), budget.amountSats, budget.invoiceSats, budget.fundingReserveSats); }
+            catch { return send(503, { error: 'GUEST_LIQUIDITY_UNAVAILABLE' }); }
+            return send(201, await guests.reserve(req.headers.authorization, key, input));
+          }
+          catch { return send(400, { error: 'GUEST_QUOTE_REJECTED' }); }
+        }
+        const guest = /^\/v1\/guest\/quotes\/([a-f0-9-]{36})(?:\/(prepare|claim))?$/.exec(path);
+        if (!guest) return send(404, { error: 'NOT_FOUND' });
+        const id = guest[1]!; const action = guest[2];
+        if (req.method === 'GET' && !action) {
+          if (guestReverse) {
+            try { return send(200, await guestReverse.status(id, req.headers.authorization)); }
+            catch (error) { return guestFailure(error); }
+          }
+          const result = guests!.status(id, req.headers.authorization);
+          return result ? send(200, result) : send(404, { error: 'NOT_FOUND' });
+        }
+        if (req.method === 'POST' && action === 'prepare') {
+          if (!guestReverse) return send(503, { error: 'GUEST_REVERSE_NOT_CONFIGURED' });
+          if (!auth.sameOrigin(req)) return send(403, { error: 'FORBIDDEN' });
+          const key = String(req.headers['idempotency-key'] ?? '');
+          try { return send(201, await guestReverse.prepare(id, req.headers.authorization, key, await body(req))); }
+          catch (error) { return guestFailure(error); }
+        }
+        if (req.method === 'POST' && action === 'claim') {
+          if (!guestReverse) return send(503, { error: 'GUEST_REVERSE_NOT_CONFIGURED' });
+          if (!auth.sameOrigin(req)) return send(403, { error: 'FORBIDDEN' });
+          const key = String(req.headers['idempotency-key'] ?? '');
+          try { return send(202, await guestReverse.submitClaim(id, req.headers.authorization, key, await body(req))); }
+          catch (error) { return guestFailure(error); }
+        }
+        return send(404, { error: 'NOT_FOUND' });
+      }
       if (req.method === 'OPTIONS') return noContent();
       const asset = webAssets.get(path);
       if (req.method === 'GET' && asset) {

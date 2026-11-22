@@ -7,7 +7,9 @@ const outpointPattern = /^[a-f0-9]{64}:(0|[1-9][0-9]{0,8})$/;
 const regtestBech32Pattern = /^bcrt1[0-9a-z]{8,90}$/;
 const regtestArkPattern = /^tark1[qpzry9x8gf2tvdw0s3jn54khce6mua7l]{20,140}$/;
 
-export function mountQuote(prepare?: (stillVisible: () => boolean, amountSats: number) => Promise<void>) {
+type GuestFlow = { begin(amountSats: number, active: () => boolean): Promise<void>; cancel(): void };
+
+export function mountQuote(prepare?: (stillVisible: () => boolean, amountSats: number) => Promise<void>, guestFlow?: GuestFlow) {
   const form = get<HTMLFormElement>('quote-form');
   const amount = get<HTMLInputElement>('amount');
   const action = get<HTMLButtonElement>('swap-action');
@@ -32,6 +34,7 @@ export function mountQuote(prepare?: (stillVisible: () => boolean, amountSats: n
   let controlled: boolean | 'unavailable' | null = null;
   let csrf: string | undefined;
   let canPrepare = false; let preparing = false;
+  let guestConfigured = false; let guestAvailable = false;
   let revision = 0;
   let quote: Quote | ArkQuote | undefined;
   let pending: { controller: AbortController; work: Promise<Quote | ArkQuote | undefined> } | undefined;
@@ -204,6 +207,7 @@ export function mountQuote(prepare?: (stillVisible: () => boolean, amountSats: n
   });
 
   function invalidate() {
+    guestFlow?.cancel();
     revision++;
     pending?.controller.abort();
     pending = undefined;
@@ -217,13 +221,15 @@ export function mountQuote(prepare?: (stillVisible: () => boolean, amountSats: n
     for (const id of numbers) text(id, '—');
   }
 
+  function guestRoute() { return !csrf && pair.send === 'lightning' && pair.receive === 'onchain'; }
+
   function isArkRoute() {
     return isArkOnchainPair(pair);
   }
 
   function principal() {
     const value = Number(amount.value);
-    const controlledBounds = controlled === true && !isArkRoute();
+    const controlledBounds = (controlled === true || (guestRoute() && guestAvailable)) && !isArkRoute();
     if (/^\d+$/.test(amount.value) && value >= (controlledBounds ? 11_000 : 10_000) && value <= (controlledBounds ? 50_000 : 1_000_000)) return value;
     return undefined;
   }
@@ -303,6 +309,20 @@ export function mountQuote(prepare?: (stillVisible: () => boolean, amountSats: n
       return;
     }
     text('amount-help', controlled === true ? '11,000–50,000 sats' : '10,000–1,000,000 sats');
+    if (guestRoute() && guestConfigured && !guestAvailable) {
+      action.disabled = true;
+      status('Guest watcher unavailable · no invoice will be created.');
+      return;
+    }
+    if (guestRoute() && guestAvailable) {
+      action.disabled = preparing || !aligned || !canQuote(pair) || value === undefined;
+      if (value === undefined) amount.setAttribute('aria-invalid', 'true'); else amount.removeAttribute('aria-invalid');
+      if (!aligned) { status('Aligning rails…'); return; }
+      if (!canQuote(pair)) { status('Route unavailable'); return; }
+      if (value === undefined) { status('Enter 11,000–50,000 sats'); return; }
+      status(preparing ? 'Opening guest recovery…' : 'Guest recovery required before the invoice is shown.');
+      return;
+    }
     if (controlled !== false) {
       action.disabled = preparing || controlled !== true || !aligned || !canQuote(pair) || (canPrepare && (!value || !quote || quote.invoiceSats !== value));
       if (controlled === true && canPrepare && aligned && canQuote(pair) && value !== undefined && !quote && !preparing) {
@@ -340,6 +360,18 @@ export function mountQuote(prepare?: (stillVisible: () => boolean, amountSats: n
     event.preventDefault();
     successNotice = false;
     const route = arkRoute(pair);
+    if (guestRoute() && guestAvailable) {
+      if (preparing || !guestFlow) return;
+      const value = principal();
+      if (!aligned || !canQuote(pair) || value === undefined || dialog.open) return;
+      const version = revision; const active = () => visible && version === revision && guestAvailable && !get('swap').hidden;
+      let failure: string | undefined;
+      preparing = true; schedule(0);
+      try { await guestFlow.begin(value, active); }
+      catch (error) { failure = error instanceof Error ? error.message : 'Guest preparation is unavailable.'; }
+      finally { preparing = false; if (visible) { schedule(0); if (active() && failure) status(failure); } }
+      return;
+    }
     if (!route && controlled === true) {
       if (preparing) return;
       if (canPrepare && prepare && !preparing && aligned && canQuote(pair)) {
@@ -424,6 +456,7 @@ export function mountQuote(prepare?: (stillVisible: () => boolean, amountSats: n
       if (visible === next) return;
       visible = next;
       if (!visible) {
+        guestFlow?.cancel();
         if (!quote) invalidate();
         return;
       }
@@ -444,7 +477,16 @@ export function mountQuote(prepare?: (stillVisible: () => boolean, amountSats: n
       csrf = csrfToken;
       canPrepare = preparationAvailable;
       amount.readOnly = false;
-      text('amount-help', configured === true ? '11,000–50,000 sats' : '10,000–1,000,000 sats');
+      text('amount-help', configured === true || guestAvailable ? '11,000–50,000 sats' : '10,000–1,000,000 sats');
+      invalidate();
+      schedule(0);
+    },
+    setGuestContext(configured: boolean, watching: boolean) {
+      const available = configured && watching;
+      if (guestConfigured === configured && guestAvailable === available) return;
+      guestConfigured = configured;
+      guestAvailable = available;
+      text('amount-help', guestAvailable || controlled === true ? '11,000–50,000 sats' : '10,000–1,000,000 sats');
       invalidate();
       schedule(0);
     },

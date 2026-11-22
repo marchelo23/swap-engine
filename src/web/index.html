@@ -287,5 +287,43 @@
     <button id="owned-confirm" type="button" class="primary" disabled>Start prepared swap</button>
   </div>
 </dialog>
+<dialog id="guest-dialog" aria-labelledby="guest-title">
+  <h2 id="guest-title">Guest swap recovery</h2>
+  <dl id="guest-details" class="details"></dl>
+  <form id="guest-recovery-form" class="stack-form">
+    <div id="guest-destination-field" hidden>
+      <label for="guest-destination">Bitcoin regtest payout address</label>
+      <input id="guest-destination" type="text" maxlength="90" autocomplete="off" autocapitalize="off" spellcheck="false" aria-describedby="guest-destination-help guest-destination-status" required disabled>
+      <p id="guest-destination-help" class="status">Enter or paste a Bitcoin regtest address beginning with <code>bcrt1</code>.</p>
+      <p id="guest-destination-status" class="status" role="status"></p>
+    </div>
+    <div><label for="guest-passphrase">Recovery passphrase</label><input id="guest-passphrase" type="password" minlength="8" maxlength="4096" autocomplete="new-password" required></div>
+    <div><label for="guest-passphrase-confirm">Confirm passphrase</label><input id="guest-passphrase-confirm" type="password" minlength="8" maxlength="4096" autocomplete="new-password" required></div>
+    <p id="guest-status" class="status" role="status">Create an encrypted recovery export before paying.</p>
+    <div class="dialog-actions"><button id="guest-cancel" type="button" class="secondary">Close</button><button id="guest-prepare" type="submit" class="primary">Create invoice</button></div>
+  </form>
+  <section id="guest-export" hidden>
+    <p id="guest-export-status" class="status" role="status">Download or copy this encrypted recovery file. The server never receives its passphrase, keys or preimage.</p>
+    <label for="guest-export-text">Encrypted recovery export</label>
+    <textarea id="guest-export-text" rows="6" readonly></textarea>
+    <div><label for="guest-restore-passphrase">Re-enter passphrase to verify restore</label><input id="guest-restore-passphrase" type="password" minlength="8" maxlength="4096" autocomplete="off"></div>
+    <div class="dialog-actions"><button id="guest-download" type="button" class="secondary">Download encrypted recovery</button><button id="guest-copy" type="button" class="secondary">Copy</button><button id="guest-verify" type="button" class="primary" disabled>Verify restore</button></div>
+  </section>
+  <section id="guest-payment" hidden>
+    <p id="guest-payment-status" class="status" role="status"></p>
+    <p id="guest-invoice-unavailable" class="status" role="status"></p>
+    <div id="guest-invoice-content">
+      <dl id="guest-invoice-terms" class="details" hidden>
+        <div><dt>Lightning amount</dt><dd id="guest-invoice-amount"></dd></div>
+        <div><dt>Expires</dt><dd><time id="guest-invoice-expiry"></time></dd></div>
+      </dl>
+      <canvas id="guest-invoice-qr" role="img" aria-label="Lightning invoice QR code" hidden></canvas>
+      <label for="guest-invoice">Pay this BOLT11 invoice</label>
+      <textarea id="guest-invoice" rows="5" readonly></textarea>
+      <button id="guest-copy-invoice" type="button" class="secondary">Copy invoice</button>
+    </div>
+    <div class="dialog-actions"><button id="guest-claim" type="button" class="primary" hidden>Claim funds</button><button id="guest-close" type="button" class="secondary">Close</button></div>
+  </section>
+</dialog>
 </body>
 </html>
