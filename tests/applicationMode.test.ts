@@ -50,7 +50,7 @@ test('health clearly labels simulation and regtest read-only modes without enabl
       try {
         const response = await fetch(`${app.base}/v1/health`);
         assert.equal(response.status, 200);
-        assert.deepEqual(await response.json(), { status: 'components-only', liveSwapsEnabled: false, readOnly: true, network: 'regtest', mode });
+        assert.deepEqual(await response.json(), { status: 'components-only', liveSwapsEnabled: false, readOnly: true, network: mode, mode });
       } finally { await app.close(); }
     }
   } finally { await f.cleanup(); }

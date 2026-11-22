@@ -10,11 +10,14 @@ import { SwapManager } from './core/SwapManager.js';
 import { config, type ApplicationMode } from './config.js';
 import { recoverInterruptedReverseRuns } from './api/reverseRecovery.js';
 import { parseOperatorCommand, runOperatorCLI } from '../scripts/run-controlled-reverse.js';
-import { isAbsolute } from 'node:path';
-import { checkedJSON } from './operator/OperatorFiles.js';
+import { isAbsolute, join } from 'node:path';
+import { checkedJSON, protectedBytes } from './operator/OperatorFiles.js';
 import { createOwnedRuntimeFactory, ownedRuntimePolicySchema, type OwnedRuntimePolicy } from './operator/OwnedPreparationRuntime.js';
 import { createOwnedPreparation } from './api/ownedPreparation.js';
 import { assertStateScope } from './environment/StateScope.js';
+import { assertOperatorBinding } from './environment/OperatorBinding.js';
+import { preparationSpecSchema } from './core/ReversePreparation.js';
+import { readPathsSchema } from '../scripts/run-controlled-reverse.js';
 import { attestStartup, type StartupScope } from './environment/StartupAttestation.js';
 import { ElementsReadOnlyClient } from './environment/ElementsReadOnlyClient.js';
 
@@ -65,8 +68,9 @@ type Dependencies = {
 export async function startApplication(env: NodeJS.ProcessEnv = process.env, args: string[] = [], dependencies: Dependencies = {}) {
   const c = config(env); const ownedArgs = ownedStartupArguments(args, c.mode);
   const operatorArgs = ownedArgs ? undefined : controlledStartupArguments(args, c.mode);
-  if (ownedArgs && c.spendPolicy !== 'regtest-only') throw new Error('OWNED_EXECUTION_DISABLED');
-  if (operatorArgs && parseOperatorCommand(operatorArgs).mode === 'serve' && c.spendPolicy !== 'regtest-only')
+  const reverseMutationAllowed = c.spendPolicy === 'regtest-only' && c.features.reverse;
+  if (ownedArgs && !reverseMutationAllowed) throw new Error('OWNED_EXECUTION_DISABLED');
+  if (operatorArgs && parseOperatorCommand(operatorArgs).mode === 'serve' && !reverseMutationAllowed)
     throw new Error('CONTROLLED_EXECUTION_DISABLED');
   let liquidity: () => Promise<Balances>; let diagnostics: (() => ReturnType<typeof preflight>) | undefined;
   let operations: (() => Promise<OperationsBalances>) | undefined;
@@ -97,6 +101,20 @@ export async function startApplication(env: NodeJS.ProcessEnv = process.env, arg
   if (!identity && (c.rails.onchain.enabled || c.rails.lightning.enabled || c.rails.liquid.enabled)) {
     identity = await attestStartup(c, { bitcoin, provider: lnd, alice, liquid });
   }
+  if (operatorArgs && !dependencies.operator) {
+    const command = parseOperatorCommand(operatorArgs);
+    if (command.mode === 'serve') {
+      if (!identity || !identity.providerNode || !identity.payerNode || !c.rails.onchain.enabled ||
+        !c.rails.lightning.enabled || !c.rails.lightning.alice) throw new Error('OPERATOR_BINDING_UNAVAILABLE');
+      const spec = preparationSpecSchema.parse(await checkedJSON(join(command.directory, 'spec.json'), command.checksum));
+      const paths = readPathsSchema.parse(JSON.parse((await protectedBytes(join(command.directory, 'credential-paths.json'))).toString('utf8')));
+      assertOperatorBinding(spec, paths, { wallet: identity.wallet, bitcoinOrigin: new URL(c.rails.onchain.url).origin,
+        providerOrigin: new URL(c.rails.lightning.provider.url).origin, payerOrigin: new URL(c.rails.lightning.alice.url).origin,
+        providerNode: identity.providerNode, payerNode: identity.payerNode, bitcoinCookiePath: c.rails.onchain.cookie,
+        providerCertPath: c.rails.lightning.provider.cert, providerReadMacaroonPath: c.rails.lightning.provider.macaroon,
+        payerCertPath: c.rails.lightning.alice.cert, payerReadMacaroonPath: c.rails.lightning.alice.macaroon });
+    }
+  }
   await assertStateScope(c.directory, { environment: c.environment,
     deploymentId: c.deploymentId ?? 'simulation', genesisHash: identity?.genesisHash ?? null,
     wallet: identity?.wallet ?? '', bitcoinOrigin: identity?.bitcoinOrigin ?? null,
@@ -110,7 +128,7 @@ export async function startApplication(env: NodeJS.ProcessEnv = process.env, arg
   try {
     await recoverInterruptedReverseRuns(store);
     const server = createApi(new SwapManager(store), liquidity, diagnostics, c.mode,
-      { operations, auth: { storePath: env.AUTH_STORE_PATH, origin: env.AUTH_ORIGIN }, capabilities: () => c.capabilities(identity?.verified ?? {}) });
+      { operations, auth: { storePath: env.AUTH_STORE_PATH, origin: env.AUTH_ORIGIN }, capabilities: () => c.capabilities(identity?.verified ?? {}), environment: c.environment });
     if (ownedArgs) {
       let factory: Awaited<ReturnType<typeof createOwnedRuntimeFactory>> | undefined;
       try {

@@ -141,6 +141,7 @@ test('application startup is default-closed, regtest-only and rejects execution 
     assert.throws(() => controlledStartupArguments(['--controlled-reverse', '--execute-jit', ...x.args.slice(2)], 'regtest'));
     await assert.rejects(startApplication({ ...x.env, APP_MODE: 'simulation' }, x.args));
     await assert.rejects(startApplication({ ...x.env, SPEND_POLICY: 'disabled' }, x.args));
+    await assert.rejects(startApplication({ ...x.env, REVERSE_SWAP_ENABLED: 'false' }, x.args));
     assert.equal(x.startups(), 0);
     await assert.rejects(startApplication({ ...x.env, ENABLE_LIVE_SWAPS: 'true' }, []));
     const simulation = await x.boot(false, false, 'simulation');

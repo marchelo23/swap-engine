@@ -3,7 +3,7 @@ import { available, type Balances } from '../liquidity/LiquidityManager.js';
 import type { SwapManager } from '../core/SwapManager.js';
 import { Sessions, roleDenial, sessionResponse, type AuthOptions } from '../auth/session.js';
 import type { OperationsBalances } from '../operations/Balances.js';
-import type { Capabilities, RailId } from '../core/RailContract.js';
+import type { Capabilities, Environment, RailId } from '../core/RailContract.js';
 import { QuoteRequest, QuoteResponse, ReverseRequest, HealthResponse, LiquidityResponse, OperationsBalancesResponse, CapabilitiesResponse, ErrorResponse, LoginRequest, SessionResponse } from './schemas.js';
 import { ZodError } from 'zod';
 import { readFile } from 'node:fs/promises';
@@ -36,11 +36,12 @@ export function createApi(
   liquidity: () => Promise<Balances>,
   diagnostics?: () => ReturnType<typeof preflight>,
   mode: ApplicationMode = 'simulation',
-  { auth: authOptions = {}, operations, history = historicalSwaps, capabilities }: {
+  { auth: authOptions = {}, operations, history = historicalSwaps, capabilities, environment }: {
     auth?: AuthOptions;
     operations?: () => Promise<OperationsBalances>;
     history?: () => unknown | Promise<unknown>;
     capabilities?: () => Capabilities;
+    environment?: Environment;
   } = {},
 ) {
   const auth = new Sessions(authOptions, mode);
@@ -67,7 +68,8 @@ export function createApi(
         res.writeHead(200, { 'content-type': asset[1]!, 'cache-control': 'no-store', 'x-content-type-options': 'nosniff', 'content-security-policy': "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'" });
         return res.end(content);
       }
-      if (req.method === 'GET' && path === '/v1/health') return send(200, HealthResponse.parse({ status: 'components-only', liveSwapsEnabled: false, readOnly: true, network: 'regtest', mode }));
+      if (req.method === 'GET' && path === '/v1/health') return send(200, HealthResponse.parse({ status: 'components-only', liveSwapsEnabled: false, readOnly: true,
+        network: environment ?? (mode === 'regtest' ? 'regtest' : 'simulation'), mode }));
       if (req.method === 'GET' && path === '/v1/capabilities') {
         if (req.url?.includes('?')) return send(404, ErrorResponse.parse({ error: 'NOT_FOUND' }));
         try { return send(200, CapabilitiesResponse.parse((capabilities ?? fallbackCapabilities)())); }

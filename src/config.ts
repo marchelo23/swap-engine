@@ -64,6 +64,7 @@ export type Config = {
   signetChallenge: string | null;
   allowLegacyOfflineMigration: boolean;
   features: { reverse: boolean; forward: boolean; guest: boolean; mining: boolean };
+  reverseSwapExplicit: boolean;
   miningPolicy: 'disabled' | 'regtest-only';
   spendPolicy: 'disabled' | 'regtest-only';
   rails: { onchain: OnchainRailConfig; lightning: LightningRailConfig; ark: ArkRailConfig; liquid: LiquidRailConfig };
@@ -211,12 +212,17 @@ export function config(env: NodeJS.ProcessEnv = process.env): Config {
     'FEATURE_FORWARD_EXECUTION', 'ENABLE_GUEST_EXECUTION', 'FEATURE_GUEST_EXECUTION', 'ENABLE_MINING', 'FEATURE_MINING'])
     if (env[name] && env[name] !== 'false') throw new Error('FEATURE_EXECUTION_DISABLED');
   const exactFlag = (name: string) => {
-    const raw = env[name]?.trim(); if (raw === undefined) return false;
+    const raw = env[name]?.trim(); if (raw === undefined) return undefined;
     if (!['true', 'false'].includes(raw)) throw new Error(`${name}_INVALID`); return raw === 'true';
   };
-  const features = { guest: exactFlag('GUEST_SWAP_ENABLED'), reverse: exactFlag('REVERSE_SWAP_ENABLED'),
-    forward: exactFlag('FORWARD_SWAP_ENABLED'), mining: exactFlag('REGTEST_AUTO_MINING') };
-  if (Object.values(features).some(Boolean) && selectedEnvironment !== 'regtest') throw new Error('FEATURE_REGTEST_ONLY');
+  const reverseExplicit = exactFlag('REVERSE_SWAP_ENABLED');
+  const reverseSwapExplicit = reverseExplicit !== undefined;
+  const features = { guest: exactFlag('GUEST_SWAP_ENABLED') ?? false,
+    reverse: reverseExplicit ?? true,
+    forward: exactFlag('FORWARD_SWAP_ENABLED') ?? false, mining: exactFlag('REGTEST_AUTO_MINING') ?? false };
+  if ([exactFlag('GUEST_SWAP_ENABLED'), reverseExplicit, exactFlag('FORWARD_SWAP_ENABLED'),
+    exactFlag('REGTEST_AUTO_MINING')].some(value => value === true) && selectedEnvironment !== 'regtest')
+    throw new Error('FEATURE_REGTEST_ONLY');
   const miningRaw = (env.MINING_POLICY ?? 'disabled').trim().toLowerCase();
   if (!['disabled', 'regtest-only'].includes(miningRaw)) throw new Error('MINING_POLICY_INVALID');
   const miningPolicy = miningRaw as 'disabled' | 'regtest-only';
@@ -271,7 +277,7 @@ export function config(env: NodeJS.ProcessEnv = process.env): Config {
   };
   return {
     environment: selectedEnvironment, mode, network: 'regtest', readOnly: true, chain, bitcoinNetwork, bitcoinGenesisHash,
-    deploymentId: deploymentId ?? null, signetChallenge, allowLegacyOfflineMigration, features, miningPolicy, spendPolicy, rails: { onchain, lightning, ark, liquid },
+    deploymentId: deploymentId ?? null, signetChallenge, allowLegacyOfflineMigration, features, reverseSwapExplicit, miningPolicy, spendPolicy, rails: { onchain, lightning, ark, liquid },
     bitcoinUrl: onchain.enabled ? onchain.url : '', cookie: onchain.enabled ? onchain.cookie : '',
     wallet: onchain.enabled ? onchain.wallet : '',
     lndUrl: lightning.enabled ? lightning.provider.url : '', cert: lightning.enabled ? lightning.provider.cert : '',

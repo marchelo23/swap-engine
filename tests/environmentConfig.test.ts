@@ -97,6 +97,8 @@ test('Ark and Liquid expose canonical config and read-only identity contracts wi
     FORWARD_SWAP_ENABLED: 'true', REGTEST_AUTO_MINING: 'true' }));
   assert.deepEqual(flags.features, { guest: true, reverse: true, forward: true, mining: true });
   assert.equal(flags.capabilities().execution.enabled, false);
+  const reverseOff = config(env({ ...base, REVERSE_SWAP_ENABLED: 'false' }));
+  assert.equal(reverseOff.features.reverse, false); assert.equal(reverseOff.reverseSwapExplicit, true);
   assert.throws(() => config(env({ ...base, GUEST_SWAP_ENABLED: 'yes' })), /GUEST_SWAP_ENABLED_INVALID/);
   assert.throws(() => config(env({ ...base, GUEST_SWAP_ENABLED: 'true', APP_ENV: 'mainnet', APP_MODE: '', DEPLOYMENT_ID: 'mainnet-flags' })), /FEATURE_REGTEST_ONLY/);
 });

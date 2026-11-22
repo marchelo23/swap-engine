@@ -24,7 +24,7 @@ import { backupSchema, verifyCustodyBackup } from '../src/operator/CustodyBackup
 import { actionPathsSchema, inspectNativeActions, probeCoreAction, nativeActionDependencies } from '../src/operator/NativeActionCredentials.js';
 
 const hash = z.string().regex(/^[a-f0-9]{64}$/); const absolute = z.string().refine(isAbsolute);
-const readPathsSchema = z.object({ bitcoinCookiePath: absolute, providerCertPath: absolute, providerReadMacaroonPath: absolute,
+export const readPathsSchema = z.object({ bitcoinCookiePath: absolute, providerCertPath: absolute, providerReadMacaroonPath: absolute,
   payerCertPath: absolute, payerReadMacaroonPath: absolute, providerInvoiceMacaroonPath: absolute.optional() }).strict();
 export const operatorAuthorizationSchema = z.object({ specSha256: hash, actionConfigSha256: hash, backupConfigSha256: hash,
   authorization: jitAuthorizationSchema }).strict();

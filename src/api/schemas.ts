@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { states } from '../core/SwapTypes.js';
-import { capabilitiesSchema, railBalanceEntrySchema } from '../core/RailContract.js';
+import { capabilitiesSchema, environments, railBalanceEntrySchema } from '../core/RailContract.js';
 import { Password, Role, Username } from '../auth/credentials.js';
 
 export const LoginRequest = z.object({ username: Username, password: Password }).strict();
@@ -19,7 +19,7 @@ export const ReconcileResponse = z.object({ id: z.uuid(), revision, state: z.enu
   next: z.enum(['FUND', 'CLAIM', 'SETTLE', 'DONE', 'MANUAL_REVIEW']) }).strict();
 export const SwapResponse = z.object({ id: z.uuid(), state: z.enum(states), display: z.object({ label: z.string(), tone: z.enum(['neutral', 'pending', 'success', 'warning', 'error']), terminal: z.boolean() }), quote: QuoteResponse, paymentHash: z.string(), claimPublicKey: z.string(), refundPublicKey: z.string(), timeoutHeight: z.number().int(), address: z.string(), witnessScript: z.string(), invoice: z.string().optional(), lockupTxid: z.string().optional(), lockupVout: z.number().int().optional(), claimTxid: z.string().optional(), refundTxid: z.string().optional() }).strict();
 export const ErrorResponse = z.object({ error: z.string() }).strict();
-export const HealthResponse = z.object({ status: z.literal('components-only'), liveSwapsEnabled: z.literal(false), readOnly: z.literal(true), network: z.literal('regtest'), mode: z.enum(['simulation', 'regtest']) }).strict();
+export const HealthResponse = z.object({ status: z.literal('components-only'), liveSwapsEnabled: z.literal(false), readOnly: z.literal(true), network: z.enum(environments), mode: z.enum(['simulation', 'regtest']) }).strict();
 export const LiquidityResponse = z.object({ onchainSats: z.number().int().nonnegative(), incomingSats: z.number().int().nonnegative() }).strict();
 
 const BalanceSats = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).nullable();
