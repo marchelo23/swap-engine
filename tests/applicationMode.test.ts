@@ -20,16 +20,16 @@ test('application mode defaults to simulation and accepts only simulation or reg
   }
   assert.throws(() => applicationMode('testnet'), /Invalid application mode/);
   assert.equal(config({}).mode, 'simulation');
-  assert.equal(config(env({ APP_MODE: 'regtest' })).mode, 'regtest');
-  assert.equal(config(env({ APP_MODE: 'regtest' })).readOnly, true);
-  assert.equal(config(env({ APP_MODE: 'regtest' })).network, 'regtest');
+  assert.equal(config(env({ APP_MODE: 'regtest', DEPLOYMENT_ID: 'test-deployment' })).mode, 'regtest');
+  assert.equal(config(env({ APP_MODE: 'regtest', DEPLOYMENT_ID: 'test-deployment' })).readOnly, true);
+  assert.equal(config(env({ APP_MODE: 'regtest', DEPLOYMENT_ID: 'test-deployment' })).network, 'regtest');
   assert.throws(() => config(env({ APP_MODE: 'mainnet' })), /Mainnet is rejected/);
 });
 
 test('ENABLE_LIVE_SWAPS=true remains a startup refusal in both application modes', () => {
   for (const mode of ['simulation', 'regtest']) {
-    assert.throws(() => config(env({ APP_MODE: mode, ENABLE_LIVE_SWAPS: 'true' })), /unavailable/);
-    assert.equal(config(env({ APP_MODE: mode, ENABLE_LIVE_SWAPS: 'false' })).mode, mode);
+    assert.throws(() => config(env({ APP_MODE: mode, DEPLOYMENT_ID: 'test-deployment', ENABLE_LIVE_SWAPS: 'true' })), /unavailable/);
+    assert.equal(config(env({ APP_MODE: mode, ...(mode === 'regtest' ? { DEPLOYMENT_ID: 'test-deployment' } : {}), ENABLE_LIVE_SWAPS: 'false' })).mode, mode);
   }
 });
 

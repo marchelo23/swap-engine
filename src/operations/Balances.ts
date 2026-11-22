@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import type { RailBalanceEntry } from '../core/RailContract.js';
 
 const CoreRegtest = z.object({ chain: z.literal('regtest') });
 const LndRegtest = z.object({
@@ -22,6 +23,7 @@ const LndChannel = z.object({
   active: z.boolean(),
   local_balance: LndSats,
   remote_balance: LndSats,
+  capacity: LndSats.optional(),
 });
 
 const LndChannels = z.object({
@@ -48,7 +50,10 @@ export type OperationsBalances = {
   core: CoreBalance;
   provider: NodeBalance | null;
   alice: NodeBalance | null;
+  rails: RailBalanceEntry[];
 };
+
+type NodeSnapshot = { legacy: NodeBalance; capacitySats: number | null };
 
 export type BitcoinBalanceReader = {
   call<T>(method: string, params?: unknown[], wallet?: boolean): Promise<T>;
@@ -116,26 +121,56 @@ async function collectOnchain(client: LndBalanceReader): Promise<Pick<NodeBalanc
   };
 }
 
-async function collectLightning(client: LndBalanceReader): Promise<Pick<NodeBalance, 'localSats' | 'remoteSats'> | null> {
+async function collectLightning(client: LndBalanceReader): Promise<Pick<NodeBalance, 'localSats' | 'remoteSats'> & { capacitySats: number | null } | null> {
   const result = await read(LndChannels, () => client.call('/v1/channels'));
   if (!result) return null;
   const channels = result.channels ?? [];
   return {
     localSats: sumSats(channels.map(channel => lndToSats(channel.local_balance))),
     remoteSats: sumSats(channels.map(channel => lndToSats(channel.remote_balance))),
+    capacitySats: sumSats(channels.map(channel => channel.capacity === undefined ? null : lndToSats(channel.capacity))),
   };
 }
 
-async function collectNode(client: LndBalanceReader | null): Promise<NodeBalance | null> {
+async function collectNode(client: LndBalanceReader | null): Promise<NodeSnapshot | null> {
   if (!client || !await read(LndRegtest, () => client.call('/v1/getinfo'))) return null;
   const [onchain, lightning] = await Promise.all([collectOnchain(client), collectLightning(client)]);
   if (!onchain && !lightning) return null;
   return {
-    confirmedSats: onchain?.confirmedSats ?? null,
-    unconfirmedSats: onchain?.unconfirmedSats ?? null,
-    localSats: lightning?.localSats ?? null,
-    remoteSats: lightning?.remoteSats ?? null,
+    legacy: {
+      confirmedSats: onchain?.confirmedSats ?? null,
+      unconfirmedSats: onchain?.unconfirmedSats ?? null,
+      localSats: lightning?.localSats ?? null,
+      remoteSats: lightning?.remoteSats ?? null,
+    },
+    capacitySats: lightning?.capacitySats ?? null,
   };
+}
+
+function statusOf(values: Array<number | null>): 'available' | 'unavailable' | 'unknown' {
+  if (values.every(value => value === null)) return 'unavailable';
+  return values.every(value => value !== null) ? 'available' : 'unknown';
+}
+function railEntries(core: CoreBalance, provider: NodeSnapshot | null, alice: NodeSnapshot | null): RailBalanceEntry[] {
+  const onchainCoreStatus = statusOf([core.confirmedSats, core.unconfirmedSats]);
+  const entries: RailBalanceEntry[] = [{ rail: 'onchain', account: 'core', status: onchainCoreStatus,
+    reason: onchainCoreStatus === 'available' ? null : onchainCoreStatus === 'unavailable' ? 'UNAVAILABLE' : 'UNAVAILABLE',
+    balances: onchainCoreStatus === 'unavailable' ? null : { confirmedSats: core.confirmedSats, unconfirmedSats: core.unconfirmedSats } }];
+  for (const [account, node] of [['provider', provider], ['alice', alice]] as const) {
+    const values = node ? [node.legacy.confirmedSats, node.legacy.unconfirmedSats] : [null, null];
+    const status = statusOf(values);
+    entries.push({ rail: 'onchain', account, status, reason: status === 'available' ? null : 'UNAVAILABLE',
+      balances: status === 'unavailable' ? null : { confirmedSats: values[0]!, unconfirmedSats: values[1]! } });
+  }
+  for (const [account, node] of [['provider', provider], ['alice', alice]] as const) {
+    const values = node ? [node.legacy.localSats, node.legacy.remoteSats, node.capacitySats] : [null, null, null];
+    const status = statusOf(values);
+    entries.push({ rail: 'lightning', account, status, reason: status === 'available' ? null : 'UNAVAILABLE',
+      balances: status === 'unavailable' ? null : { localSats: values[0]!, remoteSats: values[1]!, capacitySats: values[2]! } });
+  }
+  entries.push({ rail: 'ark', account: 'operator', status: 'unavailable', reason: 'NOT_CONFIGURED', balances: null });
+  entries.push({ rail: 'liquid', account: 'operator', status: 'unavailable', reason: 'NOT_CONFIGURED', balances: null });
+  return entries;
 }
 
 export async function collectOperationsBalances(
@@ -151,7 +186,8 @@ export async function collectOperationsBalances(
     network: 'regtest',
     capturedAt: now.toISOString(),
     core,
-    provider,
-    alice,
+    provider: provider?.legacy ?? null,
+    alice: alice?.legacy ?? null,
+    rails: railEntries(core, provider, alice),
   };
 }

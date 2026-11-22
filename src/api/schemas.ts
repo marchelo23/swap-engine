@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { states } from '../core/SwapTypes.js';
+import { capabilitiesSchema, railBalanceEntrySchema } from '../core/RailContract.js';
 import { Password, Role, Username } from '../auth/credentials.js';
 
 export const LoginRequest = z.object({ username: Username, password: Password }).strict();
@@ -30,4 +31,6 @@ export const OperationsBalancesResponse = z.object({
   core: WalletBalance,
   provider: LightningBalance.nullable(),
   alice: LightningBalance.nullable(),
+  rails: z.array(railBalanceEntrySchema),
 }).strict();
+export const CapabilitiesResponse = capabilitiesSchema;

@@ -23,9 +23,9 @@ async function fixture(ambiguous = false) {
   const alice = (await readAccounts(storePath)).find(a => a.username === 'alice')!;
   const args = ['--controlled-reverse', '--serve-jit', '--run-dir', f.directory, '--spec-sha256', 'ab'.repeat(32),
     '--action-config-sha256', 'cd'.repeat(32), '--backup-config-sha256', 'ef'.repeat(32), '--authorization-sha256', '12'.repeat(32), '--ui-config-sha256', '34'.repeat(32)];
-  const env = { APP_MODE: 'regtest', DATA_DIR: join(f.directory, 'application'), AUTH_STORE_PATH: storePath, AUTH_ORIGIN: origin };
+  const env = { APP_MODE: 'regtest', DEPLOYMENT_ID: 'controlled-test', DATA_DIR: join(f.directory, 'application'), AUTH_STORE_PATH: storePath, AUTH_ORIGIN: origin };
   const report = { network: 'regtest' as const, capturedAt: '2026-11-18T12:00:00.000Z',
-    core: { confirmedSats: 100000, unconfirmedSats: 0 }, provider: null, alice: null };
+    core: { confirmedSats: 100000, unconfirmedSats: 0 }, provider: null, alice: null, rails: [] };
   let executions = 0; let recoveries = 0; let startups = 0; let balanceReads = 0;
   let effect: () => Promise<void> = async () => {};
   let app: Awaited<ReturnType<typeof startApplication>>; let base = '';
@@ -55,9 +55,12 @@ async function fixture(ambiguous = false) {
         } });
       const lifetime = io.serve(f.store, api, 3000, () => {}); mounted(); return lifetime;
     };
-    app = await startApplication({ ...env, APP_MODE: mode }, install ? args : [], { operator, port: 0,
+    app = await startApplication({ ...env, APP_MODE: mode, DATA_DIR: join(f.directory, mode === 'simulation' ? 'application-simulation' : 'application') }, install ? args : [], { operator, port: 0,
       reads: { liquidity: async () => ({ onchainSats: 100000, incomingSats: 100000 }),
-        operations: async () => { balanceReads++; return report; } } });
+        operations: async () => { balanceReads++; return report; } },
+      identity: { environment: 'regtest', deploymentId: 'controlled-test',
+        genesisHash: '0f9188f13cb7b2c71f2a335e3a4fc328bf5beb436012afca590b1a11466e2206',
+        wallet: 'test-wallet', verified: {} } });
     base = `http://127.0.0.1:${(app.server.address() as AddressInfo).port}`;
     if (install) await ready;
     if (failure) await assert.rejects(app.runtime!);

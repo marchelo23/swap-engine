@@ -118,14 +118,17 @@ test('recovery transport refuses unsupported operations before credentials or ne
 });
 
 const environment = () => ({ ENABLE_READ_ONLY_RECOVERY: 'true', RECOVERY_PAYER_REST_URL: 'https://127.0.0.1:8081',
-  RECOVERY_PAYER_TLS_CERT_PATH: 'never-read-cert', RECOVERY_PAYER_MACAROON_PATH: 'never-read-macaroon',
-  RECOVERY_PAYER_NODE_PUBKEY: payerNode, RECOVERY_PROVIDER_NODE_PUBKEY: providerNode });
+  RECOVERY_PAYER_TLS_CERT_PATH: '/never-read-cert', RECOVERY_PAYER_MACAROON_PATH: '/never-read-macaroon',
+  RECOVERY_PAYER_NODE_PUBKEY: payerNode, RECOVERY_PROVIDER_NODE_PUBKEY: providerNode,
+  BITCOIN_RPC_URL: 'http://127.0.0.1:18443', BITCOIN_COOKIE_PATH: '/never-read-cookie', BITCOIN_WALLET: 'test-wallet',
+  LND_REST_URL: 'https://127.0.0.1:8080', LND_TLS_CERT_PATH: '/never-read-provider-cert',
+  LND_MACAROON_PATH: '/never-read-provider-macaroon' });
 
 test('configuration is opt-in, pins separate identities and loopback TLS, and cannot enable live execution', async () => {
   assert.equal(config({}).recovery, undefined);
   assert.equal(config({ ENABLE_READ_ONLY_RECOVERY: 'false' }).recovery, undefined);
   assert.ok(config(environment()).recovery);
-  for (const key of Object.keys(environment()).filter(key => key !== 'ENABLE_READ_ONLY_RECOVERY')) {
+  for (const key of Object.keys(environment()).filter(key => key.startsWith('RECOVERY_'))) {
     assert.throws(() => config({ ...environment(), [key]: undefined }), /configuration incomplete/);
   }
   for (const value of ['http://127.0.0.1:8081', 'https://example.com', 'https://' + 'user:password@127.0.0.1',

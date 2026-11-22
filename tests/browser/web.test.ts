@@ -357,7 +357,7 @@ test('the same-origin Account form signs in, shows administrator balances, and s
     auth: { storePath: account.storePath },
     operations: async () => ({
       network: 'regtest', capturedAt: new Date().toISOString(),
-      core: { confirmedSats: 100_000, unconfirmedSats: 0 }, provider: null, alice: null,
+      core: { confirmedSats: 100_000, unconfirmedSats: 0 }, provider: null, alice: null, rails: [],
     }),
   });
   server.listen(0, '127.0.0.1');

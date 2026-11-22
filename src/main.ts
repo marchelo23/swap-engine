@@ -14,6 +14,8 @@ import { isAbsolute } from 'node:path';
 import { checkedJSON } from './operator/OperatorFiles.js';
 import { createOwnedRuntimeFactory, ownedRuntimePolicySchema } from './operator/OwnedPreparationRuntime.js';
 import { createOwnedPreparation } from './api/ownedPreparation.js';
+import { assertStateScope } from './environment/StateScope.js';
+import { attestStartup, type StartupScope } from './environment/StartupAttestation.js';
 
 export function ownedStartupArguments(args: string[], mode: ApplicationMode) {
   if (args[0] !== '--owned-regtest') return undefined;
@@ -36,6 +38,7 @@ type Dependencies = {
   port?: number;
   reads?: { liquidity: () => Promise<Balances>; diagnostics?: () => ReturnType<typeof preflight>;
     operations?: () => Promise<OperationsBalances> };
+  identity?: StartupScope;
 };
 
 /** Real app entrypoint, also exercised offline with mock node/operator adapters. */
@@ -44,24 +47,38 @@ export async function startApplication(env: NodeJS.ProcessEnv = process.env, arg
   const operatorArgs = ownedArgs ? undefined : controlledStartupArguments(args, c.mode);
   let liquidity: () => Promise<Balances>; let diagnostics: (() => ReturnType<typeof preflight>) | undefined;
   let operations: (() => Promise<OperationsBalances>) | undefined;
+  let bitcoin: ReadOnlyBitcoinClient | null = null; let lnd: ReadOnlyLndClient | null = null;
+  let alice: ReadOnlyLndClient | null = null;
   if (dependencies.reads) ({ liquidity, diagnostics, operations } = dependencies.reads);
   else if (c.mode === 'regtest') {
-    const bitcoin = new ReadOnlyBitcoinClient(c.bitcoinUrl, c.cookie, c.wallet);
-    const lnd = new ReadOnlyLndClient(c.lndUrl, c.cert, c.macaroon);
-    const alice = c.aliceLnd ? new ReadOnlyLndClient(c.aliceLnd.url, c.aliceLnd.cert, c.aliceLnd.macaroon) : null;
+    bitcoin = c.rails.onchain.enabled ? new ReadOnlyBitcoinClient(c.rails.onchain.url, c.rails.onchain.cookie, c.rails.onchain.wallet) : null;
+    lnd = c.rails.lightning.enabled ? new ReadOnlyLndClient(c.rails.lightning.provider.url, c.rails.lightning.provider.cert, c.rails.lightning.provider.macaroon) : null;
+    alice = c.rails.lightning.enabled && c.rails.lightning.alice
+      ? new ReadOnlyLndClient(c.rails.lightning.alice.url, c.rails.lightning.alice.cert, c.rails.lightning.alice.macaroon) : null;
     liquidity = async () => {
+      if (!bitcoin || !lnd) throw new Error('NODE_RAILS_NOT_CONFIGURED');
       await Promise.all([bitcoin.assertRegtest(), lnd.assertRegtest()]);
       const [onchainSats, incomingSats] = await Promise.all([bitcoin.liquidity(), lnd.incomingLiquidity()]);
       return { onchainSats, incomingSats };
     };
-    diagnostics = () => preflight(bitcoin, lnd, c.wallet, c.mode);
+    const bitcoinClient = bitcoin; const lndClient = lnd;
+    diagnostics = bitcoinClient && lndClient ? () => preflight(bitcoinClient, lndClient,
+      c.rails.onchain.enabled ? c.rails.onchain.wallet : c.wallet, c.mode) : undefined;
     operations = () => collectOperationsBalances({ bitcoin, provider: lnd, alice });
   } else liquidity = async () => { throw new Error('SIMULATION_MODE_HAS_NO_NODE_CONNECTIVITY'); };
+  let identity = dependencies.identity;
+  if (c.mode === 'regtest' && !identity) {
+    if (!bitcoin && !lnd) throw new Error('STARTUP_ATTESTATION_UNAVAILABLE');
+    identity = await attestStartup(c, { bitcoin, provider: lnd, alice });
+  }
+  await assertStateScope(c.directory, { environment: c.environment,
+    deploymentId: c.deploymentId ?? 'simulation', genesisHash: identity?.genesisHash ?? null,
+    wallet: identity?.wallet ?? '' }, { allowLegacyOfflineMigration: c.allowLegacyOfflineMigration });
   const store = await Store.open(c.directory);
   try {
     await recoverInterruptedReverseRuns(store);
     const server = createApi(new SwapManager(store), liquidity, diagnostics, c.mode,
-      { operations, auth: { storePath: env.AUTH_STORE_PATH, origin: env.AUTH_ORIGIN } });
+      { operations, auth: { storePath: env.AUTH_STORE_PATH, origin: env.AUTH_ORIGIN }, capabilities: () => c.capabilities(identity?.verified ?? {}) });
     if (ownedArgs) {
       let factory: Awaited<ReturnType<typeof createOwnedRuntimeFactory>> | undefined;
       try {

@@ -46,8 +46,8 @@ function providerFixture(): Record<string, Response> {
     '/v1/balance/blockchain': { confirmed_balance: '100000', unconfirmed_balance: '5000' },
     '/v1/channels': {
       channels: [
-        { active: true, local_balance: '300000', remote_balance: '200000' },
-        { active: false, local_balance: '100000', remote_balance: '50000' },
+        { active: true, local_balance: '300000', remote_balance: '200000', capacity: '500000' },
+        { active: false, local_balance: '100000', remote_balance: '50000', capacity: '150000' },
       ],
     },
   };
@@ -56,7 +56,7 @@ function providerFixture(): Record<string, Response> {
 function aliceFixture(): Record<string, Response> {
   return {
     '/v1/balance/blockchain': { confirmed_balance: '50000', unconfirmed_balance: '0' },
-    '/v1/channels': { channels: [{ active: true, local_balance: '200000', remote_balance: '300000' }] },
+    '/v1/channels': { channels: [{ active: true, local_balance: '200000', remote_balance: '300000', capacity: '500000' }] },
   };
 }
 
@@ -73,13 +73,23 @@ test('operations balances match the Frontend envelope and keep sources separate'
     alice: lndClient(aliceFixture()),
   }, new Date('2026-11-18T12:00:00.000Z'));
 
-  assert.deepEqual(report, {
+  const { rails, ...legacy } = report;
+  assert.deepEqual(legacy, {
     network: 'regtest',
     capturedAt: '2026-11-18T12:00:00.000Z',
     core: { confirmedSats: 123_456_789, unconfirmedSats: 1 },
     provider: { confirmedSats: 100_000, unconfirmedSats: 5_000, localSats: 400_000, remoteSats: 250_000 },
     alice: { confirmedSats: 50_000, unconfirmedSats: 0, localSats: 200_000, remoteSats: 300_000 },
   });
+  assert.deepEqual(rails.map(entry => `${entry.rail}:${entry.account}:${entry.status}`), [
+    'onchain:core:available', 'onchain:provider:available', 'onchain:alice:available',
+    'lightning:provider:available', 'lightning:alice:available',
+    'ark:operator:unavailable', 'liquid:operator:unavailable',
+  ]);
+  assert.deepEqual(rails.filter(entry => entry.rail === 'lightning').map(entry => entry.balances), [
+    { localSats: 400_000, remoteSats: 250_000, capacitySats: 650_000 },
+    { localSats: 200_000, remoteSats: 300_000, capacitySats: 500_000 },
+  ]);
   assert.equal('totalSats' in report, false);
   assert.equal(JSON.stringify(report).includes('immature'), false);
   OperationsBalancesResponse.parse(report);
