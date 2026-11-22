@@ -1,7 +1,11 @@
-import { api, quoteTotals, type ArkQuote, type Quote } from './api.js';
+import { api, quoteTotals, type ArkQuote, type ArkSwapPayload, type Quote } from './api.js';
 import { mountCubes } from './cubes.js';
 import { arkRoute, canQuote, defaultPair, isArkOnchainPair, railLabel, type Pair } from './rails.js';
 import { details, get, integer, message, sats, text } from './ui.js';
+
+const outpointPattern = /^[a-f0-9]{64}:(0|[1-9][0-9]{0,8})$/;
+const regtestBech32Pattern = /^bcrt1[0-9a-z]{8,90}$/;
+const regtestArkPattern = /^tark1[qpzry9x8gf2tvdw0s3jn54khce6mua7l]{20,140}$/;
 
 export function mountQuote(prepare?: (stillVisible: () => boolean, amountSats: number) => Promise<void>) {
   const form = get<HTMLFormElement>('quote-form');
@@ -9,6 +13,14 @@ export function mountQuote(prepare?: (stillVisible: () => boolean, amountSats: n
   const action = get<HTMLButtonElement>('swap-action');
   const dialog = get<HTMLDialogElement>('review-dialog');
   const startButton = dialog.querySelector<HTMLButtonElement>('button[type="button"]')!;
+  const arkFields = get('ark-execution-fields');
+  const arkBoardingFields = get('ark-boarding-fields');
+  const arkOffboardFields = get('ark-offboard-fields');
+  const arkWallet = get<HTMLSelectElement>('ark-wallet');
+  const arkFundingOutpoint = get<HTMLInputElement>('ark-funding-outpoint');
+  const arkRecipientAddress = get<HTMLInputElement>('ark-recipient-address');
+  const arkVtxoOutpoint = get<HTMLInputElement>('ark-vtxo-outpoint');
+  const arkDestinationAddress = get<HTMLInputElement>('ark-destination-address');
   let successNotice = false;
   const status = (message: string) => text('quote-status', successNotice ? '¡Swap exitoso!' : message);
   const numbers = ['service', 'claim', 'cost', 'received-preview'];
@@ -27,6 +39,106 @@ export function mountQuote(prepare?: (stillVisible: () => boolean, amountSats: n
   let expiry: number | undefined;
   let submittingArk = false;
   let executedArkSwapId: string | undefined;
+  let arkIdempotency: { fingerprint: string; key: string } | undefined;
+
+  function setFieldValidity(input: HTMLInputElement, valid: boolean) {
+    if (input.value.trim().length > 0 && !valid) input.setAttribute('aria-invalid', 'true');
+    else input.removeAttribute('aria-invalid');
+  }
+
+  function clearArkFields() {
+    arkFields.hidden = true;
+    arkBoardingFields.hidden = true;
+    arkOffboardFields.hidden = true;
+    arkWallet.value = 'alice';
+    arkFundingOutpoint.value = '';
+    arkRecipientAddress.value = '';
+    arkVtxoOutpoint.value = '';
+    arkDestinationAddress.value = '';
+    for (const input of [arkFundingOutpoint, arkRecipientAddress, arkVtxoOutpoint, arkDestinationAddress]) {
+      input.removeAttribute('aria-invalid');
+    }
+    arkIdempotency = undefined;
+  }
+
+  function buildArkPayload(): { payload: ArkSwapPayload } | { error: string } | undefined {
+    const route = arkRoute(pair);
+    if (!route || !quote || get('mode').dataset.mode !== 'regtest' || !csrf) return undefined;
+    if (route === 'onchain-to-ark') {
+      const wallet = arkWallet.value === 'bob' ? 'bob' : 'alice';
+      const fundingOutpoint = arkFundingOutpoint.value.trim();
+      const recipientArkAddress = arkRecipientAddress.value.trim();
+      const validOutpoint = outpointPattern.test(fundingOutpoint);
+      const validRecipient = !recipientArkAddress || regtestArkPattern.test(recipientArkAddress);
+      setFieldValidity(arkFundingOutpoint, validOutpoint);
+      setFieldValidity(arkRecipientAddress, validRecipient);
+      if (!validOutpoint) return { error: 'Enter a valid funding outpoint (64-hex txid:vout).' };
+      if (!validRecipient) return { error: 'Recipient Ark address must be a valid regtest tark1... address.' };
+      return {
+        payload: {
+          quoteId: quote.id,
+          route,
+          wallet,
+          fundingOutpoint,
+          ...(recipientArkAddress ? { recipientArkAddress } : {}),
+          amountSats: quote.amountSats,
+        },
+      };
+    }
+    const vtxoOutpoint = arkVtxoOutpoint.value.trim();
+    const destinationAddress = arkDestinationAddress.value.trim();
+    const validVtxo = outpointPattern.test(vtxoOutpoint);
+    const validDest = regtestBech32Pattern.test(destinationAddress);
+    setFieldValidity(arkVtxoOutpoint, validVtxo);
+    setFieldValidity(arkDestinationAddress, validDest);
+    if (!validVtxo) return { error: 'Enter a valid VTXO outpoint (64-hex txid:vout).' };
+    if (!validDest) return { error: 'Destination address must be a valid regtest bcrt1... address.' };
+    return {
+      payload: {
+        quoteId: quote.id,
+        route,
+        vtxoOutpoint,
+        destinationAddress,
+        amountSats: quote.amountSats,
+      },
+    };
+  }
+
+  function updateArkExecutionState() {
+    if (!dialog.open || submittingArk || executedArkSwapId) return;
+    const route = arkRoute(pair);
+    if (!route || !quote) return;
+    const mode = get('mode').dataset.mode;
+    if (mode !== 'regtest' || !csrf) {
+      startButton.disabled = true;
+      return;
+    }
+    if (quote.expiresAt <= Date.now()) {
+      startButton.disabled = true;
+      text('execution-status', 'Quote expired · Close review and press Swap for a fresh quote.');
+      return;
+    }
+    const built = buildArkPayload();
+    if (!built) {
+      startButton.disabled = true;
+      return;
+    }
+    if ('error' in built) {
+      startButton.disabled = true;
+      text('execution-status', built.error);
+      return;
+    }
+    startButton.disabled = false;
+    text('execution-status', 'Regtest Ark inputs valid · Press Start swap to submit.');
+  }
+
+  for (const el of [arkWallet, arkFundingOutpoint, arkRecipientAddress, arkVtxoOutpoint, arkDestinationAddress]) {
+    el.addEventListener('input', updateArkExecutionState);
+    el.addEventListener('change', updateArkExecutionState);
+  }
+  dialog.addEventListener('close', () => {
+    clearArkFields();
+  });
 
   startButton.addEventListener('click', async () => {
     const route = arkRoute(pair);
@@ -36,14 +148,25 @@ export function mountQuote(prepare?: (stillVisible: () => boolean, amountSats: n
       text('execution-status', 'Quote expired · Close review and press Swap for a fresh quote.');
       return;
     }
+    const built = buildArkPayload();
+    if (!built || 'error' in built) {
+      startButton.disabled = true;
+      if (built && 'error' in built) text('execution-status', built.error);
+      return;
+    }
+    const fingerprint = JSON.stringify(built.payload);
+    if (!arkIdempotency || arkIdempotency.fingerprint !== fingerprint) {
+      arkIdempotency = { fingerprint, key: crypto.randomUUID() };
+    }
+    successNotice = false;
     submittingArk = true;
     startButton.disabled = true;
     window.clearTimeout(expiry);
     text('execution-status', 'Submitting regtest Ark swap…');
     try {
-      const key = crypto.randomUUID();
-      const result = await api.arkSwap(quote.id, route, quote.amountSats, key, csrf);
+      const result = await api.arkSwap(built.payload, arkIdempotency.key, csrf);
       executedArkSwapId = result.id;
+      arkFields.hidden = true;
       details(get('review-details'), [
         ['Route', railLabel[pair.send] + ' → ' + railLabel[pair.receive]],
         ['Method', result.method === 'boarding' ? 'Boarding (On-chain → Ark VTXO)' : 'Cooperative offboarding (Ark VTXO → On-chain)'],
@@ -57,10 +180,20 @@ export function mountQuote(prepare?: (stillVisible: () => boolean, amountSats: n
         ['Commitment txid', result.commitmentTxid ?? 'Pending batch round'],
         ['Net receipt', sats(result.quote.netSats)],
       ]);
-      text('execution-status', result.status === 'SUBMITTED' || result.status === 'CONFIRMED'
-        ? '¡Swap Ark regtest enviado!'
-        : `Ark swap status: ${result.status}`);
-      status('¡Swap exitoso!');
+      if (result.status === 'CONFIRMED' && Boolean(result.commitmentTxid)) {
+        successNotice = true;
+        text('execution-status', 'Ark regtest swap confirmed.');
+        status('¡Swap exitoso!');
+      } else if (result.status === 'SUBMITTED') {
+        text('execution-status', 'Ark regtest swap submitted (pending settlement confirmation).');
+        status('Ark regtest swap submitted · pending confirmation');
+      } else if (result.status === 'UNCERTAIN') {
+        text('execution-status', 'Result uncertain. Reconcile the original outpoint before retrying; do not re-fund.');
+        status('Ark swap status: UNCERTAIN');
+      } else {
+        text('execution-status', `Ark swap status: ${result.status}`);
+        status(`Ark swap status: ${result.status}`);
+      }
     } catch (error) {
       text('execution-status', message(error));
       startButton.disabled = false;
@@ -77,6 +210,7 @@ export function mountQuote(prepare?: (stillVisible: () => boolean, amountSats: n
     window.clearTimeout(expiry);
     quote = undefined;
     executedArkSwapId = undefined;
+    clearArkFields();
     delete form.dataset.loading;
     if (dialog.open) dialog.close();
     for (const id of numbers) text(id, '—');
@@ -186,6 +320,7 @@ export function mountQuote(prepare?: (stillVisible: () => boolean, amountSats: n
 
   mountCubes(() => {
     aligned = false;
+    successNotice = false;
     invalidate();
     schedule(0);
   }, finalPair => {
@@ -247,15 +382,24 @@ export function mountQuote(prepare?: (stillVisible: () => boolean, amountSats: n
       ]);
       const mode = get('mode').dataset.mode;
       const canExecuteArk = mode === 'regtest' && Boolean(csrf);
-      startButton.disabled = !canExecuteArk;
+      clearArkFields();
+      if (canExecuteArk) {
+        arkFields.hidden = false;
+        arkBoardingFields.hidden = !boarding;
+        arkOffboardFields.hidden = boarding;
+      }
+      startButton.disabled = true;
       text('execution-status', canExecuteArk
-        ? 'Regtest Ark adapter ready · Press Start swap to submit.'
+        ? (boarding
+          ? 'Enter a valid funding outpoint (64-hex txid:vout).'
+          : 'Enter a valid VTXO outpoint (64-hex txid:vout).')
         : mode === 'regtest'
           ? 'Regtest Ark adapter · Sign in at Account to execute swap.'
           : 'Simulation · Execution disabled (regtest only).');
       dialog.showModal();
       return;
     }
+    clearArkFields();
     startButton.disabled = true;
     details(get('review-details'), [
       ['Route', railLabel[pair.send] + ' → ' + railLabel[pair.receive]],

@@ -193,6 +193,23 @@ async function request<T>(path: string, schema: z.ZodMiniType<T>, options: Reque
   return parse(response, schema);
 }
 
+export type ArkSwapPayload =
+  | {
+      quoteId: string;
+      route: 'onchain-to-ark';
+      wallet: 'alice' | 'bob';
+      fundingOutpoint: string;
+      recipientArkAddress?: string;
+      amountSats: number;
+    }
+  | {
+      quoteId: string;
+      route: 'ark-to-onchain';
+      vtxoOutpoint: string;
+      destinationAddress: string;
+      amountSats: number;
+    };
+
 export const api = {
   health: () => request('/v1/health', health),
   quote: (amountSats: number, signal: AbortSignal, csrfToken?: string) => request('/v1/quotes', quote, {
@@ -203,11 +220,26 @@ export const api = {
     method: 'POST', headers: { 'Content-Type': 'application/json', ...(csrfToken ? { 'x-csrf-token': csrfToken } : {}) },
     body: JSON.stringify({ route, amountSats }), signal,
   }),
-  arkSwap: (quoteId: string, route: 'onchain-to-ark' | 'ark-to-onchain', amountSats: number, key: string, csrfToken: string) => request('/v1/ark/swaps', arkSwapStatus, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'x-csrf-token': csrfToken, 'Idempotency-Key': key },
-    body: JSON.stringify({ quoteId, route, amountSats }),
-  }),
+  arkSwap: async (payload: ArkSwapPayload, key: string, csrfToken: string) => {
+    const response = await fetchApi('/v1/ark/swaps', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-csrf-token': csrfToken, 'Idempotency-Key': key },
+      body: JSON.stringify(payload),
+    });
+    if (response.status === 503) {
+      const json = await response.json().catch(() => undefined);
+      const parsed = arkSwapStatus.safeParse(json);
+      if (parsed.success) return parsed.data;
+      const err = z.object({ error: z.string() }).safeParse(json);
+      throw new Error(err.success ? err.data.error : 'Ark regtest execution is unavailable.');
+    }
+    if (!response.ok) {
+      const json = await response.json().catch(() => undefined);
+      const err = z.object({ error: z.string() }).safeParse(json);
+      throw new Error(err.success ? err.data.error : 'Backend unavailable. Try again.');
+    }
+    return parse(response, arkSwapStatus);
+  },
   arkSwaps: (signal: AbortSignal) => request('/v1/ark/swaps', arkSwapList, { signal }),
   arkAdminReport: (signal: AbortSignal) => request('/v1/admin/ark/swaps', arkAdminReport, { signal }),
   arkTelemetry: (signal: AbortSignal) => request('/v1/ark/telemetry', arkTelemetry, { signal }, true),

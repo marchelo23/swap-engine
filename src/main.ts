@@ -58,7 +58,7 @@ export async function startApplication(env: NodeJS.ProcessEnv = process.env, arg
     diagnostics = () => preflight(bitcoin, lnd, c.wallet, c.mode);
     operations = () => collectOperationsBalances({ bitcoin, provider: lnd, alice });
     const cli = c.arkCliBinaryPath ? createArkLabCliRunner(c.arkCliBinaryPath, { e2eFixture: c.arkCliE2eFixture }) : undefined;
-    ark = createArkRegtestCliPort({ cli, operatorInfoUrl: c.arkOperatorInfoUrl, labRoot: c.arkLabRoot });
+    ark = createArkRegtestCliPort({ cli, operatorInfoUrl: c.arkOperatorInfoUrl });
   } else liquidity = async () => { throw new Error('SIMULATION_MODE_HAS_NO_NODE_CONNECTIVITY'); };
   const store = await Store.open(c.directory);
   try {

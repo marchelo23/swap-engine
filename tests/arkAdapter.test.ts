@@ -1,12 +1,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
-import { writeFile } from 'node:fs/promises';
+import { mkdir, readFile, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { AddressInfo } from 'node:net';
+import { networks, payments } from 'bitcoinjs-lib';
 import { setup, testAccount } from './helpers.js';
 import { provisionAccount } from '../scripts/provision-auth.js';
 import { createApi } from '../src/api/server.js';
+import { config } from '../src/config.js';
 import {
   ArkSwapService,
   arkRouteFromPair,
@@ -19,11 +21,12 @@ import {
   validateRegtestBech32Address,
 } from '../src/ark/ArkAdapter.js';
 
-const boardingOutpoint = 'a2cc69ded323b84f285e182bd7534eb3a13cd8c1436747dde5c1fe7eff635bc9:1';
-const boardingCommitment = '9f348a9153115bf6f33c65842831eff53c657e148f4304361df43be6d965f6a4';
-const offboardVtxo = 'bf025a2d2714c413568a3bb29df7e0aa70b588ad63e8492c3423db8121f995cf:0';
-const offboardDestination = 'bcrt1p26xsajjhlef4wvua7x5372ut8y06s90gcdynyjnjuwparh6ta56smxeexq';
-const offboardCommitment = 'abebe89ae8244bff5b7c5968ff19246370e9050ebcc3fbdd1e6e59dd58f95449';
+const boardingOutpoint = '11'.repeat(32) + ':1';
+const boardingCommitment = '22'.repeat(32);
+const offboardVtxo = '33'.repeat(32) + ':0';
+const offboardDestination = payments.p2wpkh({ hash: Buffer.alloc(20, 0x11), network: networks.regtest }).address!;
+const offboardCommitment = '44'.repeat(32);
+const syntheticForfeitAddress = payments.p2wpkh({ hash: Buffer.alloc(20, 0x22), network: networks.regtest }).address!;
 
 test('Ark <-> On-chain route identification and regtest address/outpoint validation enforce boundaries', () => {
   assert.equal(isArkOnchainRoute('onchain', 'ark'), true);
@@ -46,7 +49,7 @@ test('Ark <-> On-chain route identification and regtest address/outpoint validat
 
   assert.equal(validateOutpoint(boardingOutpoint), boardingOutpoint);
   assert.throws(() => validateOutpoint('not-an-outpoint'), /ARK_OUTPOINT_INVALID/);
-  assert.throws(() => validateOutpoint('a2cc69ded323b84f285e182bd7534eb3a13cd8c1436747dde5c1fe7eff635bc9:-1'), /ARK_OUTPOINT_INVALID/);
+  assert.throws(() => validateOutpoint('11'.repeat(32) + ':-1'), /ARK_OUTPOINT_INVALID/);
 });
 
 test('buildArkQuote enforces 10,000..1,000,000 sats and calculates boarding and cooperative offboarding terms', () => {
@@ -104,7 +107,7 @@ test('ArkRegtestCliPort enforces loopback operator URL and wraps boarding, offbo
       network: 'regtest',
       version: 'v0.9.25',
       signerPubkey: '032203ea0a05239f49049ee3f939757dde2271b9051eb3c905283d24b9e25dd6be',
-      forfeitAddress: 'bcrt1qfvpfxsp7me72y6nlkek9lk5ahl35yqlkx2x3w3',
+      forfeitAddress: syntheticForfeitAddress,
       dust: '330',
       sessionDuration: '10',
       unilateralExitDelay: '20',
@@ -176,7 +179,7 @@ test('HTTP API exposes Ark quotes, enforces auth/CSRF/idempotency on Ark swaps a
       network: 'regtest',
       version: 'v0.9.25',
       signerPubkey: '032203ea0a05239f49049ee3f939757dde2271b9051eb3c905283d24b9e25dd6be',
-      forfeitAddress: 'bcrt1qfvpfxsp7me72y6nlkek9lk5ahl35yqlkx2x3w3',
+      forfeitAddress: syntheticForfeitAddress,
       dust: 330,
     }), { status: 200 })) as typeof fetch,
     cli: async args => {
@@ -303,7 +306,7 @@ test('HTTP API exposes Ark quotes, enforces auth/CSRF/idempotency on Ark swaps a
         amountSats: 50_000,
       }),
     });
-    assert.equal(boardSubmit.status, 201);
+    assert.equal(boardSubmit.status, 202);
     const boardRecord = await boardSubmit.json();
     assert.equal(boardRecord.status, 'SUBMITTED');
     assert.equal(boardRecord.commitmentTxid, boardingCommitment);
@@ -326,7 +329,7 @@ test('HTTP API exposes Ark quotes, enforces auth/CSRF/idempotency on Ark swaps a
         amountSats: 50_000,
       }),
     });
-    assert.equal(replaySubmit.status, 201);
+    assert.equal(replaySubmit.status, 202);
     assert.deepEqual(await replaySubmit.json(), boardRecord);
 
     // Lookup owned swap status
@@ -360,8 +363,9 @@ test('HTTP API exposes Ark quotes, enforces auth/CSRF/idempotency on Ark swaps a
         amountSats: 30_000,
       }),
     });
-    assert.equal(offboardSubmit.status, 201);
+    assert.equal(offboardSubmit.status, 202);
     const offboardRecord = await offboardSubmit.json();
+    assert.equal(offboardRecord.status, 'SUBMITTED');
     assert.equal(offboardRecord.method, 'cooperative-offboarding');
     assert.equal(offboardRecord.commitmentTxid, offboardCommitment);
 
@@ -380,7 +384,7 @@ test('HTTP API exposes Ark quotes, enforces auth/CSRF/idempotency on Ark swaps a
     assert.equal(telemetryBody.wallets.alice.totalSats, 200_000);
     assert.equal((await fetch(`${origin}/v1/ark/swaps/${boardRecord.id}`, { headers: { cookie: adminCookie } })).status, 404);
 
-    // 6. Owner-scoped Ark swap list and ADMIN activity/fee reporting
+    // 6. Owner-scoped Ark swap list and ADMIN activity/fee reporting (SUBMITTED is pending, excluded from completed/settled)
     assert.equal((await fetch(`${origin}/v1/ark/swaps`)).status, 401);
     const userListRes = await fetch(`${origin}/v1/ark/swaps`, { headers: { cookie: userCookie } });
     assert.equal(userListRes.status, 200);
@@ -395,16 +399,16 @@ test('HTTP API exposes Ark quotes, enforces auth/CSRF/idempotency on Ark swaps a
     assert.equal(adminReportRes.status, 200);
     const adminReport = await adminReportRes.json();
     assert.equal(adminReport.summary.totalSwaps, 2);
-    assert.equal(adminReport.summary.completedSwaps, 2);
-    assert.equal(adminReport.summary.pendingSwaps, 0);
+    assert.equal(adminReport.summary.completedSwaps, 0);
+    assert.equal(adminReport.summary.pendingSwaps, 2);
     assert.equal(adminReport.summary.failedSwaps, 0);
-    assert.equal(adminReport.summary.onchainSentSats, 50_750);
-    assert.equal(adminReport.summary.arkReceivedSats, 49_738);
-    assert.equal(adminReport.summary.arkSentSats, 30_650);
-    assert.equal(adminReport.summary.onchainReceivedSats, 29_759);
-    assert.equal(adminReport.summary.collectedServiceFeesSats, 750 + 650);
-    assert.equal(adminReport.summary.estimatedNetworkFeesSats, 262 + 241);
-    assert.equal(adminReport.summary.netOperationalRevenueSats, 750 + 650);
+    assert.equal(adminReport.summary.onchainSentSats, 0);
+    assert.equal(adminReport.summary.arkReceivedSats, 0);
+    assert.equal(adminReport.summary.arkSentSats, 0);
+    assert.equal(adminReport.summary.onchainReceivedSats, 0);
+    assert.equal(adminReport.summary.collectedServiceFeesSats, 0);
+    assert.equal(adminReport.summary.estimatedNetworkFeesSats, 0);
+    assert.equal(adminReport.summary.netOperationalRevenueSats, 0);
     assert.equal(adminReport.swaps.length, 2);
     assert.equal('ownerId' in adminReport.swaps[0], false);
   } finally {
@@ -439,8 +443,12 @@ test('ArkSwapService persists swaps to disk and reloads them across restarts', a
     assert.deepEqual(found, submitted);
     const report = reloaded.adminReport();
     assert.equal(report.summary.totalSwaps, 1);
-    assert.equal(report.summary.collectedServiceFeesSats, 750);
-    assert.equal(report.summary.estimatedNetworkFeesSats, 241);
+    assert.equal(report.summary.completedSwaps, 0);
+    assert.equal(report.summary.pendingSwaps, 1);
+    assert.equal(report.summary.failedSwaps, 0);
+    assert.equal(report.summary.collectedServiceFeesSats, 0);
+    assert.equal(report.summary.estimatedNetworkFeesSats, 0);
+    assert.equal(report.summary.netOperationalRevenueSats, 0);
     assert.equal(report.swaps[0]?.id, submitted.id);
   } finally {
     await f.cleanup();
@@ -490,4 +498,365 @@ test('ArkSwapService fences uncertain submissions and prevents duplicate input s
     amountSats: 50_000,
   }), /ARK_INPUT_ALREADY_RESERVED/);
   assert.equal(calls, 1);
+});
+
+test('regression: config() has no /home/chelo defaults, validates ARK_LAB_E2E_FIXTURE, and source omits hardcoded defaults', async () => {
+  const c = config({} as NodeJS.ProcessEnv);
+  assert.equal(c.arkCliBinaryPath, undefined);
+  assert.equal('arkLabRoot' in c, false);
+  assert.equal(c.arkCliE2eFixture, false);
+  assert.equal(c.arkOperatorInfoUrl, 'http://127.0.0.1:37070/v1/info');
+
+  assert.throws(() => config({ ARK_LAB_E2E_FIXTURE: 'yes' } as NodeJS.ProcessEnv), /ARK_LAB_E2E_FIXTURE/);
+  assert.throws(() => config({ ARK_LAB_E2E_FIXTURE: '1' } as NodeJS.ProcessEnv), /ARK_LAB_E2E_FIXTURE/);
+  assert.equal(config({ ARK_LAB_E2E_FIXTURE: 'true' } as NodeJS.ProcessEnv).arkCliE2eFixture, true);
+  assert.equal(config({ ARK_LAB_E2E_FIXTURE: 'false' } as NodeJS.ProcessEnv).arkCliE2eFixture, false);
+
+  const [adapterSource, configSource, envExampleSource] = await Promise.all([
+    readFile(new URL('../src/ark/ArkAdapter.ts', import.meta.url), 'utf8'),
+    readFile(new URL('../src/config.ts', import.meta.url), 'utf8'),
+    readFile(new URL('../.env.example', import.meta.url), 'utf8'),
+  ]);
+  for (const forbidden of [
+    '/home/chelo',
+    'DEFAULT_ARK_LAB_',
+    'DEFAULT_BOARDING_',
+    'DEFAULT_OFFBOARD_',
+    'loadLabEvidence',
+    'a2cc69ded323b84f',
+    '9f348a9153115bf6',
+    'bf025a2d2714c413',
+    'bcrt1p26xsajjhle',
+    'abebe89ae8244bff',
+    'tark1qq3q86s2q53',
+  ]) {
+    assert.equal(adapterSource.includes(forbidden), false, `ArkAdapter.ts must not contain ${forbidden}`);
+    assert.equal(configSource.includes(forbidden), false, `config.ts must not contain ${forbidden}`);
+    assert.equal(envExampleSource.includes(forbidden), false, `.env.example must not contain ${forbidden}`);
+  }
+  for (const [label, source] of [['ArkAdapter.ts', adapterSource], ['config.ts', configSource], ['.env.example', envExampleSource]] as const) {
+    assert.equal(/[a-f0-9]{64}:\d+/.test(source), false, `${label} must not contain hardcoded outpoints`);
+    assert.equal(/\b(bcrt1|tark1)[0-9a-z]{10,}/.test(source), false, `${label} must not contain hardcoded regtest addresses`);
+  }
+});
+
+test('regression: .gitignore ignores .env files and .env.example contains safe Ark template placeholders only', async () => {
+  const [gitignore, envExample] = await Promise.all([
+    readFile(new URL('../.gitignore', import.meta.url), 'utf8'),
+    readFile(new URL('../.env.example', import.meta.url), 'utf8'),
+  ]);
+  assert.match(gitignore, /^\.env$/m);
+  assert.match(gitignore, /^\.env\.\*$/m);
+  assert.match(gitignore, /^!\.env\.example$/m);
+
+  assert.match(envExample, /^# ARK_OPERATOR_INFO_URL=http:\/\/127\.0\.0\.1:37070\/v1\/info$/m);
+  assert.match(envExample, /^# ARK_LAB_CLI_PATH=\/absolute\/path\/to\/ark-lab$/m);
+  assert.match(envExample, /^# ARK_LAB_E2E_FIXTURE=false$/m);
+  assert.equal(envExample.includes('/home/chelo'), false);
+  assert.equal(/[a-f0-9]{64}:\d+/.test(envExample), false);
+  assert.equal(/\b(bcrt1|tark1)[0-9a-z]{10,}/.test(envExample), false);
+});
+
+test('regression: POST /v1/ark/swaps requires explicit inputs and loopback check rejects query/hash/non-info paths', async () => {
+  assert.throws(() => createArkRegtestCliPort({ operatorInfoUrl: 'http://127.0.0.1:37070/v1/other' }), /ARK_OPERATOR_LOOPBACK_REQUIRED/);
+  assert.throws(() => createArkRegtestCliPort({ operatorInfoUrl: 'http://127.0.0.1:37070/v1/info?x=1' }), /ARK_OPERATOR_LOOPBACK_REQUIRED/);
+  assert.throws(() => createArkRegtestCliPort({ operatorInfoUrl: 'http://127.0.0.1:37070/v1/info#frag' }), /ARK_OPERATOR_LOOPBACK_REQUIRED/);
+  const userInfoUrl = new URL('http://127.0.0.1:37070/v1/info');
+  userInfoUrl.username = 'u';
+  userInfoUrl.password = 'p';
+  assert.throws(() => createArkRegtestCliPort({ operatorInfoUrl: userInfoUrl.toString() }), /ARK_OPERATOR_LOOPBACK_REQUIRED/);
+
+  const f = await setup();
+  const userAccount = await testAccount(f.directory, 'USER');
+  const port = createArkRegtestCliPort({
+    fetchImpl: (async () => new Response('', { status: 503 })) as typeof fetch,
+  });
+  const server = createApi(f.manager, async () => ({ onchainSats: 0, incomingSats: 0 }), undefined, 'regtest', {
+    auth: { storePath: userAccount.storePath },
+    ark: port,
+  });
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+
+  try {
+    const authHeaders = { ...await userAccount.headers(origin), 'content-type': 'application/json' };
+    const bQuote = await (await fetch(`${origin}/v1/ark/quotes`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ route: 'onchain-to-ark', amountSats: 50_000 }),
+    })).json();
+    const oQuote = await (await fetch(`${origin}/v1/ark/quotes`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ route: 'ark-to-onchain', amountSats: 50_000 }),
+    })).json();
+
+    // Missing fundingOutpoint -> 400
+    const missingBoard = await fetch(`${origin}/v1/ark/swaps`, {
+      method: 'POST',
+      headers: { ...authHeaders, 'idempotency-key': 'missing-board-1' },
+      body: JSON.stringify({ quoteId: bQuote.id, route: 'onchain-to-ark', wallet: 'alice', amountSats: 50_000 }),
+    });
+    assert.equal(missingBoard.status, 400);
+
+    // Missing vtxoOutpoint -> 400
+    const missingVtxo = await fetch(`${origin}/v1/ark/swaps`, {
+      method: 'POST',
+      headers: { ...authHeaders, 'idempotency-key': 'missing-vtxo-1' },
+      body: JSON.stringify({ quoteId: oQuote.id, route: 'ark-to-onchain', destinationAddress: offboardDestination, amountSats: 50_000 }),
+    });
+    assert.equal(missingVtxo.status, 400);
+
+    // Missing destinationAddress -> 400
+    const missingDest = await fetch(`${origin}/v1/ark/swaps`, {
+      method: 'POST',
+      headers: { ...authHeaders, 'idempotency-key': 'missing-dest-1' },
+      body: JSON.stringify({ quoteId: oQuote.id, route: 'ark-to-onchain', vtxoOutpoint: offboardVtxo, amountSats: 50_000 }),
+    });
+    assert.equal(missingDest.status, 400);
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close(err => err ? reject(err) : resolve()));
+    await f.cleanup();
+  }
+});
+
+test('regression: unreachable operator or missing/failing CLI fails closed without historical evidence fallback and rejects symlinks', async () => {
+  const f = await setup();
+  try {
+    // Seed historical evidence files on disk to verify they are NEVER read or returned
+    await mkdir(join(f.directory, 'data/ark/evidence'), { recursive: true });
+    await mkdir(join(f.directory, 'data/ark/e2e/evidence'), { recursive: true });
+    await writeFile(join(f.directory, 'data/ark/evidence/operator-after.json'), JSON.stringify({
+      operator: {
+        network: 'regtest',
+        version: 'v0.0.0-historical',
+        signerPubkey: '032203ea0a05239f49049ee3f939757dde2271b9051eb3c905283d24b9e25dd6be',
+        forfeitAddress: syntheticForfeitAddress,
+        dust: '330',
+      },
+    }));
+    await writeFile(join(f.directory, 'data/ark/e2e/evidence/matrix.json'), JSON.stringify({
+      operator_restart: { balance: { alice: { confirmed_sats: 999999, pre_confirmed_sats: 0, recoverable_sats: 0, pending_recovery_sats: 0, total_sats: 999999 } } },
+    }));
+    await writeFile(join(f.directory, 'data/ark/e2e/evidence/boarding.json'), JSON.stringify({ commitment: { txid: boardingCommitment } }));
+    await writeFile(join(f.directory, 'data/ark/e2e/evidence/offboard.json'), JSON.stringify({ commitment: { txid: offboardCommitment } }));
+
+    // 1. Unreachable operator (non-200) -> telemetry unavailable, execution/vtxos fail closed
+    const unreachablePort = createArkRegtestCliPort({
+      fetchImpl: (async () => new Response('down', { status: 503 })) as typeof fetch,
+      cli: async () => { throw new Error('CLI should not run when operator unavailable'); },
+    });
+    const downTelemetry = await unreachablePort.telemetry();
+    assert.equal(downTelemetry.operatorStatus, 'unavailable');
+    assert.equal(downTelemetry.operator, null);
+    assert.equal(downTelemetry.wallets, null);
+    await assert.rejects(() => unreachablePort.board({ wallet: 'alice', fundingOutpoint: boardingOutpoint, amountSats: 50_000 }), /ARK_OPERATOR_UNAVAILABLE/);
+    await assert.rejects(() => unreachablePort.offboardCooperative({ vtxoOutpoint: offboardVtxo, destinationAddress: offboardDestination, amountSats: 50_000 }), /ARK_OPERATOR_UNAVAILABLE/);
+    await assert.rejects(() => unreachablePort.vtxos('alice'), /ARK_OPERATOR_UNAVAILABLE/);
+
+    // 2. Live operator + unconfigured CLI -> telemetry has wallets: null, execution/vtxos fail closed
+    const liveOperatorFetch = (async () => new Response(JSON.stringify({
+      network: 'regtest',
+      version: 'v0.9.25',
+      signerPubkey: '032203ea0a05239f49049ee3f939757dde2271b9051eb3c905283d24b9e25dd6be',
+      forfeitAddress: syntheticForfeitAddress,
+      dust: 546,
+    }), { status: 200 })) as typeof fetch;
+    const noCliPort = createArkRegtestCliPort({ fetchImpl: liveOperatorFetch });
+    const noCliTelemetry = await noCliPort.telemetry();
+    assert.equal(noCliTelemetry.operatorStatus, 'ok');
+    assert.equal(noCliTelemetry.cliConfigured, false);
+    assert.equal(noCliTelemetry.wallets, null);
+    await assert.rejects(() => noCliPort.board({ wallet: 'alice', fundingOutpoint: boardingOutpoint, amountSats: 50_000 }), /ARK_CLI_NOT_CONFIGURED/);
+    await assert.rejects(() => noCliPort.offboardCooperative({ vtxoOutpoint: offboardVtxo, destinationAddress: offboardDestination, amountSats: 50_000 }), /ARK_CLI_NOT_CONFIGURED/);
+    await assert.rejects(() => noCliPort.vtxos('alice'), /ARK_CLI_NOT_CONFIGURED/);
+
+    // 3. Operator dust enforcement + failing CLI -> wallets: null, no fallback
+    const failingCliPort = createArkRegtestCliPort({
+      fetchImpl: liveOperatorFetch,
+      cli: async () => { throw new Error('cli crashed'); },
+    });
+    const failedCliTelemetry = await failingCliPort.telemetry();
+    assert.equal(failedCliTelemetry.operatorStatus, 'ok');
+    assert.equal(failedCliTelemetry.wallets, null);
+    await assert.rejects(() => failingCliPort.board({ wallet: 'alice', fundingOutpoint: boardingOutpoint, amountSats: 400 }), /ARK_INVALID_AMOUNT/);
+    await assert.rejects(() => failingCliPort.offboardCooperative({ vtxoOutpoint: offboardVtxo, destinationAddress: offboardDestination, amountSats: 400 }), /ARK_INVALID_AMOUNT/);
+
+    // 4. Simulation mode denies /v1/ark/telemetry with 503 ARK_TELEMETRY_NOT_CONFIGURED
+    const adminAccount = await testAccount(f.directory, 'ADMIN');
+    const simServer = createApi(f.manager, async () => ({ onchainSats: 0, incomingSats: 0 }), undefined, 'simulation', {
+      auth: { storePath: adminAccount.storePath },
+      ark: noCliPort,
+    });
+    simServer.listen(0, '127.0.0.1');
+    await once(simServer, 'listening');
+    try {
+      const simOrigin = `http://127.0.0.1:${(simServer.address() as AddressInfo).port}`;
+      const simHeaders = await adminAccount.headers(simOrigin);
+      const simTelemetry = await fetch(`${simOrigin}/v1/ark/telemetry`, { headers: simHeaders });
+      assert.equal(simTelemetry.status, 503);
+      assert.deepEqual(await simTelemetry.json(), { error: 'ARK_TELEMETRY_NOT_CONFIGURED' });
+    } finally {
+      await new Promise<void>((resolve, reject) => simServer.close(err => err ? reject(err) : resolve()));
+    }
+
+    // 5. Symlink storePath rejected on load and write
+    const realTarget = join(f.directory, 'real-target.json');
+    await writeFile(realTarget, JSON.stringify({ schema: 1, swaps: [] }));
+    const linkStorePath = join(f.directory, 'symlink-ark.json');
+    await symlink(realTarget, linkStorePath);
+    assert.throws(() => new ArkSwapService(noCliPort, linkStorePath), /ARK_STORE_PATH_INVALID/);
+
+    const nonExistentTargetLink = join(f.directory, 'dangling-ark.json');
+    await symlink(join(f.directory, 'does-not-exist.json'), nonExistentTargetLink);
+    assert.throws(() => new ArkSwapService(noCliPort, nonExistentTargetLink), /ARK_STORE_PATH_INVALID/);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test('regression: SUBMITTED is pending and excluded from settled accounting, while CONFIRMED is completed/settled and REJECTED returns 503', async () => {
+  const f = await setup();
+  try {
+    const adminAccount = await testAccount(f.directory, 'ADMIN');
+    const userAccount = { username: 'ark-accounting-user', password: 'ark-accounting-password-123' };
+    await provisionAccount(adminAccount.storePath, userAccount.username, 'USER', userAccount.password);
+
+    const storePath = join(f.directory, 'ark-accounting.json');
+    const confirmedQuote = buildArkQuote('onchain-to-ark', 40_000, 10_000);
+    await writeFile(storePath, JSON.stringify({
+      schema: 1,
+      swaps: [{
+        id: '11111111-1111-4111-8111-111111111111',
+        ownerId: 'seeded-owner',
+        idempotencyKey: 'seeded-confirmed-key',
+        fingerprint: 'seeded-fingerprint',
+        network: 'regtest',
+        route: 'onchain-to-ark',
+        method: 'boarding',
+        status: 'CONFIRMED',
+        quote: confirmedQuote,
+        inputOutpoint: 'c'.repeat(64) + ':0',
+        destination: 'alice (Ark VTXO)',
+        commitmentTxid: 'd'.repeat(64),
+        createdAt: 10_000,
+        updatedAt: 10_500,
+      }],
+    }));
+
+    let failOperator = false;
+    const port = createArkRegtestCliPort({
+      fetchImpl: (async () => failOperator
+        ? new Response('down', { status: 503 })
+        : new Response(JSON.stringify({
+            network: 'regtest',
+            version: 'v0.9.25',
+            signerPubkey: '032203ea0a05239f49049ee3f939757dde2271b9051eb3c905283d24b9e25dd6be',
+            forfeitAddress: syntheticForfeitAddress,
+            dust: 330,
+          }), { status: 200 })) as typeof fetch,
+      cli: async args => {
+        if (args[0] === 'board') {
+          return { network: 'regtest', asset: 'BTC', wallets: { alice: { input: args[2], commitment_txid: boardingCommitment } } };
+        }
+        throw new Error('Unexpected CLI call');
+      },
+    });
+
+    const server = createApi(f.manager, async () => ({ onchainSats: 0, incomingSats: 0 }), undefined, 'regtest', {
+      auth: { storePath: adminAccount.storePath },
+      ark: port,
+      arkStorePath: storePath,
+    });
+    server.listen(0, '127.0.0.1');
+    await once(server, 'listening');
+    const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+
+    try {
+      const userLogin = await fetch(`${origin}/v1/auth/login`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', origin },
+        body: JSON.stringify({ username: 'ark-accounting-user', password: userAccount.password }),
+      });
+      const userCookie = userLogin.headers.get('set-cookie')!.split(';')[0]!;
+      const userSession = await userLogin.json();
+
+      // Submit a SUBMITTED swap -> 202
+      const qSub = await (await fetch(`${origin}/v1/ark/quotes`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ route: 'onchain-to-ark', amountSats: 50_000 }),
+      })).json();
+      const subRes = await fetch(`${origin}/v1/ark/swaps`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          cookie: userCookie,
+          origin,
+          'x-csrf-token': userSession.csrfToken,
+          'idempotency-key': 'submitted-key-1',
+        },
+        body: JSON.stringify({
+          quoteId: qSub.id,
+          route: 'onchain-to-ark',
+          wallet: 'alice',
+          fundingOutpoint: boardingOutpoint,
+          amountSats: 50_000,
+        }),
+      });
+      assert.equal(subRes.status, 202);
+      assert.equal((await subRes.json()).status, 'SUBMITTED');
+
+      // Submit when operator is unavailable -> REJECTED with 503 and publicRecord
+      failOperator = true;
+      const qRej = await (await fetch(`${origin}/v1/ark/quotes`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ route: 'ark-to-onchain', amountSats: 30_000 }),
+      })).json();
+      const rejRes = await fetch(`${origin}/v1/ark/swaps`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          cookie: userCookie,
+          origin,
+          'x-csrf-token': userSession.csrfToken,
+          'idempotency-key': 'rejected-key-1',
+        },
+        body: JSON.stringify({
+          quoteId: qRej.id,
+          route: 'ark-to-onchain',
+          vtxoOutpoint: offboardVtxo,
+          destinationAddress: offboardDestination,
+          amountSats: 30_000,
+        }),
+      });
+      assert.equal(rejRes.status, 503);
+      const rejBody = await rejRes.json();
+      assert.equal(rejBody.status, 'REJECTED');
+      assert.equal('ownerId' in rejBody, false);
+
+      // Admin report counts ONLY the CONFIRMED swap in completed & settled accounting
+      const adminHeaders = await adminAccount.headers(origin);
+      const reportRes = await fetch(`${origin}/v1/admin/ark/swaps`, { headers: adminHeaders });
+      assert.equal(reportRes.status, 200);
+      const report = await reportRes.json();
+      assert.equal(report.summary.totalSwaps, 3);
+      assert.equal(report.summary.completedSwaps, 1);
+      assert.equal(report.summary.pendingSwaps, 1);
+      assert.equal(report.summary.failedSwaps, 1);
+      assert.equal(report.summary.onchainSentSats, confirmedQuote.invoiceSats);
+      assert.equal(report.summary.arkReceivedSats, confirmedQuote.netSats);
+      assert.equal(report.summary.arkSentSats, 0);
+      assert.equal(report.summary.onchainReceivedSats, 0);
+      assert.equal(report.summary.collectedServiceFeesSats, confirmedQuote.serviceFeeSats);
+      assert.equal(report.summary.estimatedNetworkFeesSats, confirmedQuote.claimFeeSats);
+      assert.equal(report.summary.netOperationalRevenueSats, confirmedQuote.serviceFeeSats);
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close(err => err ? reject(err) : resolve()));
+    }
+  } finally {
+    await f.cleanup();
+  }
 });

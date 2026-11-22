@@ -2,14 +2,22 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import { mkdir } from 'node:fs/promises';
+import { join } from 'node:path';
 import type { AddressInfo } from 'node:net';
 import axe from 'axe-core';
+import { networks, payments } from 'bitcoinjs-lib';
 import { chromium, type Page } from 'playwright';
+import { provisionAccount } from '../../scripts/provision-auth.js';
 import { createApi } from '../../src/api/server.js';
+import { buildArkQuote, createArkRegtestCliPort } from '../../src/ark/ArkAdapter.js';
 import { preflight } from '../../src/diagnostics/preflight.js';
 import { setup, testAccount } from '../helpers.js';
 
 const evidence = 'dist/web-verification';
+const launchChromium = () => chromium.launch({
+  ...(process.env.WEB_TEST_BROWSER_CHANNEL ? { channel: process.env.WEB_TEST_BROWSER_CHANNEL } : {}),
+  ...(process.env.WEB_TEST_BROWSER_EXECUTABLE ? { executablePath: process.env.WEB_TEST_BROWSER_EXECUTABLE } : {}),
+});
 
 async function waitForRails(page: Page, send: string, receive: string) {
   await page.waitForFunction(([send, receive]) => {
@@ -33,7 +41,7 @@ test('three faces quote a real route and preserve keyboard, account and responsi
   await once(server, 'listening');
   context.after(() => new Promise<void>(resolve => server.close(() => resolve())));
   const base = 'http://127.0.0.1:' + (server.address() as AddressInfo).port;
-  const browser = await chromium.launch({ channel: process.env.WEB_TEST_BROWSER_CHANNEL });
+  const browser = await launchChromium();
   context.after(() => browser.close());
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, reducedMotion: 'reduce' });
   await page.clock.install();
@@ -217,7 +225,7 @@ test('regtest page renders a real preflight 503 report with offline test ports',
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
   context.after(() => new Promise<void>(resolve => server.close(() => resolve())));
-  const browser = await chromium.launch({ channel: process.env.WEB_TEST_BROWSER_CHANNEL });
+  const browser = await launchChromium();
   context.after(() => browser.close());
   const page = await browser.newPage({ reducedMotion: 'reduce' });
   await page.route('**/v1/auth/session', route => route.fulfill({ json: session('ADMIN') }));
@@ -245,7 +253,7 @@ test('administrator wallets show four batteries with separate on-chain and Light
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
   context.after(() => new Promise<void>(resolve => server.close(() => resolve())));
-  const browser = await chromium.launch({ channel: process.env.WEB_TEST_BROWSER_CHANNEL });
+  const browser = await launchChromium();
   context.after(() => browser.close());
   const page = await browser.newPage({ reducedMotion: 'reduce' });
   await page.clock.install();
@@ -344,7 +352,7 @@ test('Account accepts input during session checks and supports retry when auth r
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
   context.after(() => new Promise<void>(resolve => server.close(() => resolve())));
-  const browser = await chromium.launch({ channel: process.env.WEB_TEST_BROWSER_CHANNEL });
+  const browser = await launchChromium();
   context.after(() => browser.close());
   const page = await browser.newPage({ reducedMotion: 'reduce' });
   let resumeSession!: () => void;
@@ -397,7 +405,7 @@ test('the same-origin Account form signs in, shows administrator balances, and s
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
   context.after(() => new Promise<void>(resolve => server.close(() => resolve())));
-  const browser = await chromium.launch({ channel: process.env.WEB_TEST_BROWSER_CHANNEL });
+  const browser = await launchChromium();
   context.after(() => browser.close());
   const page = await browser.newPage({ reducedMotion: 'reduce' });
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
@@ -423,7 +431,7 @@ test('login success requires independent session verification and logout is CSRF
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
   context.after(() => new Promise<void>(resolve => server.close(() => resolve())));
-  const browser = await chromium.launch({ channel: process.env.WEB_TEST_BROWSER_CHANNEL });
+  const browser = await launchChromium();
   context.after(() => browser.close());
   const page = await browser.newPage({ reducedMotion: 'reduce' });
   let signedIn = false;
@@ -481,7 +489,7 @@ test('prepared swaps use verified terms, durable idempotency and separate reconc
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
   context.after(() => new Promise<void>(resolve => server.close(() => resolve())));
-  const browser = await chromium.launch({ channel: process.env.WEB_TEST_BROWSER_CHANNEL });
+  const browser = await launchChromium();
   context.after(() => browser.close());
   const page = await browser.newPage({ reducedMotion: 'reduce' });
   const id = '5f962d5f-1fed-43f2-9d66-f0ccfca6595f';
@@ -602,7 +610,7 @@ test('opening fills the viewport, draws six lines, fades and sequences a 3D entr
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
   context.after(() => new Promise<void>(resolve => server.close(() => resolve())));
-  const browser = await chromium.launch({ channel: process.env.WEB_TEST_BROWSER_CHANNEL });
+  const browser = await launchChromium();
   context.after(() => browser.close());
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
   const start = Date.now();
@@ -653,7 +661,7 @@ test('actual mouse and touch gestures rotate in both directions and linked anima
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
   context.after(() => new Promise<void>(resolve => server.close(() => resolve())));
-  const browser = await chromium.launch({ channel: process.env.WEB_TEST_BROWSER_CHANNEL });
+  const browser = await launchChromium();
   context.after(() => browser.close());
   const desktop = await browser.newContext({
     viewport: { width: 1366, height: 768 },
@@ -797,4 +805,256 @@ test('actual mouse and touch gestures rotate in both directions and linked anima
   await touchPage.waitForFunction(() => window.scrollY > 10);
   await waitForRails(touchPage, 'liquid', 'onchain');
   await mobile.close();
+});
+
+test('Ark regtest UI requires explicit inputs, keeps SUBMITTED pending without ¡Swap exitoso!, and updates UNAVAILABLE telemetry', async context => {
+  const f = await setup();
+  context.after(f.cleanup);
+  const adminAccount = await testAccount(f.directory, 'ADMIN');
+  const userAccount = { username: 'ark-web-user', password: 'ark-web-user-password-123' };
+  await provisionAccount(adminAccount.storePath, userAccount.username, 'USER', userAccount.password);
+
+  const boardingOutpoint = '11'.repeat(32) + ':1';
+  const boardingCommitment = '22'.repeat(32);
+  const offboardVtxo = '33'.repeat(32) + ':0';
+  const offboardDestination = payments.p2wpkh({ hash: Buffer.alloc(20, 0x11), network: networks.regtest }).address!;
+  const offboardCommitment = '44'.repeat(32);
+  const syntheticForfeitAddress = payments.p2wpkh({ hash: Buffer.alloc(20, 0x22), network: networks.regtest }).address!;
+
+  let operatorDown = false;
+  const mockPort = createArkRegtestCliPort({
+    fetchImpl: (async () => operatorDown
+      ? new Response('down', { status: 503 })
+      : new Response(JSON.stringify({
+          network: 'regtest',
+          version: 'v0.9.25',
+          signerPubkey: '032203ea0a05239f49049ee3f939757dde2271b9051eb3c905283d24b9e25dd6be',
+          forfeitAddress: syntheticForfeitAddress,
+          dust: 330,
+        }), { status: 200 })) as typeof fetch,
+    cli: async args => {
+      if (args[0] === 'balance') {
+        return {
+          network: 'regtest',
+          asset: 'BTC',
+          wallets: {
+            alice: { confirmed_sats: 125_000, pre_confirmed_sats: 0, recoverable_sats: 0, pending_recovery_sats: 0, total_sats: 125_000 },
+            bob: { confirmed_sats: 45_000, pre_confirmed_sats: 0, recoverable_sats: 0, pending_recovery_sats: 0, total_sats: 45_000 },
+          },
+        };
+      }
+      if (args[0] === 'board') {
+        return { network: 'regtest', asset: 'BTC', wallets: { [args[1]!]: { input: args[2], commitment_txid: boardingCommitment } } };
+      }
+      throw new Error('Unexpected CLI call');
+    },
+  });
+
+  const server = createApi(f.manager, async () => { throw new Error('Offline test port'); }, undefined, 'regtest', {
+    auth: { storePath: adminAccount.storePath },
+    ark: mockPort,
+    arkStorePath: join(f.directory, 'ark-swaps.json'),
+  });
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  context.after(() => new Promise<void>(resolve => server.close(() => resolve())));
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+
+  const browser = await launchChromium();
+  context.after(() => browser.close());
+  const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, reducedMotion: 'reduce' });
+  const errors: string[] = [];
+  page.on('pageerror', err => errors.push(err.message));
+
+  // 1. Sign in as USER and submit an explicit boarding swap (202 SUBMITTED)
+  await page.goto(`${base}/#account`);
+  await page.getByLabel('Username', { exact: true }).fill(userAccount.username);
+  await page.getByLabel('Password', { exact: true }).fill(userAccount.password);
+  await page.getByRole('button', { name: 'Sign in', exact: true }).click();
+  await page.locator('#account-dashboard').waitFor({ state: 'visible' });
+
+  await page.getByRole('link', { name: 'Swap', exact: true }).click();
+  await page.getByLabel('Send network').selectOption('onchain');
+  await waitForRails(page, 'onchain', 'lightning');
+  await page.getByLabel('Receive network').selectOption('ark');
+  await waitForRails(page, 'onchain', 'ark');
+  await page.getByText('49,738', { exact: true }).waitFor();
+
+  const capturedSwaps: Array<{ key: string; csrf: string; body: unknown }> = [];
+  page.on('request', req => {
+    if (new URL(req.url()).pathname === '/v1/ark/swaps' && req.method() === 'POST') {
+      const h = req.headers();
+      capturedSwaps.push({ key: h['idempotency-key']!, csrf: h['x-csrf-token']!, body: req.postDataJSON() });
+    }
+  });
+
+  await page.getByRole('button', { name: 'SWAP', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'Review quote' });
+  await dialog.waitFor({ state: 'visible' });
+  assert.equal(await page.locator('#ark-execution-fields').isVisible(), true);
+  assert.equal(await page.locator('#ark-boarding-fields').isVisible(), true);
+  assert.equal(await page.locator('#ark-offboard-fields').isVisible(), false);
+  const startSwap = dialog.getByRole('button', { name: 'Start swap', exact: true });
+  assert.equal(await startSwap.isDisabled(), true);
+  assert.equal(await page.getByLabel('Funding outpoint (txid:vout)').inputValue(), '');
+
+  await audit(page);
+
+  await page.getByLabel('Funding outpoint (txid:vout)').fill('not-an-outpoint');
+  assert.equal(await startSwap.isDisabled(), true);
+
+  await page.getByLabel('Funding outpoint (txid:vout)').fill(boardingOutpoint);
+  assert.equal(await startSwap.isDisabled(), false);
+
+  await startSwap.click();
+  await dialog.getByText('Ark regtest swap submitted (pending settlement confirmation).', { exact: true }).waitFor();
+  assert.equal(await page.locator('#quote-status').textContent(), 'Ark regtest swap submitted · pending confirmation');
+  assert.equal(await page.getByText('¡Swap exitoso!').count(), 0);
+  assert.equal(capturedSwaps.length, 1);
+  assert.match(capturedSwaps[0]!.key, /^[A-Za-z0-9_-]{8,128}$/);
+  assert.match(capturedSwaps[0]!.csrf, /^[a-f0-9]{64}$/);
+  assert.deepEqual((capturedSwaps[0]!.body as Record<string, unknown>).fundingOutpoint, boardingOutpoint);
+  assert.deepEqual((capturedSwaps[0]!.body as Record<string, unknown>).wallet, 'alice');
+
+  await dialog.getByRole('button', { name: 'Close review', exact: true }).click();
+  await page.getByRole('link', { name: 'Account', exact: true }).click();
+  await page.getByText('1 Ark ↔ On-chain swap owned by ark-web-user.', { exact: true }).waitFor();
+  assert.equal(await page.locator('#account-active-swaps').textContent(), '1');
+  assert.equal(await page.locator('#account-completed-swaps').textContent(), '0');
+  assert.equal(await page.locator('#account-failed-swaps').textContent(), '0');
+
+  // 2. Sign in as ADMIN: verify Operations shows pending=1, completed=0, settled=0 sats, and live->unavailable telemetry
+  await page.getByRole('button', { name: 'Sign out', exact: true }).click();
+  await page.locator('#signin').waitFor({ state: 'visible' });
+  await page.getByLabel('Username', { exact: true }).fill(adminAccount.username);
+  await page.getByLabel('Password', { exact: true }).fill(adminAccount.password);
+  await page.getByRole('button', { name: 'Sign in', exact: true }).click();
+  await page.locator('#account-dashboard').waitFor({ state: 'visible' });
+
+  await page.getByRole('link', { name: 'Operations', exact: true }).click();
+  await page.getByText('1 Ark ↔ On-chain swap recorded on regtest.', { exact: true }).waitFor();
+  assert.equal(await page.locator('#activity-total').textContent(), '1');
+  assert.equal(await page.locator('#activity-completed').textContent(), '0');
+  assert.equal(await page.locator('#activity-pending').textContent(), '1');
+  assert.equal(await page.locator('#activity-failed').textContent(), '0');
+  assert.equal(await page.locator('#activity-onchain-sent').textContent(), '0 sats');
+  assert.equal(await page.locator('#activity-ark-received').textContent(), '0 sats');
+  assert.equal(await page.locator('#fee-collected').textContent(), '0 sats');
+  assert.equal(await page.locator('#fee-network').textContent(), '0 sats');
+  assert.equal(await page.locator('#fee-net-revenue').textContent(), '0 sats');
+  assert.equal(await page.locator('#ark-tag').textContent(), 'REGTEST · v0.9.25');
+  assert.match(await page.locator('#ark-status').textContent() ?? '', /Alice: 125,000 sats · Bob: 45,000 sats/);
+
+  // Operator goes down -> Refresh must clear stale telemetry to UNAVAILABLE
+  operatorDown = true;
+  await page.getByRole('button', { name: 'Refresh', exact: true }).click();
+  await page.waitForFunction(() => document.getElementById('ark-tag')?.textContent === 'UNAVAILABLE');
+  assert.equal(await page.locator('#ark-status').textContent(), 'Ark regtest operator telemetry is unavailable.');
+
+  // 3. Test 201 CONFIRMED cooperative offboarding flow + idempotency key reuse on retry + confirmed accounting
+  const confirmedQuote = buildArkQuote('ark-to-onchain', 50_000, Date.now());
+  let postAttempt = 0;
+  const offboardKeys: string[] = [];
+  await page.route('**/v1/ark/swaps', async route => {
+    if (route.request().method() !== 'POST') return route.continue();
+    postAttempt++;
+    offboardKeys.push(route.request().headers()['idempotency-key']!);
+    if (postAttempt === 1) return route.abort('failed');
+    return route.fulfill({
+      status: 201,
+      json: {
+        id: '22222222-2222-4222-8222-222222222222',
+        network: 'regtest',
+        route: 'ark-to-onchain',
+        method: 'cooperative-offboarding',
+        status: 'CONFIRMED',
+        quote: confirmedQuote,
+        inputOutpoint: offboardVtxo,
+        destination: offboardDestination,
+        commitmentTxid: offboardCommitment,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      },
+    });
+  });
+
+  await page.getByRole('link', { name: 'Swap', exact: true }).click();
+  await page.getByLabel('Send network').selectOption('ark');
+  await waitForRails(page, 'ark', 'onchain');
+  await page.getByText('49,759', { exact: true }).waitFor();
+  await page.getByRole('button', { name: 'SWAP', exact: true }).click();
+  await dialog.waitFor({ state: 'visible' });
+  assert.equal(await page.locator('#ark-offboard-fields').isVisible(), true);
+  assert.equal(await startSwap.isDisabled(), true);
+
+  await page.getByLabel('VTXO outpoint (txid:vout)').fill(offboardVtxo);
+  assert.equal(await startSwap.isDisabled(), true);
+  await page.getByLabel('On-chain destination (regtest bcrt1...)').fill(offboardDestination);
+  assert.equal(await startSwap.isDisabled(), false);
+
+  await audit(page);
+
+  await startSwap.click();
+  await dialog.getByText('Could not connect to the backend. Try again.', { exact: true }).waitFor();
+  assert.equal(await startSwap.isDisabled(), false);
+
+  await startSwap.click();
+  await dialog.getByText('Ark regtest swap confirmed.', { exact: true }).waitFor();
+  assert.equal(await page.locator('#quote-status').textContent(), '¡Swap exitoso!');
+  assert.equal(offboardKeys.length, 2);
+  assert.equal(offboardKeys[1], offboardKeys[0]);
+  await dialog.getByRole('button', { name: 'Close review', exact: true }).click();
+
+  // Verify confirmed state reflection in Account & Admin when backend serves a CONFIRMED swap
+  const confirmedRecord = {
+    id: '22222222-2222-4222-8222-222222222222',
+    network: 'regtest',
+    route: 'ark-to-onchain',
+    method: 'cooperative-offboarding',
+    status: 'CONFIRMED',
+    quote: confirmedQuote,
+    inputOutpoint: offboardVtxo,
+    destination: offboardDestination,
+    commitmentTxid: offboardCommitment,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+  };
+  await page.route('**/v1/ark/swaps', route => route.request().method() === 'GET'
+    ? route.fulfill({ json: { network: 'regtest', swaps: [confirmedRecord] } })
+    : route.continue());
+  await page.route('**/v1/admin/ark/swaps', route => route.fulfill({
+    json: {
+      network: 'regtest',
+      summary: {
+        totalSwaps: 1,
+        completedSwaps: 1,
+        pendingSwaps: 0,
+        failedSwaps: 0,
+        onchainSentSats: 0,
+        onchainReceivedSats: confirmedQuote.netSats,
+        arkSentSats: confirmedQuote.invoiceSats,
+        arkReceivedSats: 0,
+        collectedServiceFeesSats: confirmedQuote.serviceFeeSats,
+        estimatedNetworkFeesSats: confirmedQuote.claimFeeSats,
+        netOperationalRevenueSats: confirmedQuote.serviceFeeSats,
+      },
+      swaps: [confirmedRecord],
+    },
+  }));
+
+  await page.getByRole('link', { name: 'Account', exact: true }).click();
+  await page.getByText(`1 Ark ↔ On-chain swap owned by ${adminAccount.username}.`, { exact: true }).waitFor();
+  assert.equal(await page.locator('#account-active-swaps').textContent(), '0');
+  assert.equal(await page.locator('#account-completed-swaps').textContent(), '1');
+
+  await page.getByRole('link', { name: 'Operations', exact: true }).click();
+  await page.waitForFunction(() => document.getElementById('activity-completed')?.textContent === '1');
+  assert.equal(await page.locator('#activity-pending').textContent(), '0');
+  assert.equal(await page.locator('#activity-ark-sent').textContent(), '50,750 sats');
+  assert.equal(await page.locator('#activity-onchain-received').textContent(), '49,759 sats');
+  assert.equal(await page.locator('#fee-collected').textContent(), '750 sats');
+  assert.equal(await page.locator('#fee-network').textContent(), '241 sats');
+  assert.equal(await page.locator('#fee-net-revenue').textContent(), '750 sats');
+
+  assert.deepEqual(errors, []);
 });

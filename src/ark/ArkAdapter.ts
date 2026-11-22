@@ -1,8 +1,8 @@
 import { execFile } from 'node:child_process';
-import { createHash, randomUUID } from 'node:crypto';
-import { existsSync, readFileSync } from 'node:fs';
-import { lstat, mkdir, open, readFile, rename } from 'node:fs/promises';
-import { dirname, isAbsolute, join } from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { constants, lstatSync, readFileSync } from 'node:fs';
+import { lstat, mkdir, open, rename } from 'node:fs/promises';
+import { dirname, isAbsolute } from 'node:path';
 import { promisify } from 'node:util';
 import { address, initEccLib, networks } from 'bitcoinjs-lib';
 import * as ecc from 'tiny-secp256k1';
@@ -10,15 +10,6 @@ import { z } from 'zod';
 import { ArkAdminReportResponse, ArkQuoteRequest, ArkQuoteResponse, ArkRoute, ArkSwapStatusResponse, ArkTelemetryResponse } from '../api/schemas.js';
 
 initEccLib(ecc);
-
-export const DEFAULT_ARK_LAB_ROOT = '/home/chelo/orca/workspaces/swap-engine/ark-regtest-46-54';
-export const DEFAULT_ARK_LAB_CLI = '/home/chelo/orca/workspaces/swap-engine/ark-regtest-46-54/ark/target/debug/ark-lab';
-const DEFAULT_BOARDING_OUTPOINT = 'a2cc69ded323b84f285e182bd7534eb3a13cd8c1436747dde5c1fe7eff635bc9:1';
-const DEFAULT_BOARDING_ADDRESS = 'tark1qq3q86s2q53e7jgynm3ljwt40h0zyudeq50t8jg99q7jfw0zthttu54du37e0pfr5kewanyapdxk76ysqe5rgrx9mgr9e3k0ht3a8mt7h60xkx';
-const DEFAULT_BOARDING_COMMITMENT = '9f348a9153115bf6f33c65842831eff53c657e148f4304361df43be6d965f6a4';
-const DEFAULT_OFFBOARD_VTXO = 'bf025a2d2714c413568a3bb29df7e0aa70b588ad63e8492c3423db8121f995cf:0';
-const DEFAULT_OFFBOARD_ADDRESS = 'bcrt1p26xsajjhlef4wvua7x5372ut8y06s90gcdynyjnjuwparh6ta56smxeexq';
-const DEFAULT_OFFBOARD_COMMITMENT = 'abebe89ae8244bff5b7c5968ff19246370e9050ebcc3fbdd1e6e59dd58f95449';
 
 export type ArkRouteKind = z.infer<typeof ArkRoute>;
 export type ArkQuoteInput = z.infer<typeof ArkQuoteRequest>;
@@ -54,9 +45,20 @@ export class ArkSwapService {
   private persistQueue: Promise<void> = Promise.resolve();
 
   constructor(private readonly port?: ArkRegtestPort, private readonly storePath?: string) {
-    if (storePath && existsSync(storePath)) {
-      const parsed = persistedArkStoreSchema.parse(JSON.parse(readFileSync(storePath, 'utf8')));
-      for (const record of parsed.swaps) this.swaps.set(record.id, structuredClone(record));
+    if (storePath) {
+      let stat: ReturnType<typeof lstatSync> | undefined;
+      try {
+        stat = lstatSync(storePath);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      }
+      if (stat) {
+        if (stat.isSymbolicLink() || !stat.isFile()) {
+          throw new Error('ARK_STORE_PATH_INVALID');
+        }
+        const parsed = persistedArkStoreSchema.parse(JSON.parse(readFileSync(storePath, 'utf8')));
+        for (const record of parsed.swaps) this.swaps.set(record.id, structuredClone(record));
+      }
     }
   }
 
@@ -66,8 +68,21 @@ export class ArkSwapService {
     const snapshot = JSON.stringify({ schema: 1, swaps: [...this.swaps.values()] }, null, 2);
     const run = this.persistQueue.then(async () => {
       await mkdir(dirname(targetPath), { recursive: true, mode: 0o700 });
+      const assertRegularOrMissing = async (candidate: string) => {
+        try {
+          const stat = await lstat(candidate);
+          if (stat.isSymbolicLink() || !stat.isFile()) {
+            throw new Error('ARK_STORE_PATH_INVALID');
+          }
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+        }
+      };
+      await assertRegularOrMissing(targetPath);
       const tempPath = `${targetPath}.tmp`;
-      const handle = await open(tempPath, 'w', 0o600);
+      await assertRegularOrMissing(tempPath);
+      const flags = constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | (constants.O_NOFOLLOW ?? 0);
+      const handle = await open(tempPath, flags, 0o600);
       try {
         await handle.writeFile(snapshot);
         await handle.sync();
@@ -125,7 +140,7 @@ export class ArkSwapService {
     let estimatedNetworkFeesSats = 0;
 
     for (const swap of all) {
-      if (swap.status === 'SUBMITTED' || swap.status === 'CONFIRMED') {
+      if (swap.status === 'CONFIRMED') {
         completedSwaps++;
         if (swap.route === 'onchain-to-ark') {
           onchainSentSats += swap.quote.invoiceSats;
@@ -182,19 +197,15 @@ export class ArkSwapService {
     if ([...this.swaps.values()].some(s => s.quote.id === quote.id)) {
       throw new Error('ARK_QUOTE_ALREADY_CONSUMED');
     }
-    const explicitInput = request.route === 'onchain-to-ark' ? request.fundingOutpoint : request.vtxoOutpoint;
-    if (explicitInput) {
-      validateOutpoint(explicitInput);
-      if ([...this.swaps.values()].some(s => s.inputOutpoint === explicitInput && s.status !== 'REJECTED')) {
-        throw new Error('ARK_INPUT_ALREADY_RESERVED');
-      }
-    }
-    const syntheticTxid = createHash('sha256').update(`${ownerId}:${idempotencyKey}:${quote.id}`).digest('hex');
-    const inputOutpoint = explicitInput ?? `${syntheticTxid}:0`;
+    const inputOutpoint = request.route === 'onchain-to-ark' ? request.fundingOutpoint : request.vtxoOutpoint;
+    if (!inputOutpoint) throw new Error('ARK_OUTPOINT_INVALID');
     validateOutpoint(inputOutpoint);
     const destination = request.route === 'onchain-to-ark'
-      ? (request.recipientArkAddress ? validateRegtestArkAddress(request.recipientArkAddress) : DEFAULT_BOARDING_ADDRESS)
-      : validateRegtestBech32Address(request.destinationAddress ?? DEFAULT_OFFBOARD_ADDRESS);
+      ? (request.recipientArkAddress ? validateRegtestArkAddress(request.recipientArkAddress) : `${request.wallet} (Ark VTXO)`)
+      : validateRegtestBech32Address(request.destinationAddress ?? '');
+    if ([...this.swaps.values()].some(s => s.inputOutpoint === inputOutpoint && s.status !== 'REJECTED')) {
+      throw new Error('ARK_INPUT_ALREADY_RESERVED');
+    }
 
     if (!this.port) throw new Error('ARK_ADAPTER_NOT_CONFIGURED');
 
@@ -435,49 +446,25 @@ export function createArkRegtestCliPort(options: {
   cli?: ArkCliRunner;
   operatorInfoUrl?: string;
   fetchImpl?: typeof fetch;
-  labRoot?: string;
 } = {}): ArkRegtestPort {
-  const infoUrl = new URL(options.operatorInfoUrl ?? 'http://127.0.0.1:37070/v1/info');
-  if (infoUrl.protocol !== 'http:' || !['127.0.0.1', 'localhost'].includes(infoUrl.hostname) || infoUrl.username || infoUrl.password) {
+  let infoUrl: URL;
+  try {
+    infoUrl = new URL(options.operatorInfoUrl ?? 'http://127.0.0.1:37070/v1/info');
+  } catch {
+    throw new Error('ARK_OPERATOR_LOOPBACK_REQUIRED');
+  }
+  if (
+    infoUrl.protocol !== 'http:'
+    || !['127.0.0.1', 'localhost'].includes(infoUrl.hostname)
+    || infoUrl.username
+    || infoUrl.password
+    || infoUrl.search
+    || infoUrl.hash
+    || infoUrl.pathname !== '/v1/info'
+  ) {
     throw new Error('ARK_OPERATOR_LOOPBACK_REQUIRED');
   }
   const fetchFn = options.fetchImpl ?? fetch;
-  const labRoot = options.labRoot;
-
-  async function loadLabEvidence() {
-    if (!labRoot) return null;
-    try {
-      const [operatorRaw, matrixRaw, boardingRaw, offboardRaw] = await Promise.all([
-        readFile(join(labRoot, 'data/ark/evidence/operator-after.json'), 'utf8'),
-        readFile(join(labRoot, 'data/ark/e2e/evidence/matrix.json'), 'utf8'),
-        readFile(join(labRoot, 'data/ark/e2e/evidence/boarding.json'), 'utf8'),
-        readFile(join(labRoot, 'data/ark/e2e/evidence/offboard.json'), 'utf8'),
-      ]);
-      const op = JSON.parse(operatorRaw).operator;
-      const matrix = JSON.parse(matrixRaw);
-      const boarding = JSON.parse(boardingRaw);
-      const offboard = JSON.parse(offboardRaw);
-      const parsedOp = operatorInfoResponse.parse(op);
-      validateRegtestBech32Address(parsedOp.forfeitAddress);
-      return {
-        operator: {
-          version: parsedOp.version,
-          signerPubkey: parsedOp.signerPubkey,
-          forfeitAddress: parsedOp.forfeitAddress,
-          dustSats: Number(parsedOp.dust),
-          sessionDurationSeconds: parsedOp.sessionDuration !== undefined ? Number(parsedOp.sessionDuration) : null,
-          unilateralExitDelay: parsedOp.unilateralExitDelay !== undefined ? Number(parsedOp.unilateralExitDelay) : null,
-          boardingExitDelay: parsedOp.boardingExitDelay !== undefined ? Number(parsedOp.boardingExitDelay) : null,
-        },
-        wallets: cliBalanceEnvelope.shape.wallets.parse(matrix.operator_restart?.balance ?? {}),
-        vtxos: cliVtxoEnvelope.shape.wallets.parse(matrix.operator_restart?.vtxos ?? {}),
-        boardingCommitment: String(boarding.commitment?.txid ?? DEFAULT_BOARDING_COMMITMENT),
-        offboardCommitment: String(offboard.commitment?.txid ?? DEFAULT_OFFBOARD_COMMITMENT),
-      };
-    } catch {
-      return null;
-    }
-  }
 
   async function queryOperator() {
     try {
@@ -491,30 +478,25 @@ export function createArkRegtestCliPort(options: {
       const parsed = operatorInfoResponse.parse(await response.json());
       validateRegtestBech32Address(parsed.forfeitAddress);
       return {
-        live: true,
-        operator: {
-          version: parsed.version,
-          signerPubkey: parsed.signerPubkey,
-          forfeitAddress: parsed.forfeitAddress,
-          dustSats: Number(parsed.dust),
-          sessionDurationSeconds: parsed.sessionDuration !== undefined ? Number(parsed.sessionDuration) : null,
-          unilateralExitDelay: parsed.unilateralExitDelay !== undefined ? Number(parsed.unilateralExitDelay) : null,
-          boardingExitDelay: parsed.boardingExitDelay !== undefined ? Number(parsed.boardingExitDelay) : null,
-        },
+        version: parsed.version,
+        signerPubkey: parsed.signerPubkey,
+        forfeitAddress: parsed.forfeitAddress,
+        dustSats: Number(parsed.dust),
+        sessionDurationSeconds: parsed.sessionDuration !== undefined ? Number(parsed.sessionDuration) : null,
+        unilateralExitDelay: parsed.unilateralExitDelay !== undefined ? Number(parsed.unilateralExitDelay) : null,
+        boardingExitDelay: parsed.boardingExitDelay !== undefined ? Number(parsed.boardingExitDelay) : null,
       };
-    } catch (err) {
-      const evidence = await loadLabEvidence();
-      if (evidence) return { live: false, operator: evidence.operator, evidence };
-      throw err;
+    } catch {
+      throw new Error('ARK_OPERATOR_UNAVAILABLE');
     }
   }
 
   return {
     async telemetry(): Promise<ArkTelemetry> {
       const capturedAt = new Date().toISOString();
-      let resolved: Awaited<ReturnType<typeof queryOperator>>;
+      let operator: Awaited<ReturnType<typeof queryOperator>>;
       try {
-        resolved = await queryOperator();
+        operator = await queryOperator();
       } catch {
         return ArkTelemetryResponse.parse({
           network: 'regtest',
@@ -526,7 +508,6 @@ export function createArkRegtestCliPort(options: {
           wallets: null,
         });
       }
-      const { operator } = resolved;
       const mapWallet = (w?: z.infer<typeof cliBalanceWallet>) => w ? {
         confirmedSats: w.confirmed_sats,
         preconfirmedSats: w.pre_confirmed_sats,
@@ -535,20 +516,6 @@ export function createArkRegtestCliPort(options: {
         totalSats: w.total_sats,
       } : null;
 
-      if (!resolved.live && resolved.evidence) {
-        return ArkTelemetryResponse.parse({
-          network: 'regtest',
-          asset: 'BTC',
-          capturedAt,
-          operatorStatus: 'ok',
-          cliConfigured: Boolean(options.cli),
-          operator,
-          wallets: {
-            alice: mapWallet(resolved.evidence.wallets.alice),
-            bob: mapWallet(resolved.evidence.wallets.bob),
-          },
-        });
-      }
       if (!options.cli) {
         return ArkTelemetryResponse.parse({
           network: 'regtest',
@@ -575,7 +542,6 @@ export function createArkRegtestCliPort(options: {
           },
         });
       } catch {
-        const evidence = await loadLabEvidence();
         return ArkTelemetryResponse.parse({
           network: 'regtest',
           asset: 'BTC',
@@ -583,21 +549,16 @@ export function createArkRegtestCliPort(options: {
           operatorStatus: 'ok',
           cliConfigured: true,
           operator,
-          wallets: evidence ? {
-            alice: mapWallet(evidence.wallets.alice),
-            bob: mapWallet(evidence.wallets.bob),
-          } : null,
+          wallets: null,
         });
       }
     },
     async board({ wallet, fundingOutpoint, amountSats }) {
       validateOutpoint(fundingOutpoint);
       if (!Number.isSafeInteger(amountSats) || amountSats < 330) throw new Error('ARK_INVALID_AMOUNT');
-      const resolved = await queryOperator();
-      if (!resolved.live && resolved.evidence) {
-        return { commitmentTxid: resolved.evidence.boardingCommitment };
-      }
       if (!options.cli) throw new Error('ARK_CLI_NOT_CONFIGURED');
+      const operator = await queryOperator();
+      if (amountSats < Math.max(330, operator.dustSats)) throw new Error('ARK_INVALID_AMOUNT');
       const raw = cliBoardEnvelope.parse(await options.cli(['board', wallet, fundingOutpoint]));
       const entry = raw.wallets[wallet];
       if (!entry || entry.input !== fundingOutpoint) throw new Error('ARK_BOARD_RESPONSE_MISMATCH');
@@ -606,12 +567,10 @@ export function createArkRegtestCliPort(options: {
     async offboardCooperative({ vtxoOutpoint, destinationAddress, amountSats }) {
       validateOutpoint(vtxoOutpoint);
       validateRegtestBech32Address(destinationAddress);
-      const resolved = await queryOperator();
-      if (!Number.isSafeInteger(amountSats) || amountSats < resolved.operator.dustSats) throw new Error('ARK_INVALID_AMOUNT');
-      if (!resolved.live && resolved.evidence) {
-        return { commitmentTxid: resolved.evidence.offboardCommitment };
-      }
+      if (!Number.isSafeInteger(amountSats) || amountSats < 330) throw new Error('ARK_INVALID_AMOUNT');
       if (!options.cli) throw new Error('ARK_CLI_NOT_CONFIGURED');
+      const operator = await queryOperator();
+      if (amountSats < Math.max(330, operator.dustSats)) throw new Error('ARK_INVALID_AMOUNT');
       const raw = cliOffboardEnvelope.parse(await options.cli(['offboard-coop', vtxoOutpoint, destinationAddress, String(amountSats)]));
       if (raw.wallets.bob.input !== vtxoOutpoint || raw.wallets.bob.address !== destinationAddress || raw.wallets.bob.amount_sats !== amountSats) {
         throw new Error('ARK_OFFBOARD_RESPONSE_MISMATCH');
@@ -619,11 +578,8 @@ export function createArkRegtestCliPort(options: {
       return { commitmentTxid: raw.wallets.bob.commitment_txid };
     },
     async vtxos(wallet) {
-      const resolved = await queryOperator();
-      if (!resolved.live && resolved.evidence) {
-        return resolved.evidence.vtxos[wallet] ?? [];
-      }
       if (!options.cli) throw new Error('ARK_CLI_NOT_CONFIGURED');
+      await queryOperator();
       const raw = cliVtxoEnvelope.parse(await options.cli(['list-vtxos', wallet]));
       return raw.wallets[wallet] ?? [];
     },

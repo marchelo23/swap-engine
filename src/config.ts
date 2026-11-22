@@ -1,6 +1,3 @@
-import { existsSync } from 'node:fs';
-import { DEFAULT_ARK_LAB_CLI, DEFAULT_ARK_LAB_ROOT } from './ark/ArkAdapter.js';
-
 export type ApplicationMode = 'simulation' | 'regtest';
 
 const modeAliases: Record<string, ApplicationMode> = {
@@ -46,6 +43,9 @@ export function config(env: NodeJS.ProcessEnv = process.env) {
   if ((aliceUrl || aliceCert || aliceMacaroon) && !(aliceUrl && aliceCert && aliceMacaroon)) {
     throw new Error('Alice LND requires a loopback HTTPS endpoint, TLS certificate path and read-only macaroon path');
   }
+  if (env.ARK_LAB_E2E_FIXTURE !== undefined && env.ARK_LAB_E2E_FIXTURE !== '' && !['true', 'false'].includes(env.ARK_LAB_E2E_FIXTURE)) {
+    throw new Error('Invalid ARK_LAB_E2E_FIXTURE flag; expected true or false');
+  }
   return {
     mode, network: 'regtest' as const, readOnly: true as const,
     bitcoinUrl: env.BITCOIN_RPC_URL ?? 'http://127.0.0.1:18443',
@@ -55,10 +55,9 @@ export function config(env: NodeJS.ProcessEnv = process.env) {
     cert: env.LND_TLS_CERT_PATH ?? '/home/truja/.lnd/tls.cert',
     macaroon: env.LND_MACAROON_PATH ?? '/home/truja/.lnd/data/chain/bitcoin/regtest/readonly.macaroon',
     aliceLnd: aliceUrl && aliceCert && aliceMacaroon ? { url: aliceUrl, cert: aliceCert, macaroon: aliceMacaroon } : null,
-    arkOperatorInfoUrl: env.ARK_OPERATOR_INFO_URL ?? 'http://127.0.0.1:37070/v1/info',
-    arkCliBinaryPath: env.ARK_LAB_CLI_PATH ?? (existsSync(DEFAULT_ARK_LAB_CLI) ? DEFAULT_ARK_LAB_CLI : undefined),
+    arkOperatorInfoUrl: env.ARK_OPERATOR_INFO_URL?.trim() || 'http://127.0.0.1:37070/v1/info',
+    arkCliBinaryPath: env.ARK_LAB_CLI_PATH?.trim() || undefined,
     arkCliE2eFixture: env.ARK_LAB_E2E_FIXTURE === 'true',
-    arkLabRoot: env.ARK_LAB_ROOT ?? (existsSync(DEFAULT_ARK_LAB_ROOT) ? DEFAULT_ARK_LAB_ROOT : undefined),
     directory: env.DATA_DIR ?? './data', port, recovery,
   };
 }

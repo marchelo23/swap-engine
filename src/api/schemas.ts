@@ -60,7 +60,7 @@ export const ArkBoardingRequest = z.object({
   quoteId: z.uuid(),
   route: z.literal('onchain-to-ark'),
   wallet: z.enum(['alice', 'bob']).default('alice'),
-  fundingOutpoint: Outpoint.optional(),
+  fundingOutpoint: Outpoint,
   recipientArkAddress: RegtestArkAddress.optional(),
   amountSats: z.number().int().min(10_000).max(1_000_000),
 }).strict();
@@ -68,8 +68,8 @@ export const ArkBoardingRequest = z.object({
 export const ArkOffboardRequest = z.object({
   quoteId: z.uuid(),
   route: z.literal('ark-to-onchain'),
-  vtxoOutpoint: Outpoint.optional(),
-  destinationAddress: RegtestBech32Address.optional(),
+  vtxoOutpoint: Outpoint,
+  destinationAddress: RegtestBech32Address,
   amountSats: z.number().int().min(10_000).max(1_000_000),
 }).strict();
 

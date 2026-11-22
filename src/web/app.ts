@@ -40,6 +40,7 @@ const timestamp = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', time
 let refreshing = false;
 let admin = false;
 let adminReportController: AbortController | undefined;
+let arkTelemetryController: AbortController | undefined;
 let accountHistoryController: AbortController | undefined;
 
 function renderArkSwapList(list: HTMLElement, swaps: ArkSwapStatus[]) {
@@ -76,6 +77,13 @@ function renderArkSwapList(list: HTMLElement, swaps: ArkSwapStatus[]) {
     return item;
   }));
   list.hidden = swaps.length === 0;
+}
+
+function resetArkTelemetry() {
+  arkTelemetryController?.abort();
+  arkTelemetryController = undefined;
+  text('ark-tag', 'UNAVAILABLE');
+  text('ark-status', 'Ark regtest telemetry is unavailable.');
 }
 
 function resetArkAdminReport() {
@@ -152,7 +160,7 @@ async function loadAccountHistory() {
   try {
     const { swaps } = await api.arkSwaps(controller.signal);
     if (accountHistoryController !== controller || session !== owner) return;
-    const completed = swaps.filter(s => s.status === 'SUBMITTED' || s.status === 'CONFIRMED').length;
+    const completed = swaps.filter(s => s.status === 'CONFIRMED').length;
     const failed = swaps.filter(s => s.status === 'REJECTED').length;
     const active = swaps.length - completed - failed;
     text('account-history-tag', 'REGTEST · ARK');
@@ -170,11 +178,48 @@ async function loadAccountHistory() {
   }
 }
 
+async function loadArkTelemetry() {
+  if (!admin) return;
+  arkTelemetryController?.abort();
+  const controller = new AbortController();
+  arkTelemetryController = controller;
+  try {
+    if (await environment !== 'regtest') {
+      if (arkTelemetryController !== controller || !admin) return;
+      text('ark-tag', 'UNAVAILABLE');
+      text('ark-status', 'Ark regtest telemetry is unavailable.');
+      return;
+    }
+    const ark = await api.arkTelemetry(controller.signal);
+    if (arkTelemetryController !== controller || !admin) return;
+    if (ark.operatorStatus === 'ok' && ark.operator) {
+      text('ark-tag', 'REGTEST · ' + ark.operator.version);
+      const aliceTotal = ark.wallets?.alice?.totalSats;
+      const bobTotal = ark.wallets?.bob?.totalSats;
+      const walletSummary = aliceTotal != null || bobTotal != null
+        ? ` Alice: ${integer(aliceTotal ?? null)} sats · Bob: ${integer(bobTotal ?? null)} sats.`
+        : '';
+      text('ark-status', `Connected to Ark regtest adapter (${ark.operator.version}, dust ${ark.operator.dustSats} sats).${walletSummary}`);
+    } else {
+      text('ark-tag', 'UNAVAILABLE');
+      text('ark-status', 'Ark regtest operator telemetry is unavailable.');
+    }
+  } catch {
+    if (arkTelemetryController === controller) {
+      text('ark-tag', 'UNAVAILABLE');
+      text('ark-status', 'Ark regtest telemetry is unavailable.');
+    }
+  } finally {
+    if (arkTelemetryController === controller) arkTelemetryController = undefined;
+  }
+}
+
 async function loadDiagnostics() {
   if (refreshing || !admin) return;
   refreshing = true;
   refresh.disabled = true;
   void loadArkAdminReport();
+  void loadArkTelemetry();
   const blockers = get('blockers');
   blockers.hidden = true;
   for (const id of ['core', 'height', 'core-sync', 'lnd', 'sync', 'channels', 'tips']) text(id, '—');
@@ -202,20 +247,6 @@ async function loadDiagnostics() {
       return row;
     }));
     blockers.hidden = report.blockers.length === 0;
-    try {
-      const ark = await api.arkTelemetry(new AbortController().signal);
-      if (ark.operatorStatus === 'ok' && ark.operator) {
-        text('ark-tag', 'REGTEST · ' + ark.operator.version);
-        const aliceTotal = ark.wallets?.alice?.totalSats;
-        const bobTotal = ark.wallets?.bob?.totalSats;
-        const walletSummary = aliceTotal != null || bobTotal != null
-          ? ` Alice: ${integer(aliceTotal ?? null)} sats · Bob: ${integer(bobTotal ?? null)} sats.`
-          : '';
-        text('ark-status', `Connected to Ark regtest adapter (${ark.operator.version}, dust ${ark.operator.dustSats} sats).${walletSummary}`);
-      } else {
-        text('ark-tag', 'REGTEST');
-      }
-    } catch { /* Keep default Ark panel message when telemetry is unconfigured. */ }
   } catch {
     text('diagnostic-status', 'Regtest preflight is unavailable.');
   } finally {
@@ -256,7 +287,10 @@ mountAuth(next => {
   reverse.setSession(next);
   admin = next?.user.role === 'ADMIN';
   setBalancesActive(admin && !get('operations').hidden);
-  if (!admin) resetArkAdminReport();
+  if (!admin) {
+    resetArkAdminReport();
+    resetArkTelemetry();
+  }
   if (admin && !get('operations').hidden) void loadDiagnostics();
   if (!next) resetAccountHistory();
   else if (!get('account').hidden) void loadAccountHistory();

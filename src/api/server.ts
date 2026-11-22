@@ -133,7 +133,7 @@ export function createApi(
       if (req.method === 'GET' && path === '/v1/ark/telemetry') {
         const status = roleDenial(session, 'ADMIN');
         if (status) return deny(status);
-        if (!arkPort) return send(503, ErrorResponse.parse({ error: 'ARK_TELEMETRY_NOT_CONFIGURED' }));
+        if (mode !== 'regtest' || !arkPort) return send(503, ErrorResponse.parse({ error: 'ARK_TELEMETRY_NOT_CONFIGURED' }));
         try {
           const telemetry = await arkPort.telemetry();
           return send(telemetry.operatorStatus === 'ok' ? 200 : 503, ArkTelemetryResponse.parse(telemetry));
@@ -152,14 +152,27 @@ export function createApi(
         }
         try {
           const record = await arkService.submit(session!.account.id, key, input);
-          const { ownerId: _o, idempotencyKey: _k, fingerprint: _f, ...publicRecord } = record;
-          return send(record.status === 'SUBMITTED' || record.status === 'CONFIRMED' ? 201 : 202, ArkSwapStatusResponse.parse(publicRecord));
+          const publicRecord = toPublicArkSwap(record);
+          const httpStatus = record.status === 'CONFIRMED'
+            ? 201
+            : record.status === 'REJECTED'
+              ? 503
+              : 202;
+          return send(httpStatus, publicRecord);
         } catch (err) {
           const msg = err instanceof Error ? err.message : '';
           if (msg === 'IDEMPOTENCY_KEY_CONFLICT' || msg === 'ARK_QUOTE_ALREADY_CONSUMED' || msg === 'ARK_INPUT_ALREADY_RESERVED') {
             return send(409, ErrorResponse.parse({ error: msg }));
           }
-          if (msg === 'ARK_QUOTE_INVALID_OR_EXPIRED') return send(400, ErrorResponse.parse({ error: msg }));
+          if ([
+            'ARK_QUOTE_INVALID_OR_EXPIRED',
+            'ARK_OUTPOINT_INVALID',
+            'ARK_REGTEST_ADDRESS_REQUIRED',
+            'ARK_REGTEST_OFFCHAIN_ADDRESS_REQUIRED',
+            'ARK_INVALID_AMOUNT',
+          ].includes(msg)) {
+            return send(400, ErrorResponse.parse({ error: msg }));
+          }
           return send(503, ErrorResponse.parse({ error: 'ARK_EXECUTION_UNAVAILABLE' }));
         }
       }

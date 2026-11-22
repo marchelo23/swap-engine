@@ -207,8 +207,8 @@
       <ul id="blockers" class="blockers" hidden></ul>
     </article>
     <article class="panel inset" id="ark-panel" aria-labelledby="ark-title">
-      <div class="panel-header"><h2 id="ark-title">Ark adapter</h2><span id="ark-tag" class="tag">REGTEST</span></div>
-      <p id="ark-status" class="muted">Ark ↔ On-chain regtest routes (boarding and cooperative offboarding) are enabled; Ark ↔ Lightning remains unavailable.</p>
+      <div class="panel-header"><h2 id="ark-title">Ark adapter</h2><span id="ark-tag" class="tag">UNAVAILABLE</span></div>
+      <p id="ark-status" class="muted">Ark regtest telemetry is unavailable.</p>
     </article>
     <article class="panel inset">
       <div class="panel-header"><h2>Swap activity</h2><span id="activity-tag" class="tag">REPORTING UNAVAILABLE</span></div>
@@ -235,6 +235,36 @@
 <dialog id="review-dialog" aria-labelledby="review-title">
   <h2 id="review-title">Review quote</h2>
   <dl class="details" id="review-details"></dl>
+  <div id="ark-execution-fields" class="ark-fields" hidden>
+    <div id="ark-boarding-fields" hidden>
+      <div>
+        <label for="ark-wallet">Ark wallet</label>
+        <select id="ark-wallet" name="ark-wallet">
+          <option value="alice">alice</option>
+          <option value="bob">bob</option>
+        </select>
+      </div>
+      <div>
+        <label for="ark-funding-outpoint">Funding outpoint (txid:vout)</label>
+        <input id="ark-funding-outpoint" name="ark-funding-outpoint" type="text" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="64-hex-txid:vout" aria-describedby="ark-fields-help">
+      </div>
+      <div>
+        <label for="ark-recipient-address">Recipient Ark address (optional, tark1...)</label>
+        <input id="ark-recipient-address" name="ark-recipient-address" type="text" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="tark1...">
+      </div>
+    </div>
+    <div id="ark-offboard-fields" hidden>
+      <div>
+        <label for="ark-vtxo-outpoint">VTXO outpoint (txid:vout)</label>
+        <input id="ark-vtxo-outpoint" name="ark-vtxo-outpoint" type="text" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="64-hex-txid:vout" aria-describedby="ark-fields-help">
+      </div>
+      <div>
+        <label for="ark-destination-address">On-chain destination (regtest bcrt1...)</label>
+        <input id="ark-destination-address" name="ark-destination-address" type="text" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="bcrt1...">
+      </div>
+    </div>
+    <p id="ark-fields-help" class="face-note">Enter exact regtest execution inputs before submitting.</p>
+  </div>
   <p id="execution-status" class="muted">Execution disabled.</p>
   <form class="dialog-actions" method="dialog"><button class="secondary" type="button" disabled>Start swap</button><button class="primary" autofocus>Close review</button></form>
 </dialog>
