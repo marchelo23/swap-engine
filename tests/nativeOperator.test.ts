@@ -65,7 +65,7 @@ async function transportFixture() {
     settle: { role: 'settle', permissions: ['invoices:read', 'invoices:write'], fingerprint: sha256(files.settle) },
     pay: { role: 'pay', permissions: ['offchain:read', 'offchain:write'], fingerprint: sha256(files.pay) },
     providerCertFingerprint: sha256(files.cert), payerCertFingerprint: sha256(files.cert) };
-  const spec = { id: randomUUID(), isolationId: x.scope.isolationId, tipHeight: 100, providerNode: x.plan.providerNode, payerNode: x.plan.payerNode,
+  const spec = { id: randomUUID(), isolationId: x.scope.isolationId, tipHeight: 100, wallet: 'lqwd-lab', providerNode: x.plan.providerNode, payerNode: x.plan.payerNode,
     routing: x.plan.routing, client: { paymentHash: x.keys.paymentHash, claimPublicKey: x.keys.claimPublicKey }, refundPublicKey: x.keys.refundPublicKey,
     claimDestination: x.plan.claimDestination, refundDestination: x.plan.refundDestination, input: { ...x.input, valueSats: 100000 } };
   const wires: Array<{ url: string; method: string; credential?: string; body?: string; tls?: boolean }> = [];

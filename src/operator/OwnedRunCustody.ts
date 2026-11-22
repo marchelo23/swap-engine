@@ -11,12 +11,18 @@ import { SecretVault } from '../persistence/SecretVault.js';
 import { preparationSpecSchema } from '../core/ReversePreparation.js';
 import { reverseRoutingSchema } from '../core/ReverseTestPlan.js';
 import { operatorDirectory, protectedBytes, sha256, operatorStopped } from './OperatorFiles.js';
+import { Username } from '../auth/credentials.js';
 import { verifyCustodyBackup } from './CustodyBackup.js';
 
 const absolute = z.string().refine(isAbsolute); const pubkey = z.string().regex(/^(02|03)[a-f0-9]{64}$/);
 const hash = z.string().regex(/^[a-f0-9]{64}$/);
-export const ownedRunPolicySchema = z.object({ ownerUsername: z.literal('truja503'), ownerId: z.uuid(), authStorePath: absolute,
-  origin: z.literal('http://127.0.0.1:3101'), port: z.literal(3101), backupDirectory: absolute,
+const loopbackOrigin = z.string().refine(value => {
+  try { const url = new URL(value); return url.origin === value && url.protocol === 'http:' &&
+    ['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname) && !!url.port; } catch { return false; }
+});
+export const ownedRunPolicyBase = z.object({ ownerUsername: Username, ownerId: z.uuid(), authStorePath: absolute,
+  wallet: z.string().regex(/^[A-Za-z0-9._-]{1,120}$/),
+  origin: loopbackOrigin, port: z.number().int().min(1).max(65535), backupDirectory: absolute,
   sourceAmountSats: z.number().int().min(11000).max(50000).optional(),
   tipHeight: z.number().int().positive().max(499999969), providerNode: pubkey, payerNode: pubkey,
   routing: reverseRoutingSchema, claimDestination: z.string(), refundDestination: z.string(),
@@ -24,6 +30,8 @@ export const ownedRunPolicySchema = z.object({ ownerUsername: z.literal('truja50
   credentialPaths: z.object({ bitcoinCookiePath: absolute, providerCertPath: absolute, providerReadMacaroonPath: absolute,
     payerCertPath: absolute, payerReadMacaroonPath: absolute, providerInvoiceMacaroonPath: absolute }).strict(),
 }).strict();
+export const ownedRunPolicySchema = ownedRunPolicyBase.refine(p => new URL(p.origin).port === String(p.port),
+  'Origin port must match policy port');
 
 async function immutable(directory: string, name: string, bytes: Buffer) {
   const file = await open(join(directory, name), constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
@@ -39,7 +47,7 @@ export async function prepareOwnedRunCustody(directory: string, unverified: unkn
   directory = resolve(directory); await operatorDirectory(directory);
   const policy = ownedRunPolicySchema.parse(unverified);
   const account = (await readAccounts(policy.authStorePath)).find(a => a.id === policy.ownerId && a.username === policy.ownerUsername);
-  if (!account || !['USER', 'ADMIN'].includes(account.role) || policy.providerNode === policy.payerNode ||
+  if (!account || account.role !== 'ADMIN' || policy.providerNode === policy.payerNode ||
     policy.routing.providerOrigin === policy.routing.payerOrigin || password.length < 8 || password.length > 4096) throw operatorStopped();
   for (const destination of [policy.claimDestination, policy.refundDestination]) {
     if (!destination.startsWith('bcrt1')) throw operatorStopped(); address.toOutputScript(destination, networks.regtest);
@@ -69,7 +77,7 @@ export async function prepareOwnedRunCustody(directory: string, unverified: unkn
     refundVault = await SecretVault.open(join(directory, 'provider-refund-keys'), password);
     client = ClaimWallet.generate(); await client.backup(clientVault);
     const refund = await new RefundKeyVault(refundVault).create(client.paymentHash);
-    const spec = preparationSpecSchema.parse({ id: randomUUID(), isolationId: randomUUID(), tipHeight: policy.tipHeight,
+    const spec = preparationSpecSchema.parse({ id: randomUUID(), isolationId: randomUUID(), tipHeight: policy.tipHeight, wallet: policy.wallet,
       providerNode: policy.providerNode, payerNode: policy.payerNode, routing: policy.routing, claimDestination: policy.claimDestination,
       refundDestination: policy.refundDestination, input: policy.input, client: client.toJSON(), refundPublicKey: refund.publicKey,
       ...(policy.sourceAmountSats === undefined ? {} : { sourceAmountSats: policy.sourceAmountSats }) });

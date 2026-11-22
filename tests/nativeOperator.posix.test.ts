@@ -21,7 +21,7 @@ const linux = process.platform === 'linux'; const password = 'synthetic-operator
 async function lifecycleFixture() {
   const x = await readinessFixture(); const directory = join(x.f.directory, 'operator'); const backupDirectory = join(x.f.directory, 'backup');
   await mkdir(directory, { mode: 0o700 }); await mkdir(backupDirectory, { mode: 0o700 });
-  const spec: PreparationSpec = { id: randomUUID(), isolationId: x.scope.isolationId, tipHeight: 100, providerNode: x.plan.providerNode,
+  const spec: PreparationSpec = { id: randomUUID(), isolationId: x.scope.isolationId, tipHeight: 100, wallet: 'lqwd-lab', providerNode: x.plan.providerNode,
     payerNode: x.plan.payerNode, routing: x.plan.routing, client: { paymentHash: x.keys.paymentHash, claimPublicKey: x.keys.claimPublicKey },
     refundPublicKey: x.keys.refundPublicKey, claimDestination: x.plan.claimDestination, refundDestination: x.plan.refundDestination,
     input: { ...x.input, valueSats: 100000 } };
@@ -53,7 +53,12 @@ async function lifecycleFixture() {
     pay: { role: 'pay', permissions: ['offchain:read', 'offchain:write'], fingerprint: '34'.repeat(32) },
     providerCertFingerprint: '56'.repeat(32), payerCertFingerprint: '78'.repeat(32) };
   const info = async () => ({ chains: [{ chain: 'bitcoin', network: 'regtest' }], synced_to_chain: true });
-  const io: Partial<OperatorIO> = { password: () => { passwordReads++; return Buffer.from(password); },
+  const policy = { wallet: spec.wallet, genesisHash: '0f9188f13cb7b2c71f2a335e3a4fc328bf5beb436012afca590b1a11466e2206',
+    bitcoinOrigin: spec.routing.bitcoinOrigin, providerOrigin: spec.routing.providerOrigin, payerOrigin: spec.routing.payerOrigin,
+    providerNode: spec.providerNode, payerNode: spec.payerNode, bitcoinCookiePath: paths.bitcoinCookiePath,
+    providerCertPath: paths.providerCertPath, providerReadMacaroonPath: paths.providerReadMacaroonPath,
+    payerCertPath: paths.payerCertPath, payerReadMacaroonPath: paths.payerReadMacaroonPath };
+  const io: Partial<OperatorIO> = { policy, password: () => { passwordReads++; return Buffer.from(password); },
     clients: () => ({ bitcoin: { ...x.bitcoin, assertRegtest: async () => x.chain, confirmed: id => new BitcoinConfirmationLookup(x.bitcoin).confirmed(id) },
       provider: { ...x.provider, assertRegtest: info }, payer: { ...x.payer, assertRegtest: info },
       recoveryPayer: { ...x.payer, call: async <T>(path: string): Promise<T> => path.includes('/v1/payments?')

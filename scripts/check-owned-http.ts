@@ -8,8 +8,9 @@ const stopped = (label: string): never => { throw new Error(label); };
 /** Real session/owner/CSRF/Operations smoke test. Its only preparation POSTs contain
  * amount 0, so even a broken auth guard cannot reach the invoice-creation harness. */
 export async function checkOwnedHttp(args: string[], io: IO = { password: () => readFileSync(0), fetch }) {
-  if (args.length !== 7 || args[0] !== '--check-http-readonly' || args[1] !== '--origin' || args[3] !== '--owner-id' ||
-    args[5] !== '--archive-id' || !z.uuid().safeParse(args[4]).success || !z.uuid().safeParse(args[6]).success) stopped('HTTP_CHECK_ARGUMENTS');
+  if (args.length !== 9 || args[0] !== '--check-http-readonly' || args[1] !== '--origin' || args[3] !== '--owner-id' ||
+    args[5] !== '--owner-username' || args[7] !== '--archive-id' || !z.uuid().safeParse(args[4]).success ||
+    !/^[A-Za-z0-9._-]{1,64}$/.test(args[6] ?? '') || !z.uuid().safeParse(args[8]).success) stopped('HTTP_CHECK_ARGUMENTS');
   const origin = new URL(args[2]!);
   if (origin.origin !== args[2] || origin.protocol !== 'http:' || origin.hostname !== '127.0.0.1' || !origin.port || origin.username || origin.password) stopped('HTTP_CHECK_ORIGIN');
   let cookie = ''; let csrf = ''; let password: Buffer | undefined;
@@ -26,20 +27,20 @@ export async function checkOwnedHttp(args: string[], io: IO = { password: () => 
     const anonymous = await request('/v1/reverse/availability'); expect(anonymous.status === 401, 'GUEST_GATE'); await anonymous.body?.cancel();
     password = io.password(); let length = password.length; while (length && [10, 13].includes(password[length - 1]!)) length--;
     expect(length > 0 && length <= 4096, 'PASSWORD_INPUT');
-    const login = await request('/v1/auth/login', { username: 'truja503', password: password.subarray(0, length).toString('utf8') }); password.fill(0);
+    const login = await request('/v1/auth/login', { username: args[6], password: password.subarray(0, length).toString('utf8') }); password.fill(0);
     expect(login.status === 200, 'LOGIN_REJECTED');
     const setCookie = login.headers.get('set-cookie') ?? '';
     expect(/HttpOnly/i.test(setCookie) && /SameSite=Strict/i.test(setCookie), 'COOKIE_FLAGS'); cookie = setCookie.split(';')[0]!;
     const session = await login.json() as { user: { id: string; username: string; role: string }; csrfToken: string; expiresAt: number };
-    expect(session.user.id === args[4] && session.user.username === 'truja503' && session.user.role === 'ADMIN' &&
+    expect(session.user.id === args[4] && session.user.username === args[6] && session.user.role === 'ADMIN' &&
       /^[a-f0-9]{64}$/.test(session.csrfToken) && session.expiresAt > Date.now(), 'SESSION_IDENTITY'); csrf = session.csrfToken;
     const verified = await request('/v1/auth/session'); expect(verified.status === 200, 'SESSION_RECHECK'); await verified.body?.cancel();
     const available = await request('/v1/reverse/availability'); expect(available.status === 200, 'AVAILABILITY_UNAVAILABLE');
     const a = await available.json() as { controlledReverseConfigured?: boolean; preparationAvailable?: boolean; preparedSwapIds?: string[] };
-    expect(a.controlledReverseConfigured === true && a.preparationAvailable === true && !!a.preparedSwapIds?.includes(args[6]!), 'PREPARATION_GATE');
-    const archive = await request('/v1/swaps/' + args[6]); expect(archive.status === 200, 'ARCHIVE_UNAVAILABLE');
+    expect(a.controlledReverseConfigured === true && a.preparationAvailable === true && !!a.preparedSwapIds?.includes(args[8]!), 'PREPARATION_GATE');
+    const archive = await request('/v1/swaps/' + args[8]); expect(archive.status === 200, 'ARCHIVE_UNAVAILABLE');
     const s = await archive.json() as { id: string; state: string; payment: { status: string; valueSats: number }; funding: { txid: string }; claim: { txid: string; netSats: number } };
-    expect(s.id === args[6] && s.state === 'COMPLETED' && s.payment.status === 'SUCCEEDED' && s.payment.valueSats === 50750 &&
+    expect(s.id === args[8] && s.state === 'COMPLETED' && s.payment.status === 'SUCCEEDED' && s.payment.valueSats === 50750 &&
       /^[a-f0-9]{64}$/.test(s.funding.txid) && /^[a-f0-9]{64}$/.test(s.claim.txid) && s.claim.netSats === 49500, 'ARCHIVE_EVIDENCE');
     const ops = await request('/v1/operations/balances'); expect(ops.status === 200, 'OPERATIONS_UNAVAILABLE');
     const balances = await ops.json() as { core?: { confirmedSats?: unknown }; provider?: { confirmedSats?: unknown; localSats?: unknown }; alice?: { confirmedSats?: unknown; localSats?: unknown } };
@@ -50,7 +51,7 @@ export async function checkOwnedHttp(args: string[], io: IO = { password: () => 
       [{ 'idempotency-key': key, origin: 'http://invalid.example' }, 403], [{ 'idempotency-key': key }, 400]] as const) {
       const response = await request('/v1/reverse/preparations', negativeBody, headers); expect(response.status === status, 'CSRF_OR_BODY_GATE'); await response.body?.cancel();
     }
-    return { status: 'ADMIN_HTTP_VERIFIED_NO_PREPARATION_OR_PAYMENT', ownerId: args[4], archiveId: s.id, fundingTxid: s.funding.txid,
+    return { status: 'ADMIN_HTTP_VERIFIED_NO_PREPARATION_OR_PAYMENT', ownerId: args[4], ownerUsername: args[6], archiveId: s.id, fundingTxid: s.funding.txid,
       claimTxid: s.claim.txid, fourBalancesVerified: true, anonymousStatus: 401, csrfStatus: 403, invalidBodyStatus: 400 };
   } finally { password?.fill(0); cookie = csrf = ''; }
 }

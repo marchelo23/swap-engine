@@ -1,32 +1,14 @@
+import { config } from '../src/config.js';
 import { BitcoinRpcClient } from '../src/bitcoin/BitcoinRpcClient.js';
 import { LndClient } from '../src/lightning/LndClient.js';
 import { runRegtestDiagnostics } from '../src/diagnostics/RegtestDiagnostics.js';
 
-const env = process.env;
+const c = config();
+const bitcoin = c.rails.onchain.enabled ? new BitcoinRpcClient(c.rails.onchain.url, c.rails.onchain.cookie, c.rails.onchain.wallet) : null;
+const provider = c.rails.lightning.enabled ? new LndClient(c.rails.lightning.provider.url, c.rails.lightning.provider.cert, c.rails.lightning.provider.macaroon) : null;
+const alice = c.rails.lightning.enabled && c.rails.lightning.alice
+  ? new LndClient(c.rails.lightning.alice.url, c.rails.lightning.alice.cert, c.rails.lightning.alice.macaroon) : null;
 
-function lnd(url: string | undefined, cert: string | undefined, macaroon: string | undefined) {
-  if (!url || !cert || !macaroon) return null;
-  try { return new LndClient(url, cert, macaroon); } catch { return null; }
-}
-
-let bitcoin: BitcoinRpcClient | null = null;
-try {
-  bitcoin = new BitcoinRpcClient(
-    env.BITCOIN_RPC_URL ?? 'http://127.0.0.1:18443',
-    env.BITCOIN_COOKIE_PATH ?? '/home/truja/.bitcoin/regtest/.cookie',
-    env.BITCOIN_WALLET ?? 'lqwd-lab',
-  );
-} catch { bitcoin = null; }
-
-const report = await runRegtestDiagnostics({
-  bitcoin,
-  provider: lnd(
-    env.LND_REST_URL ?? 'https://127.0.0.1:8080',
-    env.LND_TLS_CERT_PATH ?? '/home/truja/.lnd/tls.cert',
-    env.LND_MACAROON_PATH ?? '/home/truja/.lnd/data/chain/bitcoin/regtest/admin.macaroon',
-  ),
-  alice: lnd(env.ALICE_LND_REST_URL, env.ALICE_LND_TLS_CERT_PATH, env.ALICE_LND_MACAROON_PATH),
-});
-
+const report = await runRegtestDiagnostics({ bitcoin, provider, alice });
 console.log(JSON.stringify(report, null, 2));
 process.exitCode = report.ok ? 0 : 1;

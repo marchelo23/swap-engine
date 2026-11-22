@@ -1,13 +1,16 @@
 import { Transaction, address, networks } from 'bitcoinjs-lib';
 import { z } from 'zod';
 import type { Database } from '../core/SwapTypes.js';
-import type { PreparationSpec } from '../core/ReversePreparation.js';
+import { preparationSpecSchema } from '../core/ReversePreparation.js';
 import type { ReadOnlyBitcoinClient } from '../diagnostics/ReadOnlyClients.js';
 import { verifyHtlcSpend } from '../bitcoin/SpendEvidence.js';
 import { operatorStopped } from './OperatorFiles.js';
 import { invoiceBudget } from '../core/SwapManager.js';
 
 const hash = z.string().regex(/^[a-f0-9]{64}$/);
+export const archivedPreparationSpecSchema = preparationSpecSchema.extend({
+  wallet: z.string().regex(/^[A-Za-z0-9._-]{1,120}$/).optional() }).strict();
+export type ArchivedPreparationSpec = z.infer<typeof archivedPreparationSpecSchema>;
 const height = z.number().int().nonnegative().max(499999999);
 const chainSchema = z.object({ chain: z.literal('regtest'), initialblockdownload: z.literal(false), blocks: height, bestblockhash: hash });
 const observationSchema = z.object({ fromHeight: height, height, blockHash: hash,
@@ -16,7 +19,7 @@ const observationSchema = z.object({ fromHeight: height, height, blockHash: hash
 /** Existing runner contract: mining intents need not contain hashes. The durable
  * observer checkpoint and fresh active-chain transaction/witness evidence are mandatory.
  * Reads only; the verified preimage is never returned or logged. */
-export async function verifyArchivedChain(db: Database, spec: PreparationSpec, ownerId: string, destination: string,
+export async function verifyArchivedChain(db: Database, spec: ArchivedPreparationSpec, ownerId: string, destination: string,
   bitcoin: Pick<ReadOnlyBitcoinClient, 'call' | 'confirmed'>) {
   const swaps = Object.values(db.swaps); const swap = swaps[0];
   const expected = spec.sourceAmountSats === undefined ? { amountSats: 50000, invoiceSats: 50750, serviceFeeSats: 750, claimFeeSats: 500, fundingReserveSats: 1000 } : invoiceBudget(spec.sourceAmountSats);

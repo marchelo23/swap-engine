@@ -16,6 +16,7 @@ import { verifyDecodedHoldInvoice } from '../lightning/InvoiceVerification.js';
 const hash = z.string().regex(/^[a-f0-9]{64}$/);
 const pubkey = z.string().regex(/^(02|03)[a-f0-9]{64}$/);
 export const preparationSpecSchema = z.object({ id: z.uuid(), isolationId: z.uuid(), tipHeight: z.number().int().positive().max(499999969),
+  wallet: z.string().regex(/^[A-Za-z0-9._-]{1,120}$/),
   providerNode: pubkey, payerNode: pubkey, routing: reverseRoutingSchema,
   client: z.object({ paymentHash: hash, claimPublicKey: pubkey }).strict(), refundPublicKey: pubkey,
   sourceAmountSats: z.number().int().min(11000).max(50000).optional(),
@@ -63,7 +64,7 @@ export function createReversePreparation(store: Store, supplied: PreparationSpec
   const approval = suppliedApproval ? preparationApprovalSchema.parse(structuredClone(suppliedApproval)) : undefined;
   const now = adapters.now ?? Date.now;
   const planFor = (quote: Quote) => createReverseTestPlan(quote, spec.tipHeight, spec.client, spec.refundPublicKey,
-    { claim: spec.claimDestination, refund: spec.refundDestination }, { provider: spec.providerNode, payer: spec.payerNode }, spec.routing);
+    { claim: spec.claimDestination, refund: spec.refundDestination }, { provider: spec.providerNode, payer: spec.payerNode }, spec.routing, spec.wallet);
   // Validate contract keys, destinations and routing before any adapter or store mutation.
   planFor({ id: spec.id, ...budget, expiresAt: now() + 120000 });
   const boundPlan = (value: unknown) => {

@@ -24,8 +24,8 @@ async function fixture(sourceAmountSats?: number) {
   const password = join(directory, 'synthetic-password'); await writeFile(password, 'synthetic-owned-runtime-password', { mode: 0o600 });
   const accounts = join(directory, 'accounts.json'); await provisionAccount(accounts, 'truja503', 'ADMIN', 'synthetic-owned-admin-password');
   const owner = (await readAccounts(accounts))[0]!;
-  const policy = ownedRuntimePolicySchema.parse({ mode: 'regtest', ownerId: owner.id, ownerUsername: 'truja503', authStorePath: accounts,
-    origin: 'http://127.0.0.1:3101', port: 3101, runsDirectory: runs, backupsDirectory: backups, passwordPath: password,
+  const policy = ownedRuntimePolicySchema.parse({ mode: 'regtest', ownerId: owner.id, ownerUsername: 'truja503', authStorePath: accounts, wallet: 'lqwd-lab',
+    origin: 'http://127.0.0.1:3201', port: 3201, runsDirectory: runs, backupsDirectory: backups, passwordPath: password,
     providerNode: x.plan.providerNode, payerNode: x.plan.payerNode, routing: x.plan.routing, claimDestination: x.plan.claimDestination, refundDestination: x.plan.refundDestination,
     credentialPaths: { bitcoinCookiePath: '/synthetic/cookie', providerCertPath: '/synthetic/provider.cert', providerReadMacaroonPath: '/synthetic/provider.read',
       providerInvoiceMacaroonPath: '/synthetic/provider.invoices', payerCertPath: '/synthetic/payer.cert', payerReadMacaroonPath: '/synthetic/payer.read' },
@@ -141,9 +141,10 @@ test('native untrusted clock, foreign Alice address, changed channel and insuffi
 
 test('native policy cannot substitute mainnet, amount/fees, guest owner, external endpoints or unsafe storage', { skip: !linux }, async () => {
   const x = await fixture(); try {
-    for (const patch of [{ mode: 'mainnet' }, { amountSats: 100000 }, { maxBlocks: 3 }, { routingFeeLimitSats: 10000 }, { ownerUsername: 'guest' },
+    for (const patch of [{ mode: 'mainnet' }, { amountSats: 100000 }, { maxBlocks: 3 }, { routingFeeLimitSats: 10000 }, { ownerUsername: 'bad username!' },
       { routing: { ...x.policy.routing, payerOrigin: 'https://external.example' } },
-      { credentialPaths: { ...x.policy.credentialPaths, providerInvoiceMacaroonPath: '/synthetic/uninspected-admin.macaroon' } }])
+      { credentialPaths: { ...x.policy.credentialPaths, providerInvoiceMacaroonPath: '/synthetic/uninspected-admin.macaroon' } },
+      { port: 3202 }])
       assert.equal(ownedRuntimePolicySchema.safeParse({ ...x.policy, ...patch }).success, false);
     await assert.rejects(createOwnedRuntimeFactory({ ...x.policy, backupsDirectory: x.policy.runsDirectory }, { get: async () => undefined, verifyCsrf: () => false }, x.io));
   } finally { await x.cleanup(); }
@@ -200,6 +201,9 @@ test('verified completed legacy run remains owner-visible as read-only history w
         spend: { txid: claim!.getId(), height: 102, blockHash: 'a2'.repeat(32) } };
     }); await store.close();
     const before = await readFile(join(directory, 'store/state.json'));
+    const specPath = join(directory, 'spec.json'); const legacySpec = JSON.parse(await readFile(specPath, 'utf8')) as Record<string, unknown>;
+    delete legacySpec.wallet; const legacyBytes = Buffer.from(JSON.stringify(legacySpec, null, 2) + '\n');
+    await writeFile(specPath, legacyBytes, { mode: 0o600 }); assert.equal('wallet' in JSON.parse(legacyBytes.toString()), false);
     historyFactory = await createOwnedRuntimeFactory({ ...x.policy, archives: [{ directory, specSha256: sha256(await readFile(join(directory, 'spec.json'))) }] },
       { get: async () => undefined, verifyCsrf: () => false }, x.io);
     const history = await historyFactory.history!(); assert.equal(history.length, 1);
@@ -207,6 +211,7 @@ test('verified completed legacy run remains owner-visible as read-only history w
     const checked = await historyFactory.preflight!() as { archives: Array<{ checkpointHeight: number }> };
     assert.equal(checked.archives[0]!.checkpointHeight, 102);
     await assert.rejects(history[0]!.authorize('cannot-reopen-history')); assert.deepEqual(await readFile(join(directory, 'store/state.json')), before);
+    assert.deepEqual(await readFile(specPath), legacyBytes);
     assert.equal(x.counts().actions, 0); await historyFactory.close?.(); historyFactory = undefined;
     x.x.chain.blocks = 99;
     historyFactory = await createOwnedRuntimeFactory({ ...x.policy, archives: [{ directory, specSha256: sha256(await readFile(join(directory, 'spec.json'))) }] },

@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { setup, fixture } from './helpers.js';
 import { Store } from '../src/persistence/Store.js';
 import { SwapManager } from '../src/core/SwapManager.js';
+import { LEGACY_ECONOMICS } from '../src/core/Economics.js';
 import { available } from '../src/liquidity/LiquidityManager.js';
 
 test('duplicate request returns same operation; conflicts and hash reuse fail', async () => {
@@ -66,5 +67,20 @@ test('strict timeout validation rejects unsafe claim windows', async () => {
       const quote = await f.manager.quote(50_000);
       await assert.rejects(f.manager.create(quote.id, 'timeout-test', { ...fixture().contract, timeoutHeight }, 100, { onchainSats: 1e6, incomingSats: 1e6 }), /20..40/);
     }
+  } finally { await f.cleanup(); }
+});
+
+test('configured quote economics are applied without changing legacy defaults', async () => {
+  const f = await setup(); try {
+    const policy = structuredClone(LEGACY_ECONOMICS);
+    policy.quote.minAmountSats = 20_000; policy.quote.maxAmountSats = 60_000; policy.quote.ttlMs = 180_000;
+    policy.quote.serviceFeeBaseSats = 700; policy.quote.serviceFeeBps = 100;
+    const manager = new SwapManager(f.store, policy);
+    await assert.rejects(manager.quote(19_999)); await assert.rejects(manager.quote(60_001));
+    const quote = await manager.quote(50_000, 1);
+    assert.equal(quote.serviceFeeSats, 1_200); assert.equal(quote.expiresAt, 180_001);
+    assert.equal(quote.fundingReserveSats, 1_000); assert.equal(quote.claimFeeSats, 500);
+    const legacy = new SwapManager(f.store).quote(50_000, 1);
+    assert.equal((await legacy).expiresAt, 120_001);
   } finally { await f.cleanup(); }
 });

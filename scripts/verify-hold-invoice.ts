@@ -1,7 +1,9 @@
 import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { readFile, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { isAbsolute, join } from 'node:path';
+import { z } from 'zod';
+import { assertRegtestAddress } from '../src/bitcoin/AddressPolicy.js';
 import { config } from '../src/config.js';
 import { ReadOnlyBitcoinClient, ReadOnlyLndClient } from '../src/diagnostics/ReadOnlyClients.js';
 import { LndClient } from '../src/lightning/LndClient.js';
@@ -32,6 +34,14 @@ if (args[0] !== '--approved-create-invoice-only' || args[1] !== '--plan-sha256' 
     client = await ClaimWallet.restore(clientVault, plan.contract.paymentHash);
     if (client.claimPublicKey !== plan.contract.claimPublicKey || await new RefundKeyVault(providerVault).publicKey(plan.contract.paymentHash) !== plan.contract.refundPublicKey) throw new Error('Durable key identity mismatch');
     const bitcoin = new ReadOnlyBitcoinClient(c.bitcoinUrl, c.cookie, c.wallet);
+    const refundDestination = c.legacy.refundDestination;
+    if (!refundDestination || !c.aliceLnd || plan.wallet !== c.wallet ||
+      plan.routing.bitcoinOrigin !== new URL(c.bitcoinUrl).origin ||
+      plan.routing.providerOrigin !== new URL(c.lndUrl).origin ||
+      plan.routing.payerOrigin !== new URL(c.aliceLnd.url).origin ||
+      plan.refundDestination !== refundDestination) throw new Error('PLAN_BINDING_MISMATCH');
+    assertRegtestAddress(refundDestination);
+    z.object({ ismine: z.literal(true) }).parse(await bitcoin.call('getaddressinfo', [refundDestination], true));
     class InvoiceCreationClient extends LndClient {
       override call<T>(path: string, body?: unknown): Promise<T> {
         const allowedGet = body === undefined && (path === '/v1/getinfo' || path === '/v1/channels' || path === '/v1/state' || /^\/v1\/invoice\/[a-f0-9]{64}$/.test(path));
@@ -39,8 +49,10 @@ if (args[0] !== '--approved-create-invoice-only' || args[1] !== '--plan-sha256' 
         return super.call<T>(path, body);
       }
     }
-    const provider = new InvoiceCreationClient(c.lndUrl, c.cert, '/home/truja/.lnd/data/chain/bitcoin/regtest/admin.macaroon');
-    const payer = new ReadOnlyLndClient('https://127.0.0.1:8081', '/home/truja/.lnd-alice/tls.cert', '/home/truja/.lnd-alice/data/chain/bitcoin/regtest/readonly.macaroon');
+    const adminMacaroon = c.legacy.lndAdminMacaroonPath;
+    if (!adminMacaroon || !isAbsolute(adminMacaroon) || !c.aliceLnd) throw new Error('LEGACY_ACTION_CREDENTIALS_REQUIRED');
+    const provider = new InvoiceCreationClient(c.lndUrl, c.cert, adminMacaroon);
+    const payer = new ReadOnlyLndClient(c.aliceLnd.url, c.aliceLnd.cert, c.aliceLnd.macaroon);
     const readiness = await Promise.all([preflight(bitcoin, provider, c.wallet), preflight(bitcoin, payer, c.wallet)]);
     if (readiness.some(r => !r.prerequisitesSatisfied)) throw new Error('Readiness unresolved');
     store = await Store.open(join(c.directory, 'approved-reverse-test')); const manager = new SwapManager(store);

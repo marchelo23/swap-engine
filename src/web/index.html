@@ -151,6 +151,16 @@
 
   <section id="operations" data-view hidden aria-labelledby="operations-title" class="subpage">
     <h1 id="operations-title" tabindex="-1">Operations.</h1>
+    <article class="panel inset" aria-labelledby="capabilities-title">
+      <h2 id="capabilities-title">Network capabilities</h2>
+      <p id="capabilities-status" class="status" role="status">Checking network capabilities&hellip;</p>
+      <dl class="details">
+        <div><dt>Bitcoin on-chain</dt><dd id="capability-onchain">Unverified</dd></div>
+        <div><dt>Lightning</dt><dd id="capability-lightning">Unverified</dd></div>
+        <div><dt>Ark</dt><dd id="capability-ark">Unverified</dd></div>
+        <div><dt>Liquid</dt><dd id="capability-liquid">Unverified</dd></div>
+      </dl>
+    </article>
     <article id="admin-gate" class="panel inset">
       <div class="panel-header"><h2>Administrator access</h2></div>
       <p id="admin-status" class="muted" role="status">Checking session…</p>
@@ -169,7 +179,7 @@
       <section class="balance-group" id="balance-piles" aria-labelledby="balance-piles-title">
         <h3 id="balance-piles-title">Wallet balances</h3>
         <p class="balance-scale">On-chain fill is relative to the larger known confirmed balance shown here.</p>
-        <p class="balance-scale">Lightning fill uses each node’s reported local + remote capacity. Dark is local and gray is remote.</p>
+        <p class="balance-scale">Lightning fill uses each node’s reported channel capacity. Dark is local and gray is remote.</p>
         <div class="balance-grid">
           <div class="balance-node balance-wallet">
             <h4>Bitcoin Core Provider <span>On-chain</span></h4>
@@ -222,7 +232,7 @@
 </main>
 <footer class="footer" id="mode">
   <div class="footer-squares" data-view-active="swap" aria-hidden="true"><i data-square="swap"></i><i data-square="account"></i><i data-square="operations"></i></div>
-  <span id="network" class="footer-network" title="Regtest network">REGTEST</span>
+  <span id="network" class="footer-network" title="Network unverified">UNVERIFIED</span>
 </footer>
 </div>
 <dialog id="review-dialog" aria-labelledby="review-title">

@@ -26,7 +26,7 @@ async function fixture() {
   await new SwapCoordinator(store, f.ports).issueInvoice(f.swap.id);
   const plan = createReverseTestPlan(f.quote, tip, { paymentHash: f.contract.paymentHash, claimPublicKey: f.contract.claimPublicKey },
     f.contract.refundPublicKey, { claim: f.destination, refund: f.destination },
-    { provider: f.contract.claimPublicKey, payer: f.contract.refundPublicKey }, routingFixture());
+    { provider: f.contract.claimPublicKey, payer: f.contract.refundPublicKey }, routingFixture(), 'lqwd-lab');
   const input = { txid: 'ab'.repeat(32), vout: 0 };
   const isolationId = randomUUID();
   const approval: ControlledRunApproval = { id: randomUUID(), swapId: f.swap.id,

@@ -16,7 +16,7 @@ import { preparationFixture } from '../preparationFixture.js';
 test('SWAP prepares/reviews once, pays only after Start, then a second explicit SWAP creates a fresh attempt without Hacer otro', async () => {
   const f = await preparationFixture(50000); const catalog = await Store.open(join(f.directory, 'catalog'));
   const accountPath = join(f.directory, 'accounts.json'); const password = 'synthetic-browser-admin-password';
-  await provisionAccount(accountPath, 'truja503', 'ADMIN', password); const owner = (await readAccounts(accountPath))[0]!;
+  await provisionAccount(accountPath, 'reviewer', 'ADMIN', password); const owner = (await readAccounts(accountPath))[0]!;
   const server = createApi(new SwapManager(catalog), async () => { throw Error('No real node adapters'); }, undefined, 'regtest', { auth: { storePath: accountPath } });
   server.listen(0, '127.0.0.1'); await once(server, 'listening'); const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   let creates = 0; let executes = 0; let reviews = 0;
@@ -33,7 +33,7 @@ test('SWAP prepares/reviews once, pays only after Start, then a second explicit 
           const s = run.store.read().swaps[id]!; return { id, revision: s.revision, state: s.state }; } });
       return { api, swapId: id, authorize: async () => { reviews++; }, terminal: async () => run.store.read().swaps[id]!.state === 'COMPLETED' ? 'COMPLETED' : undefined, close: () => api.drain() };
     }, restore: async () => undefined,
-  }, { mode: 'regtest', ownerId: owner.id, ownerUsername: 'truja503', origin, profileDigest: 'cd'.repeat(32) });
+  }, { mode: 'regtest', ownerId: owner.id, ownerUsername: 'reviewer', origin, profileDigest: 'cd'.repeat(32) });
   server.controlled.installPreparation(service);
   const browser = await chromium.launch({ channel: process.env.WEB_TEST_BROWSER_CHANNEL });
   let releaseExecution: (() => void) | undefined;
@@ -52,7 +52,7 @@ test('SWAP prepares/reviews once, pays only after Start, then a second explicit 
       await new Promise<void>(r => { releaseExecution = r; });
       await route.abort('failed').catch(() => {});
     });
-    await page.goto(origin + '/#account'); await page.getByLabel('Username', { exact: true }).fill('truja503');
+    await page.goto(origin + '/#account'); await page.getByLabel('Username', { exact: true }).fill('reviewer');
     await page.getByLabel('Password', { exact: true }).fill(password); await page.getByRole('button', { name: 'Sign in', exact: true }).click();
     await page.locator('#account-dashboard').waitFor({ state: 'visible' });
     await page.getByRole('link', { name: 'Swap', exact: true }).click();
@@ -102,7 +102,7 @@ test('SWAP prepares/reviews once, pays only after Start, then a second explicit 
 for (const mode of ['lost-before-server', 'lost-after-server', 'left-during-review'] as const) test(`review ${mode} preserves one key and never navigates or opens a late modal`, async () => {
   const f = await preparationFixture(50000); const catalog = await Store.open(join(f.directory, 'catalog'));
   const accounts = join(f.directory, 'accounts.json'); const password = 'synthetic-browser-review-password';
-  await provisionAccount(accounts, 'truja503', 'ADMIN', password); const owner = (await readAccounts(accounts))[0]!;
+  await provisionAccount(accounts, 'reviewer', 'ADMIN', password); const owner = (await readAccounts(accounts))[0]!;
   const server = createApi(new SwapManager(catalog), async () => { throw Error('No real nodes'); }, undefined, 'regtest', { auth: { storePath: accounts } });
   server.listen(0, '127.0.0.1'); await once(server, 'listening'); const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   let creates = 0; let reviews = 0; let executes = 0;
@@ -116,7 +116,7 @@ for (const mode of ['lost-before-server', 'lost-after-server', 'left-during-revi
       api.approve({ ...approval(), expiresAt: Date.now() + 100 });
       return { api, swapId: id, terminal: async () => undefined, close: () => api.drain(), authorize: async () => { reviews++; api.replaceExpiredApproval(approval()); } };
     }, restore: async () => undefined,
-  }, { mode: 'regtest', ownerId: owner.id, ownerUsername: 'truja503', origin, profileDigest: 'cd'.repeat(32) }));
+  }, { mode: 'regtest', ownerId: owner.id, ownerUsername: 'reviewer', origin, profileDigest: 'cd'.repeat(32) }));
   const browser = await chromium.launch({ channel: process.env.WEB_TEST_BROWSER_CHANNEL });
   let release: (() => void) | undefined;
   try {
@@ -128,7 +128,7 @@ for (const mode of ['lost-before-server', 'lost-after-server', 'left-during-revi
       if (mode === 'left-during-review') await new Promise<void>(r => { release = r; });
       return route.continue();
     });
-    await page.goto(origin + '/#account'); await page.getByLabel('Username', { exact: true }).fill('truja503');
+    await page.goto(origin + '/#account'); await page.getByLabel('Username', { exact: true }).fill('reviewer');
     await page.getByLabel('Password', { exact: true }).fill(password); await page.getByRole('button', { name: 'Sign in', exact: true }).click();
     await page.locator('#account-dashboard').waitFor({ state: 'visible' }); await page.getByRole('link', { name: 'Swap', exact: true }).click();
     await page.waitForFunction(() => document.getElementById('quote-status')?.textContent?.includes('Quote ready'));

@@ -14,7 +14,7 @@ export async function preparationFixture(sourceAmountSats?: number) {
   const f = contractFixture();
   const directory = await privateTestDirectory('preparation');
   let store = await Store.open(directory); let clock = Date.now(); let exists = false; let calls = 0; let posts = 0; let inspections = 0;
-  const spec: PreparationSpec = { id: randomUUID(), isolationId: randomUUID(), tipHeight: 100,
+  const spec: PreparationSpec = { id: randomUUID(), isolationId: randomUUID(), tipHeight: 100, wallet: 'lqwd-lab',
     providerNode: f.contract.claimPublicKey, payerNode: f.contract.refundPublicKey, routing: routingFixture(),
     client: { paymentHash: f.contract.paymentHash, claimPublicKey: f.contract.claimPublicKey }, refundPublicKey: f.contract.refundPublicKey,
     claimDestination: f.destination, refundDestination: f.destination, input: { txid: 'ab'.repeat(32), vout: 0, valueSats: 100000 },

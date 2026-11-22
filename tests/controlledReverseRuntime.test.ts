@@ -32,7 +32,7 @@ async function fixture(sourceAmountSats?: number) {
   const input = { txid: previous.getId(), vout: 0 };
   const plan = createReverseTestPlan(f.quote, tip, { paymentHash: f.contract.paymentHash, claimPublicKey: f.contract.claimPublicKey },
     f.contract.refundPublicKey, { claim: f.destination, refund: own.address! },
-    { provider: f.contract.claimPublicKey, payer: f.contract.refundPublicKey }, routingFixture(channelTx.getId() + ':0'));
+    { provider: f.contract.claimPublicKey, payer: f.contract.refundPublicKey }, routingFixture(channelTx.getId() + ':0'), 'lqwd-lab');
   const scope = { ...plan.routing, isolationId: randomUUID() };
   const approval: ControlledRunApproval = { id: randomUUID(), swapId: f.swap.id, expectedRevision: store.read().swaps[f.swap.id]!.revision,
     isolationId: scope.isolationId, scope: 'isolated-regtest-reverse', maxBlocks: 2, expiresAt: Date.now() + 60000,
@@ -300,7 +300,7 @@ test('missing restored client custody after funding never generates replacement 
 test('JIT local binding completes retained invoice through concrete runtime, then restart reconciles without re-execution', async () => {
   const x = await fixture();
   try {
-    const spec: PreparationSpec = { id: randomUUID(), isolationId: x.scope.isolationId, tipHeight: x.plan.tipHeight,
+    const spec: PreparationSpec = { id: randomUUID(), isolationId: x.scope.isolationId, tipHeight: x.plan.tipHeight, wallet: 'lqwd-lab',
       providerNode: x.plan.providerNode, payerNode: x.plan.payerNode, routing: x.plan.routing,
       client: { paymentHash: x.plan.contract.paymentHash, claimPublicKey: x.plan.contract.claimPublicKey },
       refundPublicKey: x.plan.contract.refundPublicKey, claimDestination: x.plan.claimDestination,

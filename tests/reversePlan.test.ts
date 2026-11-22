@@ -10,7 +10,7 @@ function plan() {
   return createReverseTestPlan({ id: randomUUID(), amountSats: 50000, serviceFeeSats: 750, invoiceSats: 50750,
     claimFeeSats: 500, fundingReserveSats: 1000, expiresAt: Date.now() + 120000 }, 129,
     { paymentHash: f.contract.paymentHash, claimPublicKey: f.contract.claimPublicKey }, f.contract.refundPublicKey,
-    { claim: f.destination, refund: f.destination }, { provider: f.contract.claimPublicKey, payer: f.contract.refundPublicKey }, routingFixture());
+    { claim: f.destination, refund: f.destination }, { provider: f.contract.claimPublicKey, payer: f.contract.refundPublicKey }, routingFixture(), 'lqwd-lab');
 }
 test('reverse test plan reconstructs exact contract and stays unapproved without secrets', () => {
   const p = plan(); assert.equal(p.contract.timeoutHeight, 159); assert.match(p.address, /^bcrt1/);
@@ -38,7 +38,9 @@ test('reverse plan rejects altered amounts, keys, scripts, destination networks 
   for (const changed of [{ ...p, network: 'mainnet' }, { ...p, executionApproved: true },
     { ...p, quote: { ...p.quote, invoiceSats: 50749 } }, { ...p, address: p.claimDestination },
     { ...p, contract: { ...p.contract, timeoutHeight: 160 } }, { ...p, providerNode: p.payerNode },
-    { ...p, claimDestination: 'bc1-invalid-mainnet' }, { ...p, contract: { ...p.contract, refundPublicKey: p.contract.claimPublicKey } }]) {
+    { ...p, claimDestination: 'bc1-invalid-mainnet' },
+    { ...p, claimDestination: 'bc1qndvk6ae280lqxd0ndsur2lczvgsjztyspp673g' },
+    { ...p, contract: { ...p.contract, refundPublicKey: p.contract.claimPublicKey } }]) {
     assert.throws(() => verifyReverseTestPlan(changed));
   }
 });

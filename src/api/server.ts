@@ -3,7 +3,8 @@ import { available, type Balances } from '../liquidity/LiquidityManager.js';
 import type { SwapManager } from '../core/SwapManager.js';
 import { Sessions, roleDenial, sessionResponse, type AuthOptions } from '../auth/session.js';
 import type { OperationsBalances } from '../operations/Balances.js';
-import { QuoteRequest, QuoteResponse, ReverseRequest, HealthResponse, LiquidityResponse, OperationsBalancesResponse, ErrorResponse, LoginRequest, SessionResponse } from './schemas.js';
+import type { Capabilities, Environment, RailId } from '../core/RailContract.js';
+import { QuoteRequest, QuoteResponse, ReverseRequest, HealthResponse, LiquidityResponse, OperationsBalancesResponse, CapabilitiesResponse, ErrorResponse, LoginRequest, SessionResponse } from './schemas.js';
 import { ZodError } from 'zod';
 import { readFile } from 'node:fs/promises';
 import type { preflight } from '../diagnostics/preflight.js';
@@ -35,13 +36,23 @@ export function createApi(
   liquidity: () => Promise<Balances>,
   diagnostics?: () => ReturnType<typeof preflight>,
   mode: ApplicationMode = 'simulation',
-  { auth: authOptions = {}, operations, history = historicalSwaps }: {
+  { auth: authOptions = {}, operations, history = historicalSwaps, capabilities, environment }: {
     auth?: AuthOptions;
     operations?: () => Promise<OperationsBalances>;
     history?: () => unknown | Promise<unknown>;
+    capabilities?: () => Capabilities;
+    environment?: Environment;
   } = {},
 ) {
   const auth = new Sessions(authOptions, mode);
+  const fallbackCapabilities = (): Capabilities => {
+    const unavailable = (id: RailId) => ({ id, configured: false, verified: false, available: false, reason: 'NOT_CONFIGURED' as const });
+    return { schemaVersion: 1, environment: mode === 'regtest' ? 'regtest' : 'simulation',
+      chain: { kind: 'bitcoin', name: mode === 'regtest' ? 'regtest' : 'simulation', genesisHash: null }, readOnly: true,
+      execution: { enabled: false, policy: 'disabled', reason: 'DISABLED' },
+      rails: { onchain: unavailable('onchain'), lightning: unavailable('lightning'), ark: unavailable('ark'), liquid: unavailable('liquid') },
+      capturedAt: new Date().toISOString() };
+  };
   const controlled = createOwnedReverseGateway(auth, { enabled: mode === 'regtest', delegateWhenInactive: true });
   const server = createServer(async (req, res) => {
     const send = (status: number, value: unknown) => { res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store' }); res.end(JSON.stringify(value)); };
@@ -57,7 +68,13 @@ export function createApi(
         res.writeHead(200, { 'content-type': asset[1]!, 'cache-control': 'no-store', 'x-content-type-options': 'nosniff', 'content-security-policy': "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'" });
         return res.end(content);
       }
-      if (req.method === 'GET' && path === '/v1/health') return send(200, HealthResponse.parse({ status: 'components-only', liveSwapsEnabled: false, readOnly: true, network: 'regtest', mode }));
+      if (req.method === 'GET' && path === '/v1/health') return send(200, HealthResponse.parse({ status: 'components-only', liveSwapsEnabled: false, readOnly: true,
+        network: environment ?? (mode === 'regtest' ? 'regtest' : 'simulation'), mode }));
+      if (req.method === 'GET' && path === '/v1/capabilities') {
+        if (req.url?.includes('?')) return send(404, ErrorResponse.parse({ error: 'NOT_FOUND' }));
+        try { return send(200, CapabilitiesResponse.parse((capabilities ?? fallbackCapabilities)())); }
+        catch { return send(503, ErrorResponse.parse({ error: 'CAPABILITIES_UNAVAILABLE' })); }
+      }
       if (req.method === 'GET' && path === '/v1/preflight') {
         if (!diagnostics) return send(503, ErrorResponse.parse({ error: 'DIAGNOSTICS_NOT_CONFIGURED' }));
         const report = await diagnostics();

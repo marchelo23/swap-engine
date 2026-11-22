@@ -4,7 +4,7 @@ import { BitcoinConfirmationLookup } from './BitcoinConfirmationLookup.js';
 
 interface Rpc { call<T>(method: string, params?: unknown[], wallet?: boolean): Promise<T> }
 export const signingPlanSchema = z.object({
-  network: z.literal('regtest'), wallet: z.literal('lqwd-lab'),
+  network: z.literal('regtest'), wallet: z.string().regex(/^[A-Za-z0-9._-]{1,120}$/),
   txid: z.string().regex(/^[a-f0-9]{64}$/), vout: z.number().int().nonnegative().max(0xffffffff),
   destination: z.string().startsWith('bcrt1'), amountSats: z.literal(50000), maxFeeSats: z.literal(1000),
   broadcast: z.literal(false),

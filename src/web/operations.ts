@@ -1,17 +1,21 @@
 import { api, type OperationsBalances } from './api.js';
+import type { RailBalanceEntry } from '../core/RailContract.js';
 import { get, sats, text } from './ui.js';
 
 const onchain = ['core', 'alice'] as const;
 const maxFreshAge = 60_000;
 const date = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'medium' });
-const format = (value: number | bigint | null | undefined) => value == null ? 'Unavailable' : sats(value);
+const format = (value: number | null | undefined, entry?: RailBalanceEntry) =>
+  value == null ? entry?.status === 'unknown' ? 'Unknown' : 'Unavailable' : sats(value);
 
-function renderPile(id: string, fill: number | null, loading: boolean, showRemote = false) {
+function renderPile(id: string, fill: number | null, loading: boolean, occupied: number | null = null) {
   const pile = get(id);
   pile.dataset.state = loading ? 'loading' : fill === null ? 'unavailable' : 'known';
-  pile.toggleAttribute('data-capacity', showRemote);
+  pile.toggleAttribute('data-capacity', occupied !== null);
   if (fill === null) pile.style.removeProperty('--wallet-fill');
   else pile.style.setProperty('--wallet-fill', fill + '%');
+  if (occupied === null) pile.style.removeProperty('--wallet-occupied');
+  else pile.style.setProperty('--wallet-occupied', occupied + '%');
 }
 
 export function mountOperationsBalances() {
@@ -36,23 +40,32 @@ export function mountOperationsBalances() {
   function render(snapshot?: OperationsBalances, loading = false) {
     window.clearTimeout(staleTimer);
     delete chart.dataset.stale;
-    const maxConfirmed = Math.max(0, ...onchain.map(node => snapshot?.[node]?.confirmedSats ?? 0));
-    for (const node of onchain) {
-      const wallet = snapshot?.[node];
+    const onchainEntries = snapshot?.rails.filter(entry => entry.rail === 'onchain') ?? [];
+    const wallets = onchain.map(account => {
+      const entry = onchainEntries.find(item => item.account === account);
+      return { account, entry, wallet: entry?.status === 'unavailable' ? null : entry?.balances };
+    });
+    const maxConfirmed = Math.max(0, ...wallets.map(({ wallet }) => wallet?.confirmedSats ?? 0));
+    for (const { account, entry, wallet } of wallets) {
       const confirmed = wallet?.confirmedSats;
-      renderPile(node + '-pile', confirmed == null ? null : maxConfirmed > 0 ? 100 * (confirmed / maxConfirmed) : 0, loading);
-      text(node + '-confirmed', format(confirmed));
-      text(node + '-unconfirmed', format(wallet?.unconfirmedSats));
+      renderPile(account + '-pile', confirmed == null ? null : maxConfirmed > 0 ? 100 * (confirmed / maxConfirmed) : 0, loading);
+      text(account + '-confirmed', format(confirmed, entry));
+      text(account + '-unconfirmed', format(wallet?.unconfirmedSats, entry));
     }
-    for (const node of ['provider', 'alice'] as const) {
-      const local = snapshot?.[node]?.localSats;
-      const remote = snapshot?.[node]?.remoteSats;
-      const capacity = local == null || remote == null ? null : BigInt(local) + BigInt(remote);
-      const fill = capacity === null ? null : capacity === 0n ? 0 : 100 * ((local ?? 0) / Number(capacity));
-      renderPile(node + '-lightning-pile', fill, loading, capacity !== null && capacity > 0n);
-      text(node + '-local', format(local));
-      text(node + '-remote', format(remote));
-      text(node + '-capacity', format(capacity));
+    const lightningEntries = snapshot?.rails.filter(entry => entry.rail === 'lightning') ?? [];
+    for (const account of ['provider', 'alice'] as const) {
+      const entry = lightningEntries.find(item => item.account === account);
+      const { localSats, remoteSats, capacitySats } = (entry?.status === 'unavailable' ? null : entry?.balances) ?? {};
+      let fill: number | null = null;
+      let occupied: number | null = null;
+      if (capacitySats != null && localSats != null && remoteSats != null && remoteSats <= capacitySats - localSats) {
+        fill = capacitySats === 0 ? 0 : 100 * localSats / capacitySats;
+        if (capacitySats > 0) occupied = 100 * (localSats + remoteSats) / capacitySats;
+      }
+      renderPile(account + '-lightning-pile', fill, loading, occupied);
+      text(account + '-local', format(localSats, entry));
+      text(account + '-remote', format(remoteSats, entry));
+      text(account + '-capacity', format(capacitySats, entry));
     }
     snapshotTime.hidden = !snapshot;
     snapshotTime.dateTime = snapshot?.capturedAt ?? '';

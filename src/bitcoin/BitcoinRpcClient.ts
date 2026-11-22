@@ -5,7 +5,7 @@ import { BitcoinConfirmationLookup } from './BitcoinConfirmationLookup.js';
 
 export class BitcoinRpcClient {
   get origin(): string { return new URL(this.url).origin; }
-  constructor(private url: string, private cookiePath: string, private wallet = 'lqwd-lab') {
+  constructor(private url: string, private cookiePath: string, private wallet: string) {
     const parsed = new URL(url);
     if (parsed.protocol !== 'http:' || !['localhost', '127.0.0.1', '[::1]'].includes(parsed.hostname) || parsed.username || parsed.password) throw new Error('Bitcoin RPC must use local HTTP and cookie authentication');
   }

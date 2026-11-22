@@ -19,7 +19,7 @@ test('HTTP health is public, ownerless swap lookups are hidden, and operational 
   const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   try {
     assert.deepEqual(await (await fetch(`${url}/v1/health`)).json(), {
-      status: 'components-only', liveSwapsEnabled: false, readOnly: true, network: 'regtest', mode: 'simulation',
+      status: 'components-only', liveSwapsEnabled: false, readOnly: true, network: 'simulation', mode: 'simulation',
     });
     const hidden = await fetch(`${url}/v1/swaps/${f.swap.id}`);
     const missing = await fetch(`${url}/v1/swaps/${'0'.repeat(36)}`);
@@ -41,7 +41,7 @@ test('live mode cannot be enabled through environment flag', () => {
   finally { if (saved === undefined) delete process.env.ENABLE_LIVE_SWAPS; else process.env.ENABLE_LIVE_SWAPS = saved; }
 });
 test('node clients reject public endpoints and insecure LND TLS', () => {
-  assert.throws(() => new BitcoinRpcClient('http://example.com:18443', 'cookie'));
+  assert.throws(() => new BitcoinRpcClient('http://example.com:18443', 'cookie', 'lab-wallet'));
   assert.throws(() => new LndClient('http://127.0.0.1:8080', 'cert', 'macaroon'));
   assert.throws(() => new LndClient('https://example.com', 'cert', 'macaroon'));
 });
