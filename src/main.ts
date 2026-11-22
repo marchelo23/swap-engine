@@ -16,6 +16,7 @@ import { createOwnedRuntimeFactory, ownedRuntimePolicySchema, type OwnedRuntimeP
 import { createOwnedPreparation } from './api/ownedPreparation.js';
 import { assertStateScope } from './environment/StateScope.js';
 import { attestStartup, type StartupScope } from './environment/StartupAttestation.js';
+import { ElementsReadOnlyClient } from './environment/ElementsReadOnlyClient.js';
 
 function sameOrigin(url: string, origin: string) { try { return new URL(url).origin === origin; } catch { return false; } }
 function assertOwnedPolicyBinding(policy: OwnedRuntimePolicy, c: ReturnType<typeof config>, identity: StartupScope | undefined) {
@@ -70,7 +71,7 @@ export async function startApplication(env: NodeJS.ProcessEnv = process.env, arg
   let liquidity: () => Promise<Balances>; let diagnostics: (() => ReturnType<typeof preflight>) | undefined;
   let operations: (() => Promise<OperationsBalances>) | undefined;
   let bitcoin: ReadOnlyBitcoinClient | null = null; let lnd: ReadOnlyLndClient | null = null;
-  let alice: ReadOnlyLndClient | null = null;
+  let alice: ReadOnlyLndClient | null = null; let liquid: ElementsReadOnlyClient | null = null;
   if (dependencies.reads) ({ liquidity, diagnostics, operations } = dependencies.reads);
   else if (c.bitcoinNetwork && (c.rails.onchain.enabled || c.rails.lightning.enabled)) {
     bitcoin = c.rails.onchain.enabled ? new ReadOnlyBitcoinClient(c.rails.onchain.url, c.rails.onchain.cookie, c.rails.onchain.wallet) : null;
@@ -90,16 +91,18 @@ export async function startApplication(env: NodeJS.ProcessEnv = process.env, arg
       c.rails.onchain.enabled ? c.rails.onchain.wallet : c.wallet, c.mode) : undefined;
     operations = () => collectOperationsBalances({ bitcoin, provider: lnd, alice });
   } else liquidity = async () => { throw new Error('SIMULATION_MODE_HAS_NO_NODE_CONNECTIVITY'); };
+  if (!dependencies.reads && c.rails.liquid.enabled) liquid = new ElementsReadOnlyClient(
+    c.rails.liquid.rpcUrl, c.rails.liquid.cookie, c.rails.liquid.wallet);
   let identity = dependencies.identity;
-  if (!identity && (c.rails.onchain.enabled || c.rails.lightning.enabled)) {
-    if (!bitcoin && !lnd) throw new Error('STARTUP_ATTESTATION_UNAVAILABLE');
-    identity = await attestStartup(c, { bitcoin, provider: lnd, alice });
+  if (!identity && (c.rails.onchain.enabled || c.rails.lightning.enabled || c.rails.liquid.enabled)) {
+    identity = await attestStartup(c, { bitcoin, provider: lnd, alice, liquid });
   }
   await assertStateScope(c.directory, { environment: c.environment,
     deploymentId: c.deploymentId ?? 'simulation', genesisHash: identity?.genesisHash ?? null,
     wallet: identity?.wallet ?? '', bitcoinOrigin: identity?.bitcoinOrigin ?? null,
     providerOrigin: identity?.providerOrigin ?? null, payerOrigin: identity?.payerOrigin ?? null,
-    providerNode: identity?.providerNode ?? null, payerNode: identity?.payerNode ?? null },
+    providerNode: identity?.providerNode ?? null, payerNode: identity?.payerNode ?? null,
+    liquidOrigin: identity?.liquidOrigin ?? null, liquidWallet: identity?.liquidWallet ?? null },
   { allowLegacyOfflineMigration: c.allowLegacyOfflineMigration });
   const store = await Store.open(c.directory);
   try {

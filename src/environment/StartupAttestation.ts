@@ -1,24 +1,28 @@
 import type { Config } from '../config.js';
 import type { RailId } from '../core/RailContract.js';
-import { verifyBitcoinIdentity, verifyLndIdentity } from './Identity.js';
+import { verifyBitcoinIdentity, verifyLiquidIdentity, verifyLndIdentity } from './Identity.js';
 
 type BitcoinReader = { origin?: string; call<T>(method: string, params?: unknown[], wallet?: boolean): Promise<T> };
 type LndReader = { origin?: string; call<T>(path: string, body?: unknown): Promise<T> };
+type LiquidReader = { origin?: string; call<T>(method: string, params?: unknown[], wallet?: boolean): Promise<T> };
 
 export type StartupScope = { environment: Config['environment']; deploymentId: string;
   genesisHash: string | null; wallet: string; bitcoinOrigin?: string | null;
   providerOrigin?: string | null; payerOrigin?: string | null; providerNode?: string | null; payerNode?: string | null;
+  liquidOrigin?: string | null; liquidWallet?: string | null;
   verified: Partial<Record<RailId, boolean>> };
 
 /** Read-only startup attestation. It runs before the journal/lock is opened and
  * never constructs a write-capable port. Ark/Liquid remain explicitly
  * unverified until a reviewed read-only probe is injected. */
 export async function attestStartup(config: Config, clients: {
-  bitcoin?: BitcoinReader | null; provider?: LndReader | null; alice?: LndReader | null }): Promise<StartupScope> {
+  bitcoin?: BitcoinReader | null; provider?: LndReader | null; alice?: LndReader | null;
+  liquid?: LiquidReader | null }): Promise<StartupScope> {
   const verified: Partial<Record<RailId, boolean>> = {};
   let genesisHash: string | null = null; let wallet = ''; let bitcoinOrigin: string | null = null;
   let providerOrigin: string | null = null; let payerOrigin: string | null = null;
   let providerNode: string | null = null; let payerNode: string | null = null;
+  let liquidOrigin: string | null = null; let liquidWallet: string | null = null;
   if (config.rails.onchain.enabled) {
     if (!clients.bitcoin) throw new Error('ONCHAIN_ATTESTATION_UNAVAILABLE');
     if (!config.bitcoinNetwork || !config.bitcoinGenesisHash) throw new Error('BITCOIN_ATTESTATION_UNAVAILABLE');
@@ -53,7 +57,17 @@ export async function attestStartup(config: Config, clients: {
     }
     verified.lightning = true;
   }
+  if (config.rails.liquid.enabled) {
+    if (!clients.liquid) throw new Error('LIQUID_ATTESTATION_UNAVAILABLE');
+    const blockchain = await clients.liquid.call('getblockchaininfo');
+    const sidechain = await clients.liquid.call('getsidechaininfo');
+    const wallet = await clients.liquid.call<{ walletname?: string }>('getwalletinfo', [], true);
+    verifyLiquidIdentity(blockchain, sidechain, { chainName: config.rails.liquid.chainName,
+      policyAsset: config.rails.liquid.policyAsset, parentGenesisHash: config.rails.liquid.parentGenesisHash });
+    if (wallet.walletname !== config.rails.liquid.wallet) throw new Error('LIQUID_WALLET_IDENTITY_MISMATCH');
+    liquidOrigin = clients.liquid.origin ?? null; liquidWallet = config.rails.liquid.wallet; verified.liquid = true;
+  }
   if (config.deploymentId === null) throw new Error('DEPLOYMENT_ID_REQUIRED');
   return { environment: config.environment, deploymentId: config.deploymentId, genesisHash, wallet,
-    bitcoinOrigin, providerOrigin, payerOrigin, providerNode, payerNode, verified };
+    bitcoinOrigin, providerOrigin, payerOrigin, providerNode, payerNode, liquidOrigin, liquidWallet, verified };
 }

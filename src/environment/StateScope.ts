@@ -4,7 +4,7 @@ import { join } from 'node:path';
 
 export type StateScope = { environment: string; deploymentId: string; genesisHash: string | null; wallet: string;
   bitcoinOrigin?: string | null; providerOrigin?: string | null; payerOrigin?: string | null;
-  providerNode?: string | null; payerNode?: string | null };
+  providerNode?: string | null; payerNode?: string | null; liquidOrigin?: string | null; liquidWallet?: string | null };
 export type StateScopeOptions = { allowLegacyOfflineMigration?: boolean };
 
 const markerName = '.environment.json';
@@ -17,7 +17,8 @@ function sameScope(value: unknown, expected: StateScope): boolean {
     record.deploymentId === expected.deploymentId && record.genesisHash === expected.genesisHash &&
     record.wallet === expected.wallet && record.bitcoinOrigin === expected.bitcoinOrigin &&
     record.providerOrigin === expected.providerOrigin && record.payerOrigin === expected.payerOrigin &&
-    record.providerNode === expected.providerNode && record.payerNode === expected.payerNode;
+    record.providerNode === expected.providerNode && record.payerNode === expected.payerNode &&
+    record.liquidOrigin === expected.liquidOrigin && record.liquidWallet === expected.liquidWallet;
 }
 
 /** Binds an existing journal/lock directory to one explicit deployment and

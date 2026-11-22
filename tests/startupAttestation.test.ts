@@ -8,6 +8,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { AddressInfo } from 'node:net';
 import { ReadOnlyBitcoinClient } from '../src/diagnostics/ReadOnlyClients.js';
+import { ElementsReadOnlyClient } from '../src/environment/ElementsReadOnlyClient.js';
 import { attestStartup } from '../src/environment/StartupAttestation.js';
 import { config } from '../src/config.js';
 import { startApplication } from '../src/main.js';
@@ -103,6 +104,41 @@ test('startApplication attests a configured mainnet profile before serving read-
       assert.equal(capabilities.rails.lightning.available, false);
     } finally { await app.close(); }
   } finally { core.server.close(); await rm(directory, { recursive: true, force: true }); }
+});
+
+test('Elements read-only identity uses fee_asset/policy asset and wallet without execution', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'swap-elements-attest-'));
+  const policy = 'ab'.repeat(32); const parent = 'cd'.repeat(32); const pegged = 'ef'.repeat(32);
+  let fee: string | undefined = policy;
+  const server = createServer(async (req, res) => {
+    let body = ''; for await (const chunk of req) body += chunk.toString();
+    const request = JSON.parse(body) as { id: string; method: string };
+    const result = request.method === 'getblockchaininfo' ? { chain: 'elementsregtest' }
+      : request.method === 'getsidechaininfo' ? { fee_asset: fee, pegged_asset: pegged, parent_blockhash: parent }
+      : request.method === 'getwalletinfo' ? { walletname: 'liquid-wallet' } : null;
+    res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ result, error: null, id: request.id }));
+  });
+  server.listen(0, '127.0.0.1'); await once(server, 'listening');
+  try {
+    const cookiePath = await cookie(directory); const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    const env = { APP_ENV: 'liquid-regtest', DEPLOYMENT_ID: 'liquid-attest', DATA_DIR: join(directory, 'data'),
+      AUTH_STORE_PATH: join(directory, 'auth.json'), AUTH_ORIGIN: 'http://127.0.0.1:3000', LIQUID_ENABLED: 'true',
+      LIQUID_NETWORK: 'elementsregtest', ELEMENTS_RPC_URL: url, ELEMENTS_COOKIE_PATH: cookiePath,
+      ELEMENTS_WALLET: 'liquid-wallet', LIQUID_POLICY_ASSET: policy, LIQUID_PARENT_GENESIS_HASH: parent,
+      LIQUID_CONFIRMATION_POLICY: 'read-only' };
+    const c = config(env); const identity = await attestStartup(c, { liquid: new ElementsReadOnlyClient(url, cookiePath, 'liquid-wallet') });
+    assert.equal(identity.verified.liquid, true); assert.equal(identity.liquidWallet, 'liquid-wallet');
+    assert.equal(c.capabilities(identity.verified).execution.enabled, false);
+    const app = await startApplication(env, [], { port: 0 });
+    try {
+      const base = `http://127.0.0.1:${(app.server.address() as AddressInfo).port}`;
+      const caps = await (await fetch(`${base}/v1/capabilities`)).json() as any;
+      assert.equal(caps.rails.liquid.configured, true); assert.equal(caps.rails.liquid.verified, true); assert.equal(caps.rails.liquid.available, true);
+      assert.equal(caps.execution.enabled, false);
+    } finally { await app.close(); }
+    fee = undefined;
+    await assert.rejects(attestStartup(c, { liquid: new ElementsReadOnlyClient(url, cookiePath, 'liquid-wallet') }), /LIQUID_FEE_ASSET_UNAVAILABLE/);
+  } finally { server.close(); await rm(directory, { recursive: true, force: true }); }
 });
 
 test('startApplication rejects a wrong Core identity before creating the journal or lock', async () => {
