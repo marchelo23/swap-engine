@@ -107,7 +107,7 @@ export async function startApplication(env: NodeJS.ProcessEnv = process.env, arg
     const bitcoinClient = bitcoin; const lndClient = lnd;
     diagnostics = c.mode === 'regtest' && bitcoinClient && lndClient ? () => preflight(bitcoinClient, lndClient,
       c.rails.onchain.enabled ? c.rails.onchain.wallet : c.wallet, c.mode) : undefined;
-    operations = () => collectOperationsBalances({ bitcoin, provider: lnd, alice });
+    operations = c.mode === 'regtest' ? () => collectOperationsBalances({ bitcoin, provider: lnd, alice }) : undefined;
   } else liquidity = async () => { throw new Error('SIMULATION_MODE_HAS_NO_NODE_CONNECTIVITY'); };
   if (!dependencies.reads && c.rails.liquid.enabled) liquid = new ElementsReadOnlyClient(
     c.rails.liquid.rpcUrl, c.rails.liquid.cookie, c.rails.liquid.wallet);

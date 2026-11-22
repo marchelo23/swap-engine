@@ -12,6 +12,7 @@ import { ElementsReadOnlyClient } from '../src/environment/ElementsReadOnlyClien
 import { attestStartup } from '../src/environment/StartupAttestation.js';
 import { config } from '../src/config.js';
 import { startApplication } from '../src/main.js';
+import { provisionAccount } from '../scripts/provision-auth.js';
 
 const genesis = '0f9188f13cb7b2c71f2a335e3a4fc328bf5beb436012afca590b1a11466e2206';
 
@@ -91,8 +92,10 @@ test('startApplication attests a configured mainnet profile before serving read-
   const core = await coreMock({ chainName: 'main', genesis: mainnetGenesis });
   try {
     const cookiePath = await cookie(directory); const data = join(directory, 'data');
+    const authPath = join(directory, 'auth.json'); const password = 'synthetic-mainnet-admin-password';
+    await provisionAccount(authPath, 'operator', 'ADMIN', password);
     const app = await startApplication({ APP_ENV: 'mainnet', APP_MODE: undefined, DEPLOYMENT_ID: 'mainnet-serve',
-      DATA_DIR: data, AUTH_STORE_PATH: join(directory, 'auth.json'), AUTH_ORIGIN: 'http://127.0.0.1:3000',
+      DATA_DIR: data, AUTH_STORE_PATH: authPath, AUTH_ORIGIN: 'http://127.0.0.1:3000',
       BITCOIN_RPC_URL: core.url, BITCOIN_COOKIE_PATH: cookiePath, BITCOIN_WALLET: 'test-wallet' }, [], { port: 0 });
     try {
       const base = `http://127.0.0.1:${(app.server.address() as AddressInfo).port}`;
@@ -102,6 +105,14 @@ test('startApplication attests a configured mainnet profile before serving read-
       assert.equal(capabilities.rails.onchain.configured, true); assert.equal(capabilities.rails.onchain.verified, true);
       assert.equal(capabilities.rails.onchain.available, true); assert.equal(capabilities.execution.enabled, false);
       assert.equal(capabilities.rails.lightning.available, false);
+      const login = await fetch(`${base}/v1/auth/login`, { method: 'POST',
+        headers: { 'content-type': 'application/json', origin: 'http://127.0.0.1:3000' },
+        body: JSON.stringify({ username: 'operator', password }) });
+      assert.equal(login.status, 200);
+      const cookie = login.headers.get('set-cookie')!.split(';')[0]!;
+      const operations = await fetch(`${base}/v1/operations/balances`, { headers: { cookie } });
+      assert.equal(operations.status, 503);
+      assert.deepEqual(await operations.json(), { error: 'OPERATIONS_BALANCES_NOT_CONFIGURED' });
     } finally { await app.close(); }
   } finally { core.server.close(); await rm(directory, { recursive: true, force: true }); }
 });
