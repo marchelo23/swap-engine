@@ -6,6 +6,7 @@ import type { AddressInfo } from 'node:net';
 import axe from 'axe-core';
 import { chromium, type Page } from 'playwright';
 import { createApi } from '../../src/api/server.js';
+import { railIds, type Capabilities } from '../../src/core/RailContract.js';
 import { preflight } from '../../src/diagnostics/preflight.js';
 import { setup, testAccount } from '../helpers.js';
 
@@ -52,7 +53,7 @@ test('three faces quote a real route and preserve keyboard, account and responsi
   await page.goto(base);
   assert.equal(await page.locator('#opening-overlay').isVisible(), false);
   await page.waitForFunction(() => document.fonts.size >= 2);
-  await page.getByText('REGTEST', { exact: true }).waitFor();
+  await page.getByText('SIMULATION', { exact: true }).waitFor();
   await page.waitForFunction(() => document.getElementById('mode')?.dataset.mode === 'simulation');
   assert.equal(await page.locator('header.top').innerText(), 'SWAP\nACCOUNT\nOPERATIONS');
   assert.equal(await page.locator('.footer-squares i').count(), 3);
@@ -204,6 +205,51 @@ test('regtest page renders a real preflight 503 report with offline test ports',
   await page.screenshot({ path: 'dist/web-verification/admin.png', fullPage: true });
 });
 
+test('public capabilities show the configured environment and only mark verified rails as available', async context => {
+  const f = await setup();
+  context.after(f.cleanup);
+  let unavailable = false;
+  const server = createApi(f.manager, async () => { throw new Error('Offline test port'); }, undefined, 'simulation', {
+    capabilities: () => {
+      if (unavailable) throw new Error('Capabilities unavailable');
+      return {
+        schemaVersion: 1, environment: 'signet', chain: { kind: 'bitcoin', name: 'signet', genesisHash: null },
+        readOnly: true, execution: { enabled: false, policy: 'disabled', reason: 'DISABLED' },
+        rails: {
+          onchain: { id: 'onchain', configured: true, verified: true, available: true, reason: null },
+          lightning: { id: 'lightning', configured: true, verified: false, available: false, reason: 'NOT_VERIFIED' },
+          ark: { id: 'ark', configured: true, verified: false, available: false, reason: 'WRONG_NETWORK' },
+          liquid: { id: 'liquid', configured: false, verified: false, available: false, reason: 'NOT_CONFIGURED' },
+        },
+        capturedAt: new Date().toISOString(),
+      } satisfies Capabilities;
+    },
+  });
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  context.after(() => new Promise<void>(resolve => server.close(() => resolve())));
+  const browser = await chromium.launch({ channel: process.env.WEB_TEST_BROWSER_CHANNEL });
+  context.after(() => browser.close());
+  const page = await browser.newPage({ reducedMotion: 'reduce' });
+  let balanceRequests = 0;
+  page.on('request', request => {
+    if (new URL(request.url()).pathname === '/v1/operations/balances') balanceRequests++;
+  });
+  await page.goto(`http://127.0.0.1:${(server.address() as AddressInfo).port}/#operations`);
+  await page.getByText('Bitcoin signet · Read-only capabilities', { exact: true }).waitFor();
+  assert.equal(await page.locator('#network').textContent(), 'SIGNET');
+  const expected = { onchain: 'Verified', lightning: 'Not verified', ark: 'Wrong network', liquid: 'Not configured' };
+  for (const rail of railIds) assert.equal(await page.locator(`#capability-${rail}`).textContent(), expected[rail]);
+  assert.equal(await page.locator('#admin-dashboard').isVisible(), false);
+  assert.equal(balanceRequests, 0);
+
+  unavailable = true;
+  await page.reload();
+  await page.getByText('Network capabilities unavailable.', { exact: true }).waitFor();
+  assert.equal(await page.locator('#network').textContent(), 'UNVERIFIED');
+  for (const rail of railIds) assert.equal(await page.locator(`#capability-${rail}`).textContent(), 'Unverified');
+});
+
 test('administrator wallets show four batteries with separate on-chain and Lightning scales', async context => {
   const f = await setup();
   context.after(f.cleanup);
@@ -230,13 +276,24 @@ test('administrator wallets show four batteries with separate on-chain and Light
         core: { confirmedSats: 0, unconfirmedSats: 100_000 },
         provider: { confirmedSats: 0, unconfirmedSats: 0, localSats: 900_000, remoteSats: 1 },
         alice: { confirmedSats: null, unconfirmedSats: null, localSats: 0, remoteSats: 0 },
+        rails: [
+          { rail: 'onchain', account: 'core', status: 'available', reason: null, balances: { confirmedSats: 0, unconfirmedSats: 100_000 } },
+          { rail: 'onchain', account: 'alice', status: 'unavailable', reason: 'UNAVAILABLE', balances: null },
+          { rail: 'lightning', account: 'provider', status: 'available', reason: null, balances: { localSats: 900_000, remoteSats: 1, capacitySats: 900_001 } },
+          { rail: 'lightning', account: 'alice', status: 'available', reason: null, balances: { localSats: 0, remoteSats: 0, capacitySats: 0 } },
+        ],
       } });
     }
     return route.fulfill({ json: {
       network: 'regtest', capturedAt,
-      core: { confirmedSats: 100_000, unconfirmedSats: 0 },
-      provider: { confirmedSats: 520_000, unconfirmedSats: null, localSats: 7_000, remoteSats: 21_000 },
-      alice: { confirmedSats: 25_000, unconfirmedSats: 925, localSats: null, remoteSats: 0 },
+      core: { confirmedSats: 520_000, unconfirmedSats: 0 },
+      provider: null, alice: null,
+      rails: [
+        { rail: 'onchain', account: 'core', status: 'available', reason: null, balances: { confirmedSats: 100_000, unconfirmedSats: 0 } },
+        { rail: 'onchain', account: 'alice', status: 'available', reason: null, balances: { confirmedSats: 25_000, unconfirmedSats: 925 } },
+        { rail: 'lightning', account: 'provider', status: 'available', reason: null, balances: { localSats: 7_000, remoteSats: 21_000, capacitySats: 35_000 } },
+        { rail: 'lightning', account: 'alice', status: 'unknown', reason: 'UNAVAILABLE', balances: { localSats: null, remoteSats: 0, capacitySats: null } },
+      ],
     } });
   });
   await page.goto(`http://127.0.0.1:${(server.address() as AddressInfo).port}/#operations`);
@@ -246,22 +303,24 @@ test('administrator wallets show four batteries with separate on-chain and Light
   assert.equal(await page.getByText('520,000 sats', { exact: true }).count(), 0);
   for (const [id, amount] of Object.entries({
     'core-confirmed': '100,000 sats', 'core-unconfirmed': '0 sats',
-    'provider-local': '7,000 sats', 'provider-remote': '21,000 sats', 'provider-capacity': '28,000 sats',
+    'provider-local': '7,000 sats', 'provider-remote': '21,000 sats', 'provider-capacity': '35,000 sats',
     'alice-confirmed': '25,000 sats', 'alice-unconfirmed': '925 sats',
-    'alice-local': 'Unavailable', 'alice-remote': '0 sats', 'alice-capacity': 'Unavailable',
+    'alice-local': 'Unknown', 'alice-remote': '0 sats', 'alice-capacity': 'Unknown',
   })) {
     assert.equal(await page.locator('#' + id).textContent(), amount);
   }
   const fill = (id: string) => page.locator('#' + id + '-pile').evaluate(pile => (pile as HTMLElement).style.getPropertyValue('--wallet-fill'));
   assert.equal(await fill('core'), '100%');
-  assert.equal(await fill('provider-lightning'), '25%');
+  assert.equal(await fill('provider-lightning'), '20%');
+  assert.equal(await page.locator('#provider-lightning-pile').evaluate(pile =>
+    (pile as HTMLElement).style.getPropertyValue('--wallet-occupied')), '80%');
   assert.equal(await page.locator('#provider-lightning-pile').getAttribute('data-capacity'), '');
   assert.equal(await fill('alice-lightning'), '');
   assert.equal(await page.locator('#alice-lightning-pile').getAttribute('data-state'), 'unavailable');
   assert.equal(await fill('alice'), '25%');
   assert.equal(await page.locator('#alice-pile').getAttribute('data-state'), 'known');
   await page.getByText(/relative to the larger known confirmed balance/).waitFor();
-  await page.getByText(/reported local \+ remote capacity/).waitFor();
+  await page.getByText(/reported channel capacity/).waitFor();
   assert.equal(await page.locator('#balance-time').getAttribute('datetime'), capturedAt);
   await audit(page);
   await page.screenshot({ path: evidence + '/operations-balances.png' });
@@ -357,7 +416,9 @@ test('the same-origin Account form signs in, shows administrator balances, and s
     auth: { storePath: account.storePath },
     operations: async () => ({
       network: 'regtest', capturedAt: new Date().toISOString(),
-      core: { confirmedSats: 100_000, unconfirmedSats: 0 }, provider: null, alice: null, rails: [],
+      core: { confirmedSats: 100_000, unconfirmedSats: 0 }, provider: null, alice: null,
+      rails: [{ rail: 'onchain', account: 'core', status: 'available', reason: null,
+        balances: { confirmedSats: 100_000, unconfirmedSats: 0 } }],
     }),
   });
   server.listen(0, '127.0.0.1');

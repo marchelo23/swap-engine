@@ -1,4 +1,5 @@
 import { api, type Session } from './api.js';
+import { railIds, type RailReason } from '../core/RailContract.js';
 import { prepareForReview } from './preparation.js';
 import { mountAuth } from './auth.js';
 import { fonts } from './fonts.js';
@@ -23,13 +24,28 @@ const reverse = mountOwnedReverse((configured, availability) => {
 });
 const setBalancesActive = mountOperationsBalances();
 void fonts;
-const environment = api.health().then(health => {
-  get('mode').dataset.mode = health.mode;
-  get('network').title = 'Bitcoin regtest';
-  text('account-network', 'Bitcoin regtest');
-  return health.mode;
+const railReason: Record<RailReason, string> = {
+  NOT_CONFIGURED: 'Not configured', NOT_VERIFIED: 'Not verified', WRONG_NETWORK: 'Wrong network',
+  UNAVAILABLE: 'Unavailable', DISABLED: 'Disabled',
+};
+const chainLabel = { bitcoin: 'Bitcoin', ark: 'Ark', liquid: 'Liquid' };
+const environment = api.capabilities().then(capabilities => {
+  if (railIds.some(id => capabilities.rails[id].id !== id)) throw new Error('Mismatched rail identifiers.');
+  const { environment, chain, rails } = capabilities;
+  get('mode').dataset.mode = environment;
+  const networkName = `${chainLabel[chain.kind]} ${chain.name}`;
+  get('network').title = networkName;
+  text('network', environment.toUpperCase());
+  text('account-network', networkName);
+  text('capabilities-status', `${networkName} · Read-only capabilities`);
+  for (const id of railIds) {
+    const rail = rails[id];
+    text(`capability-${id}`, rail.available ? 'Verified' : rail.reason ? railReason[rail.reason] : 'Unavailable');
+  }
+  return environment;
 }).catch(() => {
-  get('network').title = 'Regtest backend unavailable';
+  get('network').title = 'Network capabilities unavailable';
+  text('capabilities-status', 'Network capabilities unavailable.');
   return undefined;
 });
 

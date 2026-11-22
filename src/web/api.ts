@@ -1,9 +1,9 @@
 import * as z from 'zod/mini';
-import type { HealthResponse, QuoteResponse } from '../api/schemas.js';
+import type { QuoteResponse } from '../api/schemas.js';
+import { capabilitiesSchema, railBalanceEntrySchema } from '../core/RailContract.js';
 import { states } from '../core/SwapTypes.js';
 
 export type Quote = z.infer<typeof QuoteResponse>;
-type Health = z.infer<typeof HealthResponse>;
 const session = z.object({
   user: z.object({ id: z.string(), username: z.string(), role: z.enum(['USER', 'ADMIN']) }),
   csrfToken: z.string().check(z.minLength(1)),
@@ -11,11 +11,6 @@ const session = z.object({
 });
 export type Session = z.infer<typeof session>;
 
-const health = z.object({
-  status: z.literal('components-only'), liveSwapsEnabled: z.literal(false),
-  readOnly: z.literal(true), network: z.literal('regtest'),
-  mode: z.enum(['simulation', 'regtest']),
-}) satisfies z.ZodMiniType<Health>;
 const amount = z.int().check(z.nonnegative());
 const quote = z.object({
   id: z.uuid(), amountSats: amount, serviceFeeSats: amount, invoiceSats: amount,
@@ -35,18 +30,10 @@ const preflight = z.object({
 });
 
 const nullableSats = z.nullable(amount);
-const walletFields = { confirmedSats: nullableSats, unconfirmedSats: nullableSats };
-const lightningBalances = z.nullable(z.object({
-  ...walletFields,
-  localSats: nullableSats,
-  remoteSats: nullableSats,
-}));
 const operationsBalances = z.object({
   network: z.literal('regtest'),
   capturedAt: z.iso.datetime(),
-  core: z.nullable(z.object(walletFields)),
-  provider: lightningBalances,
-  alice: lightningBalances,
+  rails: z.array(railBalanceEntrySchema),
 });
 export type OperationsBalances = z.infer<typeof operationsBalances>;
 
@@ -98,17 +85,21 @@ function fetchApi(path: string, options: RequestInit = {}) {
     signal: options.signal ? AbortSignal.any([options.signal, AbortSignal.timeout(10000)]) : AbortSignal.timeout(10000),
     cache: 'no-store',
     redirect: 'error',
-    credentials: 'same-origin',
+    credentials: options.credentials ?? 'same-origin',
   });
 }
 
-async function parse<T>(response: Response, schema: z.ZodMiniType<T>) {
+type ResponseSchema<T> = {
+  safeParse(value: unknown): { success: true; data: T } | { success: false };
+};
+
+async function parse<T>(response: Response, schema: ResponseSchema<T>) {
   const result = schema.safeParse(await response.json().catch(() => undefined));
   if (!result.success) throw new Error('The backend did not provide a valid response.');
   return result.data;
 }
 
-async function request<T>(path: string, schema: z.ZodMiniType<T>, options: RequestInit = {}, allowDiagnosticFailure = false) {
+async function request<T>(path: string, schema: ResponseSchema<T>, options: RequestInit = {}, allowDiagnosticFailure = false) {
   const response = await fetchApi(path, options);
   if (!response.ok && !(allowDiagnosticFailure && response.status === 503)) {
     throw new ApiResponseError(response.status);
@@ -117,7 +108,7 @@ async function request<T>(path: string, schema: z.ZodMiniType<T>, options: Reque
 }
 
 export const api = {
-  health: () => request('/v1/health', health),
+  capabilities: () => request('/v1/capabilities', capabilitiesSchema, { credentials: 'omit' }),
   quote: (amountSats: number, signal: AbortSignal, csrfToken?: string) => request('/v1/quotes', quote, {
     method: 'POST', headers: { 'Content-Type': 'application/json', ...(csrfToken ? { 'x-csrf-token': csrfToken } : {}) },
     body: JSON.stringify({ amountSats }), signal,

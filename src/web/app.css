@@ -120,7 +120,9 @@ h2 { font-size: 1.15rem; font-weight: 720; letter-spacing: -.035em; }
 .wallet-pile span::after {
   content: ''; position: absolute; inset: 0; background: repeating-linear-gradient(to top, transparent 0 7px, #92929255 7px 8px);
 }
-.wallet-pile-lightning[data-capacity] span { background: #bababa; }
+.wallet-pile-lightning[data-capacity] span {
+  background: linear-gradient(to top, #bababa var(--wallet-occupied), transparent var(--wallet-occupied));
+}
 .wallet-pile[data-state="unavailable"] { border-style: dashed; }
 .wallet-pile[data-state="unavailable"] span::after {
   background: repeating-linear-gradient(135deg, transparent 0 3px, #dedede 3px 4px);
