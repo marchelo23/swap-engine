@@ -300,7 +300,7 @@ test('missing restored client custody after funding never generates replacement 
 test('JIT local binding completes retained invoice through concrete runtime, then restart reconciles without re-execution', async () => {
   const x = await fixture();
   try {
-    const spec: PreparationSpec = { id: randomUUID(), isolationId: x.scope.isolationId, tipHeight: x.plan.tipHeight,
+    const spec: PreparationSpec = { id: randomUUID(), isolationId: x.scope.isolationId, tipHeight: x.plan.tipHeight, wallet: 'lqwd-lab',
       providerNode: x.plan.providerNode, payerNode: x.plan.payerNode, routing: x.plan.routing,
       client: { paymentHash: x.plan.contract.paymentHash, claimPublicKey: x.plan.contract.claimPublicKey },
       refundPublicKey: x.plan.contract.refundPublicKey, claimDestination: x.plan.claimDestination,

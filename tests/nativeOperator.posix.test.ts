@@ -21,7 +21,7 @@ const linux = process.platform === 'linux'; const password = 'synthetic-operator
 async function lifecycleFixture() {
   const x = await readinessFixture(); const directory = join(x.f.directory, 'operator'); const backupDirectory = join(x.f.directory, 'backup');
   await mkdir(directory, { mode: 0o700 }); await mkdir(backupDirectory, { mode: 0o700 });
-  const spec: PreparationSpec = { id: randomUUID(), isolationId: x.scope.isolationId, tipHeight: 100, providerNode: x.plan.providerNode,
+  const spec: PreparationSpec = { id: randomUUID(), isolationId: x.scope.isolationId, tipHeight: 100, wallet: 'lqwd-lab', providerNode: x.plan.providerNode,
     payerNode: x.plan.payerNode, routing: x.plan.routing, client: { paymentHash: x.keys.paymentHash, claimPublicKey: x.keys.claimPublicKey },
     refundPublicKey: x.keys.refundPublicKey, claimDestination: x.plan.claimDestination, refundDestination: x.plan.refundDestination,
     input: { ...x.input, valueSats: 100000 } };

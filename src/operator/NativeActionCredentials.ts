@@ -140,13 +140,13 @@ export async function probeCoreAction(spec: PreparationSpec, paths: ActionPaths,
     const decoded = await allowed.json() as { result?: unknown; error?: unknown };
     const found = z.object({ chain: z.literal('regtest'), initialblockdownload: z.literal(false), blocks: z.number().int(), bestblockhash: z.string() }).parse(decoded.result);
     if (decoded.error || JSON.stringify(found) !== JSON.stringify(before)) throw operatorStopped();
-    const denied = await request(spec.routing.bitcoinOrigin + '/wallet/lqwd-lab', { method: 'POST', redirect: 'error', headers,
+    const denied = await request(spec.routing.bitcoinOrigin + '/wallet/' + encodeURIComponent(spec.wallet), { method: 'POST', redirect: 'error', headers,
       signal: AbortSignal.timeout(15000), body: JSON.stringify({ jsonrpc: '1.0', id: 'read-only-scope-probe', method: 'getwalletinfo', params: [] }) });
     if (inspected.core.mode === 'existing-regtest-cookie') {
       if (!denied.ok) throw operatorStopped();
       const wallet = await denied.json() as { result?: unknown; error?: unknown };
       if (wallet.error) throw operatorStopped();
-      z.object({ walletname: z.literal('lqwd-lab'), private_keys_enabled: z.literal(true), scanning: z.literal(false),
+      z.object({ walletname: z.literal(spec.wallet), private_keys_enabled: z.literal(true), scanning: z.literal(false),
         external_signer: z.literal(false) }).parse(wallet.result);
       return { regtestIdentity: true as const, unlistedReadDenied: false };
     }
@@ -176,7 +176,7 @@ export function nativeActionDependencies(spec: PreparationSpec, paths: ActionPat
     let response: Response;
     try {
       beforeAction(); endpoints();
-      response = await io.fetch(`${spec.routing.bitcoinOrigin}${wallet ? '/wallet/lqwd-lab' : ''}`, { method: 'POST', redirect: 'error',
+      response = await io.fetch(`${spec.routing.bitcoinOrigin}${wallet ? '/wallet/' + encodeURIComponent(spec.wallet) : ''}`, { method: 'POST', redirect: 'error',
         signal: AbortSignal.timeout(15000), headers: { authorization: `Basic ${Buffer.from(auth.toString('utf8').trim()).toString('base64')}`,
           'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '1.0', id: 'controlled-reverse', method, params }) });
     } finally { auth.fill(0); }

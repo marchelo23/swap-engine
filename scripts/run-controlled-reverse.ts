@@ -71,7 +71,7 @@ type OperatorClients = {
   recoveryPayer: Pick<LndRecoveryClient, 'origin' | 'call'>;
 };
 function readClients(spec: PreparationSpec, paths: z.infer<typeof readPathsSchema>): OperatorClients {
-  const bitcoin = new ReadOnlyBitcoinClient(spec.routing.bitcoinOrigin, paths.bitcoinCookiePath, 'lqwd-lab');
+  const bitcoin = new ReadOnlyBitcoinClient(spec.routing.bitcoinOrigin, paths.bitcoinCookiePath, spec.wallet);
   const provider = new ReadOnlyLndClient(spec.routing.providerOrigin, paths.providerCertPath, paths.providerReadMacaroonPath);
   const payer = new ReadOnlyLndClient(spec.routing.payerOrigin, paths.payerCertPath, paths.payerReadMacaroonPath);
   return { bitcoin, provider, payer, invoices: new HttpsLndInvoiceTransport(provider.origin, paths.providerCertPath, paths.providerReadMacaroonPath),

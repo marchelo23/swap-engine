@@ -47,7 +47,7 @@ export function createJustInTimeReverse(store: Store, value: PreparationSpec, re
   const priorPlan = verifyReverseTestPlan(prep.plan); const initial = initialDb.swaps[prep.swapId];
   if (spec.sourceAmountSats !== undefined && priorPlan.quote.invoiceSats !== spec.sourceAmountSats) throw fail();
   const expected = createReverseTestPlan(priorPlan.quote, spec.tipHeight, spec.client, spec.refundPublicKey,
-    { claim: spec.claimDestination, refund: spec.refundDestination }, { provider: spec.providerNode, payer: spec.payerNode }, spec.routing);
+    { claim: spec.claimDestination, refund: spec.refundDestination }, { provider: spec.providerNode, payer: spec.payerNode }, spec.routing, spec.wallet);
   expected.createdAt = priorPlan.createdAt;
   if (!same(priorPlan, expected) || !initial?.invoice || initial.state !== 'INVOICE_CREATED' || initial.pendingAction || initial.clientPayment ||
     initial.fundingIntent || initial.lockup || initial.clientClaimIntent || initial.claimTxid || initial.refundTxid || initial.miningIntents?.length ||

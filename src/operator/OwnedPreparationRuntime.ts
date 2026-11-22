@@ -243,7 +243,7 @@ export async function createOwnedRuntimeFactory<S extends { account: { id: strin
       const chain = await checkOwnerAndNodes(); const inspected = await io.inspect(policy.actions, policy.credentialPaths);
       // Public placeholders for the wallet-scope probe only; no contract, key generation,
       // invoice, input reservation or execution capability is created by this check.
-      const spec = preparationSpecSchema.parse({ id: randomUUID(), isolationId: randomUUID(), tipHeight: chain.blocks,
+      const spec = preparationSpecSchema.parse({ id: randomUUID(), isolationId: randomUUID(), tipHeight: chain.blocks, wallet: policy.wallet,
         providerNode: policy.providerNode, payerNode: policy.payerNode, routing: policy.routing,
         client: { paymentHash: '00'.repeat(32), claimPublicKey: policy.payerNode }, refundPublicKey: policy.providerNode,
         claimDestination: policy.claimDestination, refundDestination: policy.refundDestination,

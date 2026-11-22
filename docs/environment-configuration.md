@@ -37,6 +37,10 @@ Legacy Bitcoin/LND variable names remain accepted. Ark/Liquid canonical names ar
   `configured` but not `available` until a reviewed read-only probe verifies
   them; no adapter is installed by this profile.
 
+## Preparation spec migration
+
+Reviewed preparation specs now carry an explicit wallet field. Recreate the spec and its SHA-256 checksum before use; old specs/digests without wallet are rejected. The owned runtime, controlled CLI readers, signing probe and Core wallet-scoped probes use this wallet instead of a developer literal.
+
 ## Startup attestation and state scope
 
 Before opening the journal or lock, seed mode reads Core `getblockchaininfo`,

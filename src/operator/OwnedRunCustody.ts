@@ -71,7 +71,7 @@ export async function prepareOwnedRunCustody(directory: string, unverified: unkn
     refundVault = await SecretVault.open(join(directory, 'provider-refund-keys'), password);
     client = ClaimWallet.generate(); await client.backup(clientVault);
     const refund = await new RefundKeyVault(refundVault).create(client.paymentHash);
-    const spec = preparationSpecSchema.parse({ id: randomUUID(), isolationId: randomUUID(), tipHeight: policy.tipHeight,
+    const spec = preparationSpecSchema.parse({ id: randomUUID(), isolationId: randomUUID(), tipHeight: policy.tipHeight, wallet: policy.wallet,
       providerNode: policy.providerNode, payerNode: policy.payerNode, routing: policy.routing, claimDestination: policy.claimDestination,
       refundDestination: policy.refundDestination, input: policy.input, client: client.toJSON(), refundPublicKey: refund.publicKey,
       ...(policy.sourceAmountSats === undefined ? {} : { sourceAmountSats: policy.sourceAmountSats }) });
