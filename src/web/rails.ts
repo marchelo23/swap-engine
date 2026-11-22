@@ -18,6 +18,16 @@ export function linkRail(pair: Pair, side: Side, rail: Rail): Pair {
   return { ...pair, [side]: rail, [opposite]: rail === pair[opposite] ? fallback : pair[opposite] };
 }
 
-export function canQuote({ send, receive }: Pair) {
-  return send === 'lightning' && receive === 'onchain';
+export function isArkOnchainPair({ send, receive }: Pair) {
+  return (send === 'onchain' && receive === 'ark') || (send === 'ark' && receive === 'onchain');
+}
+
+export function arkRoute({ send, receive }: Pair): 'onchain-to-ark' | 'ark-to-onchain' | undefined {
+  if (send === 'onchain' && receive === 'ark') return 'onchain-to-ark';
+  if (send === 'ark' && receive === 'onchain') return 'ark-to-onchain';
+  return undefined;
+}
+
+export function canQuote(pair: Pair) {
+  return (pair.send === 'lightning' && pair.receive === 'onchain') || isArkOnchainPair(pair);
 }

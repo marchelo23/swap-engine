@@ -31,3 +31,114 @@ export const OperationsBalancesResponse = z.object({
   provider: LightningBalance.nullable(),
   alice: LightningBalance.nullable(),
 }).strict();
+
+export const ArkRoute = z.enum(['onchain-to-ark', 'ark-to-onchain']);
+export const ArkQuoteRequest = z.object({
+  route: ArkRoute,
+  amountSats: z.number().int().min(10_000).max(1_000_000),
+}).strict();
+export const ArkQuoteResponse = z.object({
+  id: z.uuid(),
+  network: z.literal('regtest'),
+  route: ArkRoute,
+  method: z.enum(['boarding', 'cooperative-offboarding']),
+  amountSats: z.number().int().min(10_000).max(1_000_000),
+  serviceFeeSats: z.number().int().nonnegative(),
+  invoiceSats: z.number().int().nonnegative(),
+  fundingReserveSats: z.number().int().nonnegative(),
+  claimFeeSats: z.number().int().nonnegative(),
+  netSats: z.number().int().nonnegative(),
+  dustSats: z.number().int().nonnegative(),
+  expiresAt: z.number().int(),
+}).strict();
+
+const Outpoint = z.string().regex(/^[a-f0-9]{64}:(0|[1-9][0-9]{0,8})$/);
+const RegtestBech32Address = z.string().regex(/^bcrt1[0-9a-z]{8,90}$/);
+const RegtestArkAddress = z.string().regex(/^tark1[qpzry9x8gf2tvdw0s3jn54khce6mua7l]{20,140}$/);
+
+export const ArkBoardingRequest = z.object({
+  quoteId: z.uuid(),
+  route: z.literal('onchain-to-ark'),
+  wallet: z.enum(['alice', 'bob']).default('alice'),
+  fundingOutpoint: Outpoint.optional(),
+  recipientArkAddress: RegtestArkAddress.optional(),
+  amountSats: z.number().int().min(10_000).max(1_000_000),
+}).strict();
+
+export const ArkOffboardRequest = z.object({
+  quoteId: z.uuid(),
+  route: z.literal('ark-to-onchain'),
+  vtxoOutpoint: Outpoint.optional(),
+  destinationAddress: RegtestBech32Address.optional(),
+  amountSats: z.number().int().min(10_000).max(1_000_000),
+}).strict();
+
+export const ArkSwapRequest = z.discriminatedUnion('route', [ArkBoardingRequest, ArkOffboardRequest]);
+
+export const ArkSwapStatusResponse = z.object({
+  id: z.uuid(),
+  network: z.literal('regtest'),
+  route: ArkRoute,
+  method: z.enum(['boarding', 'cooperative-offboarding']),
+  status: z.enum(['PREPARED', 'SUBMITTED', 'CONFIRMED', 'UNCERTAIN', 'REJECTED']),
+  quote: ArkQuoteResponse,
+  inputOutpoint: Outpoint,
+  destination: z.string(),
+  commitmentTxid: z.string().regex(/^[a-f0-9]{64}$/).nullable(),
+  createdAt: z.number().int(),
+  updatedAt: z.number().int(),
+}).strict();
+
+export const ArkSwapListResponse = z.object({
+  network: z.literal('regtest'),
+  swaps: z.array(ArkSwapStatusResponse),
+}).strict();
+
+export const ArkAdminSummaryResponse = z.object({
+  totalSwaps: z.number().int().nonnegative(),
+  completedSwaps: z.number().int().nonnegative(),
+  pendingSwaps: z.number().int().nonnegative(),
+  failedSwaps: z.number().int().nonnegative(),
+  onchainSentSats: z.number().int().nonnegative(),
+  onchainReceivedSats: z.number().int().nonnegative(),
+  arkSentSats: z.number().int().nonnegative(),
+  arkReceivedSats: z.number().int().nonnegative(),
+  collectedServiceFeesSats: z.number().int().nonnegative(),
+  estimatedNetworkFeesSats: z.number().int().nonnegative(),
+  netOperationalRevenueSats: z.number().int().nonnegative(),
+}).strict();
+
+export const ArkAdminReportResponse = z.object({
+  network: z.literal('regtest'),
+  summary: ArkAdminSummaryResponse,
+  swaps: z.array(ArkSwapStatusResponse),
+}).strict();
+
+const ArkWalletBalance = z.object({
+  confirmedSats: BalanceSats,
+  preconfirmedSats: BalanceSats,
+  recoverableSats: BalanceSats,
+  pendingRecoverySats: BalanceSats,
+  totalSats: BalanceSats,
+}).strict();
+
+export const ArkTelemetryResponse = z.object({
+  network: z.literal('regtest'),
+  asset: z.literal('BTC'),
+  capturedAt: z.iso.datetime(),
+  operatorStatus: z.enum(['ok', 'unavailable']),
+  cliConfigured: z.boolean(),
+  operator: z.object({
+    version: z.string(),
+    signerPubkey: z.string().regex(/^(02|03)[a-f0-9]{64}$/),
+    forfeitAddress: RegtestBech32Address,
+    dustSats: z.number().int().nonnegative(),
+    sessionDurationSeconds: z.number().int().nonnegative().nullable(),
+    unilateralExitDelay: z.number().int().nonnegative().nullable(),
+    boardingExitDelay: z.number().int().nonnegative().nullable(),
+  }).strict().nullable(),
+  wallets: z.object({
+    alice: ArkWalletBalance.nullable(),
+    bob: ArkWalletBalance.nullable(),
+  }).strict().nullable(),
+}).strict();

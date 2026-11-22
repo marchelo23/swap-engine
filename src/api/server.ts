@@ -3,13 +3,14 @@ import { available, type Balances } from '../liquidity/LiquidityManager.js';
 import type { SwapManager } from '../core/SwapManager.js';
 import { Sessions, roleDenial, sessionResponse, type AuthOptions } from '../auth/session.js';
 import type { OperationsBalances } from '../operations/Balances.js';
-import { QuoteRequest, QuoteResponse, ReverseRequest, HealthResponse, LiquidityResponse, OperationsBalancesResponse, ErrorResponse, LoginRequest, SessionResponse } from './schemas.js';
+import { QuoteRequest, QuoteResponse, ReverseRequest, HealthResponse, LiquidityResponse, OperationsBalancesResponse, ErrorResponse, LoginRequest, SessionResponse, ArkQuoteRequest, ArkQuoteResponse, ArkSwapRequest, ArkSwapStatusResponse, ArkSwapListResponse, ArkAdminReportResponse, ArkTelemetryResponse } from './schemas.js';
 import { ZodError } from 'zod';
 import { readFile } from 'node:fs/promises';
 import type { preflight } from '../diagnostics/preflight.js';
 import type { ApplicationMode } from '../config.js';
 import { createOwnedReverseGateway } from './ownedReverseGateway.js';
 import { historicalSwaps, HistoricalSwapResponse } from './historicalSwaps.js';
+import { ArkSwapService, toPublicArkSwap, type ArkRegtestPort } from '../ark/ArkAdapter.js';
 
 const webAssets = new Map([
   ['/', ['index.html', 'text/html; charset=utf-8']],
@@ -36,13 +37,16 @@ export function createApi(
   liquidity: () => Promise<Balances>,
   diagnostics?: () => ReturnType<typeof preflight>,
   mode: ApplicationMode = 'simulation',
-  { auth: authOptions = {}, operations, history = historicalSwaps }: {
+  { auth: authOptions = {}, operations, history = historicalSwaps, ark: arkPort, arkStorePath }: {
     auth?: AuthOptions;
     operations?: () => Promise<OperationsBalances>;
     history?: () => unknown | Promise<unknown>;
+    ark?: ArkRegtestPort;
+    arkStorePath?: string;
   } = {},
 ) {
   const auth = new Sessions(authOptions, mode);
+  const arkService = new ArkSwapService(arkPort, arkStorePath);
   const controlled = createOwnedReverseGateway(auth, { enabled: mode === 'regtest', delegateWhenInactive: true });
   const server = createServer(async (req, res) => {
     const send = (status: number, value: unknown) => { res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store' }); res.end(JSON.stringify(value)); };
@@ -67,6 +71,10 @@ export function createApi(
       if (req.method === 'POST' && path === '/v1/quotes') {
         const input = QuoteRequest.parse(await body(req));
         return send(201, QuoteResponse.parse(await manager.quote(input.amountSats)));
+      }
+      if (req.method === 'POST' && path === '/v1/ark/quotes') {
+        const input = ArkQuoteRequest.parse(await body(req));
+        return send(201, ArkQuoteResponse.parse(arkService.quote(input.route, input.amountSats)));
       }
       const session = await auth.get(req);
       if (req.method === 'POST' && path === '/v1/auth/login') {
@@ -104,6 +112,12 @@ export function createApi(
           try { return send(200, HistoricalSwapResponse.parse(await history())); }
           catch { return send(503, { error: 'HISTORICAL_EVIDENCE_UNAVAILABLE' }); }
         }
+        if (req.method === 'GET' && path === '/v1/admin/ark/swaps') {
+          if (mode !== 'regtest' || !arkPort) {
+            return send(503, ErrorResponse.parse({ error: 'ARK_SWAPS_REGTEST_ADAPTER_NOT_CONFIGURED' }));
+          }
+          return send(200, ArkAdminReportResponse.parse(arkService.adminReport()));
+        }
         return send(503, { error: 'SERVICE_UNAVAILABLE' });
       }
       if (req.method === 'GET' && path === '/v1/operations/balances') {
@@ -115,6 +129,58 @@ export function createApi(
         } catch {
           return send(503, { error: 'SERVICE_UNAVAILABLE' });
         }
+      }
+      if (req.method === 'GET' && path === '/v1/ark/telemetry') {
+        const status = roleDenial(session, 'ADMIN');
+        if (status) return deny(status);
+        if (!arkPort) return send(503, ErrorResponse.parse({ error: 'ARK_TELEMETRY_NOT_CONFIGURED' }));
+        try {
+          const telemetry = await arkPort.telemetry();
+          return send(telemetry.operatorStatus === 'ok' ? 200 : 503, ArkTelemetryResponse.parse(telemetry));
+        } catch {
+          return send(503, ErrorResponse.parse({ error: 'ARK_TELEMETRY_UNAVAILABLE' }));
+        }
+      }
+      if (req.method === 'POST' && path === '/v1/ark/swaps') {
+        const status = roleDenial(session, 'USER');
+        if (status) return deny(status);
+        const input = ArkSwapRequest.parse(await body(req));
+        const key = String(req.headers['idempotency-key'] ?? '');
+        if (!/^[a-zA-Z0-9_-]{8,128}$/.test(key)) return send(400, ErrorResponse.parse({ error: 'IDEMPOTENCY_KEY_REQUIRED' }));
+        if (mode !== 'regtest' || !arkPort) {
+          return send(503, ErrorResponse.parse({ error: 'ARK_SWAPS_REGTEST_ADAPTER_NOT_CONFIGURED' }));
+        }
+        try {
+          const record = await arkService.submit(session!.account.id, key, input);
+          const { ownerId: _o, idempotencyKey: _k, fingerprint: _f, ...publicRecord } = record;
+          return send(record.status === 'SUBMITTED' || record.status === 'CONFIRMED' ? 201 : 202, ArkSwapStatusResponse.parse(publicRecord));
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : '';
+          if (msg === 'IDEMPOTENCY_KEY_CONFLICT' || msg === 'ARK_QUOTE_ALREADY_CONSUMED' || msg === 'ARK_INPUT_ALREADY_RESERVED') {
+            return send(409, ErrorResponse.parse({ error: msg }));
+          }
+          if (msg === 'ARK_QUOTE_INVALID_OR_EXPIRED') return send(400, ErrorResponse.parse({ error: msg }));
+          return send(503, ErrorResponse.parse({ error: 'ARK_EXECUTION_UNAVAILABLE' }));
+        }
+      }
+      if (req.method === 'GET' && path === '/v1/ark/swaps') {
+        const status = roleDenial(session, 'USER');
+        if (status) return deny(status);
+        if (mode !== 'regtest' || !arkPort) {
+          return send(503, ErrorResponse.parse({ error: 'ARK_SWAPS_REGTEST_ADAPTER_NOT_CONFIGURED' }));
+        }
+        return send(200, ArkSwapListResponse.parse({
+          network: 'regtest',
+          swaps: arkService.listSwaps(session!.account.id).map(toPublicArkSwap),
+        }));
+      }
+      if (req.method === 'GET' && /^\/v1\/ark\/swaps\/[a-f0-9-]{36}$/.test(path)) {
+        const status = roleDenial(session, 'USER');
+        if (status) return deny(status);
+        const id = path.split('/').at(-1)!;
+        const record = arkService.getSwap(session!.account.id, id);
+        if (!record) return send(404, ErrorResponse.parse({ error: 'SWAP_NOT_FOUND' }));
+        return send(200, toPublicArkSwap(record));
       }
       if (req.method === 'POST' && path === '/v1/swaps/reverse') {
         const status = roleDenial(session, 'USER');

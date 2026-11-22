@@ -161,17 +161,31 @@ test('three faces quote a real route and preserve keyboard, account and responsi
   assert.equal(await page.locator('#icon-ark image').getAttribute('href'), '/arkade-mark.svg');
   assert.deepEqual(await page.locator('.cube-send .rail-icon').evaluate(icon =>
     [getComputedStyle(icon).width, getComputedStyle(icon).height]), ['19px', '19px']);
-  const arkNotice = page.getByText('Solo regtest · swaps no disponibles', { exact: true });
-  await arkNotice.waitFor();
+  await page.getByText('69,759', { exact: true }).waitFor();
+  assert.equal(await page.locator('#service').textContent(), '850 sats');
+  assert.equal(await page.locator('#claim').textContent(), '241 sats');
+  assert.equal(await page.locator('#cost').textContent(), '1,091 sats');
+  await page.getByText('Ark cooperative offboard quote ready · regtest only', { exact: true }).waitFor();
+  assert.equal(await swap.isDisabled(), false);
+
   await page.getByLabel('Receive network').selectOption('ark');
   await waitForRails(page, 'onchain', 'ark');
   await amount.fill('80000');
-  await amount.press('Enter');
-  await page.clock.fastForward(1000);
+  await page.getByText('79,738', { exact: true }).waitFor();
+  await page.getByText('Ark boarding quote ready · regtest only', { exact: true }).waitFor();
+  assert.equal(await swap.isDisabled(), false);
+  assert.equal(await page.locator('#service').textContent(), '900 sats');
+  assert.equal(await page.locator('#claim').textContent(), '262 sats');
+  assert.equal(await page.locator('#cost').textContent(), '1,162 sats');
+  assert.equal(await page.locator('#receive-icon').getAttribute('href'), '#icon-ark');
+  assert.equal(quoteRequests.length, beforeArk);
+
+  await page.getByLabel('Send network').selectOption('lightning');
+  await waitForRails(page, 'lightning', 'ark');
+  const arkNotice = page.getByText('Solo regtest · swaps no disponibles', { exact: true });
   await arkNotice.waitFor();
   assert.equal(await swap.isDisabled(), true);
   assert.equal(await page.locator('#received-preview').textContent(), '—');
-  assert.equal(await page.locator('#receive-icon').getAttribute('href'), '#icon-ark');
   assert.equal(quoteRequests.length, beforeArk);
   for (const [width, height] of [[320, 700], [390, 844], [701, 844], [768, 844], [1024, 600], [1366, 768], [1440, 900]] as const) {
     await page.setViewportSize({ width, height });
@@ -726,6 +740,7 @@ test('actual mouse and touch gestures rotate in both directions and linked anima
   const receiveGrip = page.getByRole('button', { name: 'Rotate receive cube' });
   await send.selectOption('onchain');
   await waitForRails(page, 'onchain', 'ark');
+  await page.getByText('49,738', { exact: true }).waitFor();
   await receiveGrip.hover();
   await page.mouse.wheel(0, 80);
   await page.mouse.wheel(0, 80);
@@ -734,6 +749,7 @@ test('actual mouse and touch gestures rotate in both directions and linked anima
   await receiveGrip.hover();
   await page.mouse.wheel(0, -80);
   await waitForRails(page, 'lightning', 'ark');
+  await page.getByText('Solo regtest · swaps no disponibles', { exact: true }).waitFor();
   assert.equal(observations.length, 3);
   const video = page.video();
   await desktop.close();

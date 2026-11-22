@@ -1,4 +1,4 @@
-import { resolve } from 'node:path';
+import { isAbsolute, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createApi } from './api/server.js';
 import { ReadOnlyBitcoinClient, ReadOnlyLndClient } from './diagnostics/ReadOnlyClients.js';
@@ -10,10 +10,10 @@ import { SwapManager } from './core/SwapManager.js';
 import { config, type ApplicationMode } from './config.js';
 import { recoverInterruptedReverseRuns } from './api/reverseRecovery.js';
 import { parseOperatorCommand, runOperatorCLI } from '../scripts/run-controlled-reverse.js';
-import { isAbsolute } from 'node:path';
 import { checkedJSON } from './operator/OperatorFiles.js';
 import { createOwnedRuntimeFactory, ownedRuntimePolicySchema } from './operator/OwnedPreparationRuntime.js';
 import { createOwnedPreparation } from './api/ownedPreparation.js';
+import { createArkLabCliRunner, createArkRegtestCliPort, type ArkRegtestPort } from './ark/ArkAdapter.js';
 
 export function ownedStartupArguments(args: string[], mode: ApplicationMode) {
   if (args[0] !== '--owned-regtest') return undefined;
@@ -35,7 +35,7 @@ type Dependencies = {
   operator?: typeof runOperatorCLI;
   port?: number;
   reads?: { liquidity: () => Promise<Balances>; diagnostics?: () => ReturnType<typeof preflight>;
-    operations?: () => Promise<OperationsBalances> };
+    operations?: () => Promise<OperationsBalances>; ark?: ArkRegtestPort };
 };
 
 /** Real app entrypoint, also exercised offline with mock node/operator adapters. */
@@ -44,7 +44,8 @@ export async function startApplication(env: NodeJS.ProcessEnv = process.env, arg
   const operatorArgs = ownedArgs ? undefined : controlledStartupArguments(args, c.mode);
   let liquidity: () => Promise<Balances>; let diagnostics: (() => ReturnType<typeof preflight>) | undefined;
   let operations: (() => Promise<OperationsBalances>) | undefined;
-  if (dependencies.reads) ({ liquidity, diagnostics, operations } = dependencies.reads);
+  let ark: ArkRegtestPort | undefined;
+  if (dependencies.reads) ({ liquidity, diagnostics, operations, ark } = dependencies.reads);
   else if (c.mode === 'regtest') {
     const bitcoin = new ReadOnlyBitcoinClient(c.bitcoinUrl, c.cookie, c.wallet);
     const lnd = new ReadOnlyLndClient(c.lndUrl, c.cert, c.macaroon);
@@ -56,12 +57,14 @@ export async function startApplication(env: NodeJS.ProcessEnv = process.env, arg
     };
     diagnostics = () => preflight(bitcoin, lnd, c.wallet, c.mode);
     operations = () => collectOperationsBalances({ bitcoin, provider: lnd, alice });
+    const cli = c.arkCliBinaryPath ? createArkLabCliRunner(c.arkCliBinaryPath, { e2eFixture: c.arkCliE2eFixture }) : undefined;
+    ark = createArkRegtestCliPort({ cli, operatorInfoUrl: c.arkOperatorInfoUrl, labRoot: c.arkLabRoot });
   } else liquidity = async () => { throw new Error('SIMULATION_MODE_HAS_NO_NODE_CONNECTIVITY'); };
   const store = await Store.open(c.directory);
   try {
     await recoverInterruptedReverseRuns(store);
     const server = createApi(new SwapManager(store), liquidity, diagnostics, c.mode,
-      { operations, auth: { storePath: env.AUTH_STORE_PATH, origin: env.AUTH_ORIGIN } });
+      { operations, ark, arkStorePath: c.mode === 'regtest' ? join(c.directory, 'ark-swaps.json') : undefined, auth: { storePath: env.AUTH_STORE_PATH, origin: env.AUTH_ORIGIN } });
     if (ownedArgs) {
       let factory: Awaited<ReturnType<typeof createOwnedRuntimeFactory>> | undefined;
       try {

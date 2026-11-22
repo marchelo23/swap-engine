@@ -142,9 +142,10 @@
         <p id="account-status" class="status" role="status"></p>
       </article>
       <article class="panel inset">
-        <div class="panel-header"><h2>Swap history</h2><span class="tag">UNAVAILABLE</span></div>
-        <p class="muted">Private history requires swaps with verified owner IDs.</p>
-        <dl class="metric-grid"><div><dt>Active swaps</dt><dd>—</dd></div><div><dt>Completed swaps</dt><dd>—</dd></div><div><dt>Failed or refunded swaps</dt><dd>—</dd></div></dl>
+        <div class="panel-header"><h2>Swap history</h2><span id="account-history-tag" class="tag">UNAVAILABLE</span></div>
+        <p id="account-history-status" class="muted">Private history requires swaps with verified owner IDs.</p>
+        <dl class="metric-grid"><div><dt>Active swaps</dt><dd id="account-active-swaps">—</dd></div><div><dt>Completed swaps</dt><dd id="account-completed-swaps">—</dd></div><div><dt>Failed or refunded swaps</dt><dd id="account-failed-swaps">—</dd></div></dl>
+        <ul id="account-history-list" class="tx-list" hidden></ul>
       </article>
     </div>
     <a class="text-link" href="#track">Swap status <span aria-hidden="true">↗</span></a>
@@ -206,21 +207,22 @@
       <ul id="blockers" class="blockers" hidden></ul>
     </article>
     <article class="panel inset" id="ark-panel" aria-labelledby="ark-title">
-      <div class="panel-header"><h2 id="ark-title">Ark adapter</h2><span class="tag">READ-ONLY</span></div>
-      <p class="muted">No Ark adapter is connected. Regtest telemetry and Ark swaps are unavailable.</p>
+      <div class="panel-header"><h2 id="ark-title">Ark adapter</h2><span id="ark-tag" class="tag">REGTEST</span></div>
+      <p id="ark-status" class="muted">Ark ↔ On-chain regtest routes (boarding and cooperative offboarding) are enabled; Ark ↔ Lightning remains unavailable.</p>
     </article>
     <article class="panel inset">
-      <div class="panel-header"><h2>Swap activity</h2><span class="tag">REPORTING UNAVAILABLE</span></div>
-      <dl class="metric-grid"><div><dt>Total swaps</dt><dd>—</dd></div><div><dt>Completed</dt><dd>—</dd></div><div><dt>Pending</dt><dd>—</dd></div><div><dt>Failed</dt><dd>—</dd></div></dl>
-      <dl class="metric-grid"><div><dt>On-chain sent</dt><dd>—</dd></div><div><dt>On-chain received</dt><dd>—</dd></div><div><dt>Lightning sent</dt><dd>—</dd></div><div><dt>Lightning received</dt><dd>—</dd></div></dl>
+      <div class="panel-header"><h2>Swap activity</h2><span id="activity-tag" class="tag">REPORTING UNAVAILABLE</span></div>
+      <dl class="metric-grid"><div><dt>Total swaps</dt><dd id="activity-total">—</dd></div><div><dt>Completed</dt><dd id="activity-completed">—</dd></div><div><dt>Pending</dt><dd id="activity-pending">—</dd></div><div><dt>Failed</dt><dd id="activity-failed">—</dd></div></dl>
+      <dl class="metric-grid"><div><dt>On-chain sent</dt><dd id="activity-onchain-sent">—</dd></div><div><dt>On-chain received</dt><dd id="activity-onchain-received">—</dd></div><div><dt>Ark sent</dt><dd id="activity-ark-sent">—</dd></div><div><dt>Ark received</dt><dd id="activity-ark-received">—</dd></div><div><dt>Lightning sent</dt><dd id="activity-lightning-sent">—</dd></div><div><dt>Lightning received</dt><dd id="activity-lightning-received">—</dd></div></dl>
     </article>
     <article class="panel inset">
-      <div class="panel-header"><h2>Fee accounting</h2><span class="tag">ACCOUNTING UNAVAILABLE</span></div>
-      <dl class="metric-grid"><div><dt>Collected service fees</dt><dd>—</dd></div><div><dt>Actual network fees</dt><dd>—</dd></div><div><dt>Net operational revenue</dt><dd>—</dd></div></dl>
+      <div class="panel-header"><h2>Fee accounting</h2><span id="fee-tag" class="tag">ACCOUNTING UNAVAILABLE</span></div>
+      <dl class="metric-grid"><div><dt>Collected service fees</dt><dd id="fee-collected">—</dd></div><div><dt>Estimated network fees</dt><dd id="fee-network">—</dd></div><div><dt>Net operational revenue</dt><dd id="fee-net-revenue">—</dd></div></dl>
     </article>
     <article class="panel inset">
-      <div class="panel-header"><h2>Transactions</h2><span class="tag">REPORTING UNAVAILABLE</span></div>
-      <p class="muted">The backend does not provide an administrator transaction list.</p>
+      <div class="panel-header"><h2>Transactions</h2><span id="tx-tag" class="tag">REPORTING UNAVAILABLE</span></div>
+      <p id="tx-status" class="muted">The backend does not provide an administrator transaction list.</p>
+      <ul id="tx-list" class="tx-list" hidden></ul>
     </article>
     </div>
   </section>

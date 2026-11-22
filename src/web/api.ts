@@ -1,8 +1,13 @@
 import * as z from 'zod/mini';
-import type { HealthResponse, QuoteResponse } from '../api/schemas.js';
+import type { ArkAdminReportResponse, ArkQuoteResponse, ArkSwapListResponse, ArkSwapStatusResponse, ArkTelemetryResponse, HealthResponse, QuoteResponse } from '../api/schemas.js';
 import { states } from '../core/SwapTypes.js';
 
 export type Quote = z.infer<typeof QuoteResponse>;
+export type ArkQuote = z.infer<typeof ArkQuoteResponse>;
+export type ArkSwapStatus = z.infer<typeof ArkSwapStatusResponse>;
+export type ArkSwapList = z.infer<typeof ArkSwapListResponse>;
+export type ArkAdminReport = z.infer<typeof ArkAdminReportResponse>;
+export type ArkTelemetry = z.infer<typeof ArkTelemetryResponse>;
 type Health = z.infer<typeof HealthResponse>;
 const session = z.object({
   user: z.object({ id: z.string(), username: z.string(), role: z.enum(['USER', 'ADMIN']) }),
@@ -21,6 +26,78 @@ const quote = z.object({
   id: z.uuid(), amountSats: amount, serviceFeeSats: amount, invoiceSats: amount,
   fundingReserveSats: amount, claimFeeSats: amount, expiresAt: z.int(),
 }) satisfies z.ZodMiniType<Quote>;
+const arkQuote = z.object({
+  id: z.uuid(), network: z.literal('regtest'),
+  route: z.enum(['onchain-to-ark', 'ark-to-onchain']),
+  method: z.enum(['boarding', 'cooperative-offboarding']),
+  amountSats: amount, serviceFeeSats: amount, invoiceSats: amount,
+  fundingReserveSats: amount, claimFeeSats: amount, netSats: amount, dustSats: amount,
+  expiresAt: z.int(),
+}) satisfies z.ZodMiniType<ArkQuote>;
+
+const arkSwapStatus = z.object({
+  id: z.uuid(), network: z.literal('regtest'),
+  route: z.enum(['onchain-to-ark', 'ark-to-onchain']),
+  method: z.enum(['boarding', 'cooperative-offboarding']),
+  status: z.enum(['PREPARED', 'SUBMITTED', 'CONFIRMED', 'UNCERTAIN', 'REJECTED']),
+  quote: arkQuote,
+  inputOutpoint: z.string(),
+  destination: z.string(),
+  commitmentTxid: z.nullable(z.string()),
+  createdAt: z.int(),
+  updatedAt: z.int(),
+}) satisfies z.ZodMiniType<ArkSwapStatus>;
+
+const arkSwapList = z.object({
+  network: z.literal('regtest'),
+  swaps: z.array(arkSwapStatus),
+}) satisfies z.ZodMiniType<ArkSwapList>;
+
+const arkAdminReport = z.object({
+  network: z.literal('regtest'),
+  summary: z.object({
+    totalSwaps: amount,
+    completedSwaps: amount,
+    pendingSwaps: amount,
+    failedSwaps: amount,
+    onchainSentSats: amount,
+    onchainReceivedSats: amount,
+    arkSentSats: amount,
+    arkReceivedSats: amount,
+    collectedServiceFeesSats: amount,
+    estimatedNetworkFeesSats: amount,
+    netOperationalRevenueSats: amount,
+  }),
+  swaps: z.array(arkSwapStatus),
+}) satisfies z.ZodMiniType<ArkAdminReport>;
+
+const arkWalletBalance = z.nullable(z.object({
+  confirmedSats: z.nullable(amount),
+  preconfirmedSats: z.nullable(amount),
+  recoverableSats: z.nullable(amount),
+  pendingRecoverySats: z.nullable(amount),
+  totalSats: z.nullable(amount),
+}));
+const arkTelemetry = z.object({
+  network: z.literal('regtest'),
+  asset: z.literal('BTC'),
+  capturedAt: z.iso.datetime(),
+  operatorStatus: z.enum(['ok', 'unavailable']),
+  cliConfigured: z.boolean(),
+  operator: z.nullable(z.object({
+    version: z.string(),
+    signerPubkey: z.string(),
+    forfeitAddress: z.string(),
+    dustSats: amount,
+    sessionDurationSeconds: z.nullable(amount),
+    unilateralExitDelay: z.nullable(amount),
+    boardingExitDelay: z.nullable(amount),
+  })),
+  wallets: z.nullable(z.object({
+    alice: arkWalletBalance,
+    bob: arkWalletBalance,
+  })),
+}) satisfies z.ZodMiniType<ArkTelemetry>;
 
 const probe = z.enum(['ok', 'unavailable', 'invalid_response']);
 const height = z.nullable(amount);
@@ -122,6 +199,18 @@ export const api = {
     method: 'POST', headers: { 'Content-Type': 'application/json', ...(csrfToken ? { 'x-csrf-token': csrfToken } : {}) },
     body: JSON.stringify({ amountSats }), signal,
   }),
+  arkQuote: (route: 'onchain-to-ark' | 'ark-to-onchain', amountSats: number, signal: AbortSignal, csrfToken?: string) => request('/v1/ark/quotes', arkQuote, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', ...(csrfToken ? { 'x-csrf-token': csrfToken } : {}) },
+    body: JSON.stringify({ route, amountSats }), signal,
+  }),
+  arkSwap: (quoteId: string, route: 'onchain-to-ark' | 'ark-to-onchain', amountSats: number, key: string, csrfToken: string) => request('/v1/ark/swaps', arkSwapStatus, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-csrf-token': csrfToken, 'Idempotency-Key': key },
+    body: JSON.stringify({ quoteId, route, amountSats }),
+  }),
+  arkSwaps: (signal: AbortSignal) => request('/v1/ark/swaps', arkSwapList, { signal }),
+  arkAdminReport: (signal: AbortSignal) => request('/v1/admin/ark/swaps', arkAdminReport, { signal }),
+  arkTelemetry: (signal: AbortSignal) => request('/v1/ark/telemetry', arkTelemetry, { signal }, true),
   reverseAvailability: (signal: AbortSignal) => request('/v1/reverse/availability', reverseAvailability, { signal }),
   preparation: (id: string, signal: AbortSignal) => request('/v1/reverse/preparations/' + encodeURIComponent(id), preparation, { signal }),
   prepare(key: string, csrf: string, amountSats: number) {

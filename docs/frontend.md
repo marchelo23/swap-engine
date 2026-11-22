@@ -37,7 +37,7 @@ SEND holds the principal and source selector. SWAP holds the fee breakdown and c
 
 The rotation cycle is On-chain → Lightning → Liquid → Ark → On-chain. A direct selector change takes forward quarter turns through each intermediate rail. If both selected rails coincide, the opposite cube rotates forward to the next non-Ark rail. Quotes wait for both outer cubes to settle. Existing quotes are discarded on rail and amount changes. Amount edits share a short debounce, and a stale response cannot update the face values.
 
-Selecting Ark on either side shows “Solo regtest · swaps no disponibles” and disables quoting and swapping. The read-only Ark panel in administrator Operations explains that there is no connected adapter or telemetry.
+Selecting Ark ↔ On-chain (boarding or cooperative offboarding) quotes the regtest route via `POST /v1/ark/quotes`; selecting Ark ↔ Lightning or Ark ↔ Liquid shows “Solo regtest · swaps no disponibles” and disables quoting and swapping. The Ark panel in administrator Operations reflects the regtest Ark ↔ On-chain scope.
 
 **Arkade mark:** Ark Labs. The local `src/web/arkade-mark.svg` is the unmodified monochrome
 `Logo/SVG/arkade-mark-ink.svg` from the [official brand kit](https://arkadeos.com/arkade-brand-kit.zip)
@@ -48,7 +48,7 @@ Selecting Ark on either side shows “Solo regtest · swaps no disponibles” an
 | Surface | Current behavior |
 | --- | --- |
 | Swap | `POST /v1/quotes` accepts integer `amountSats` from 10,000 to 1,000,000. Net receipt is principal minus estimated claim fee. Estimated user cost is invoice total minus net receipt. The provider funding reserve is omitted from user costs. Lightning routing fees are unknown. |
-| Rails | Lightning → On-chain is the only supported route. The generic quote is preview-only. A controlled reverse swap requires an authenticated, server-prepared swap and explicit approval. On-chain → Lightning and routes involving Liquid show an unavailable state. |
+| Rails | Lightning → On-chain and Ark ↔ On-chain (regtest boarding and cooperative offboarding) are supported quote routes. The generic quote is preview-only. A controlled reverse swap requires an authenticated, server-prepared swap and explicit approval. On-chain → Lightning, Ark ↔ Lightning, and routes involving Liquid show an unavailable state. |
 | Status and history | The frontend reads prepared swaps from the authenticated owner API. Missing or closed gateways show unavailable. |
 | Account | Same-origin sign-in, session verification and logout. The form accepts credentials even if the session endpoint is unavailable. A missing login endpoint displays a retryable error. A verified session is required to open the account. The browser keeps the CSRF token in memory and uses it for logout. It expects the session expiry in epoch milliseconds. |
 | Operations | The UI requires a verified ADMIN session before revealing the admin view. On a regtest read-only backend it can read preflight, including structured 503 reports. The balance panel reads the authenticated endpoint below and shows unavailable data explicitly. |

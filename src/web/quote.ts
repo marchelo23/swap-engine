@@ -1,6 +1,6 @@
-import { api, quoteTotals, type Quote } from './api.js';
+import { api, quoteTotals, type ArkQuote, type Quote } from './api.js';
 import { mountCubes } from './cubes.js';
-import { canQuote, defaultPair, railLabel, type Pair } from './rails.js';
+import { arkRoute, canQuote, defaultPair, isArkOnchainPair, railLabel, type Pair } from './rails.js';
 import { details, get, integer, message, sats, text } from './ui.js';
 
 export function mountQuote(prepare?: (stillVisible: () => boolean, amountSats: number) => Promise<void>) {
@@ -8,6 +8,7 @@ export function mountQuote(prepare?: (stillVisible: () => boolean, amountSats: n
   const amount = get<HTMLInputElement>('amount');
   const action = get<HTMLButtonElement>('swap-action');
   const dialog = get<HTMLDialogElement>('review-dialog');
+  const startButton = dialog.querySelector<HTMLButtonElement>('button[type="button"]')!;
   let successNotice = false;
   const status = (message: string) => text('quote-status', successNotice ? '¡Swap exitoso!' : message);
   const numbers = ['service', 'claim', 'cost', 'received-preview'];
@@ -20,10 +21,53 @@ export function mountQuote(prepare?: (stillVisible: () => boolean, amountSats: n
   let csrf: string | undefined;
   let canPrepare = false; let preparing = false;
   let revision = 0;
-  let quote: Quote | undefined;
-  let pending: { controller: AbortController; work: Promise<Quote | undefined> } | undefined;
+  let quote: Quote | ArkQuote | undefined;
+  let pending: { controller: AbortController; work: Promise<Quote | ArkQuote | undefined> } | undefined;
   let debounce: number | undefined;
   let expiry: number | undefined;
+  let submittingArk = false;
+  let executedArkSwapId: string | undefined;
+
+  startButton.addEventListener('click', async () => {
+    const route = arkRoute(pair);
+    if (!route || !quote || submittingArk || executedArkSwapId || !csrf || get('mode').dataset.mode !== 'regtest') return;
+    if (quote.expiresAt <= Date.now()) {
+      startButton.disabled = true;
+      text('execution-status', 'Quote expired · Close review and press Swap for a fresh quote.');
+      return;
+    }
+    submittingArk = true;
+    startButton.disabled = true;
+    window.clearTimeout(expiry);
+    text('execution-status', 'Submitting regtest Ark swap…');
+    try {
+      const key = crypto.randomUUID();
+      const result = await api.arkSwap(quote.id, route, quote.amountSats, key, csrf);
+      executedArkSwapId = result.id;
+      details(get('review-details'), [
+        ['Route', railLabel[pair.send] + ' → ' + railLabel[pair.receive]],
+        ['Method', result.method === 'boarding' ? 'Boarding (On-chain → Ark VTXO)' : 'Cooperative offboarding (Ark VTXO → On-chain)'],
+        ['Status', result.status],
+        ['Swap ID', result.id],
+        ['Quote principal', sats(result.quote.amountSats)],
+        ['Service fee', sats(result.quote.serviceFeeSats)],
+        ['Estimated batch commitment fee', sats(result.quote.claimFeeSats)],
+        ['Input outpoint', result.inputOutpoint],
+        ['Destination', result.destination],
+        ['Commitment txid', result.commitmentTxid ?? 'Pending batch round'],
+        ['Net receipt', sats(result.quote.netSats)],
+      ]);
+      text('execution-status', result.status === 'SUBMITTED' || result.status === 'CONFIRMED'
+        ? '¡Swap Ark regtest enviado!'
+        : `Ark swap status: ${result.status}`);
+      status('¡Swap exitoso!');
+    } catch (error) {
+      text('execution-status', message(error));
+      startButton.disabled = false;
+    } finally {
+      submittingArk = false;
+    }
+  });
 
   function invalidate() {
     revision++;
@@ -32,14 +76,20 @@ export function mountQuote(prepare?: (stillVisible: () => boolean, amountSats: n
     window.clearTimeout(debounce);
     window.clearTimeout(expiry);
     quote = undefined;
+    executedArkSwapId = undefined;
     delete form.dataset.loading;
     if (dialog.open) dialog.close();
     for (const id of numbers) text(id, '—');
   }
 
+  function isArkRoute() {
+    return isArkOnchainPair(pair);
+  }
+
   function principal() {
     const value = Number(amount.value);
-    if (/^\d+$/.test(amount.value) && value >= (controlled === true ? 11_000 : 10_000) && value <= (controlled === true ? 50_000 : 1_000_000)) return value;
+    const controlledBounds = controlled === true && !isArkRoute();
+    if (/^\d+$/.test(amount.value) && value >= (controlledBounds ? 11_000 : 10_000) && value <= (controlledBounds ? 50_000 : 1_000_000)) return value;
     return undefined;
   }
 
@@ -59,15 +109,26 @@ export function mountQuote(prepare?: (stillVisible: () => boolean, amountSats: n
     if (pending) return pending.work;
     const active = new AbortController();
     const version = revision;
+    const route = arkRoute(pair);
     form.dataset.loading = 'true';
     status('Quoting route…');
-    const work = api.quote(value, active.signal, csrf).then(result => {
+    const request = route
+      ? api.arkQuote(route, value, active.signal, csrf)
+      : api.quote(value, active.signal, csrf);
+    const work = request.then(result => {
       if (version !== revision) return;
-      const totals = quoteTotals(result, value, Date.now(), controlled === true);
+      const totals = quoteTotals(result, value, Date.now(), !route && controlled === true);
       quote = result;
       animateValues([sats(result.serviceFeeSats), sats(result.claimFeeSats), sats(totals.lost), integer(totals.received)]);
-      if (controlled === true) action.disabled = preparing || !aligned || !canQuote(pair) || !canPrepare;
-      status(controlled === true ? 'Quote ready · review before swapping' : 'Quote ready · execution off');
+      if (route) {
+        action.disabled = !aligned || !canQuote(pair);
+        status(route === 'onchain-to-ark'
+          ? 'Ark boarding quote ready · regtest only'
+          : 'Ark cooperative offboard quote ready · regtest only');
+      } else {
+        if (controlled === true) action.disabled = preparing || !aligned || !canQuote(pair) || !canPrepare;
+        status(controlled === true ? 'Quote ready · review before swapping' : 'Quote ready · execution off');
+      }
       expiry = window.setTimeout(() => {
         invalidate();
         status('Quote expired · press Swap');
@@ -90,12 +151,23 @@ export function mountQuote(prepare?: (stillVisible: () => boolean, amountSats: n
     if (!visible) return;
     const value = principal();
     if (value === undefined) amount.setAttribute('aria-invalid', 'true'); else amount.removeAttribute('aria-invalid');
-    if (aligned && (pair.send === 'ark' || pair.receive === 'ark')) {
+    if (aligned && (pair.send === 'ark' || pair.receive === 'ark') && !isArkOnchainPair(pair)) {
       action.disabled = true;
       successNotice = false;
       status('Solo regtest · swaps no disponibles');
       return;
     }
+    if (aligned && isArkOnchainPair(pair)) {
+      text('amount-help', '10,000–1,000,000 sats');
+      action.disabled = !aligned || !canQuote(pair) || value === undefined;
+      if (value === undefined) { status('Enter 10,000–1,000,000 sats'); return; }
+      if (!quote) {
+        status('Updating quote…');
+        debounce = window.setTimeout(() => void load(value), delay);
+      }
+      return;
+    }
+    text('amount-help', controlled === true ? '11,000–50,000 sats' : '10,000–1,000,000 sats');
     if (controlled !== false) {
       action.disabled = preparing || controlled !== true || !aligned || !canQuote(pair) || (canPrepare && (!value || !quote || quote.invoiceSats !== value));
       if (controlled === true && canPrepare && aligned && canQuote(pair) && value !== undefined && !quote && !preparing) {
@@ -131,7 +203,8 @@ export function mountQuote(prepare?: (stillVisible: () => boolean, amountSats: n
   form.addEventListener('submit', async event => {
     event.preventDefault();
     successNotice = false;
-    if (controlled === true) {
+    const route = arkRoute(pair);
+    if (!route && controlled === true) {
       if (preparing) return;
       if (canPrepare && prepare && !preparing && aligned && canQuote(pair)) {
         const version = revision; const active = () => visible && version === revision && controlled === true;
@@ -146,9 +219,9 @@ export function mountQuote(prepare?: (stillVisible: () => boolean, amountSats: n
       return;
     }
     const value = principal();
-    if (controlled !== false || !aligned || !canQuote(pair) || value === undefined || dialog.open) return;
+    if ((!route && controlled !== false) || !aligned || !canQuote(pair) || value === undefined || dialog.open) return;
     window.clearTimeout(debounce);
-    if (quote && quote.expiresAt <= Date.now()) invalidate();
+    if (quote && (quote.expiresAt <= Date.now() || executedArkSwapId)) invalidate();
     const version = revision;
     const current = quote ?? await load(value);
     if (!current || version !== revision || dialog.open || get('swap').hidden) return;
@@ -159,6 +232,31 @@ export function mountQuote(prepare?: (stillVisible: () => boolean, amountSats: n
       return;
     }
     const totals = quoteTotals(current, value, now);
+    if (route) {
+      const boarding = route === 'onchain-to-ark';
+      details(get('review-details'), [
+        ['Route', railLabel[pair.send] + ' → ' + railLabel[pair.receive]],
+        ['Method', boarding ? 'Boarding (On-chain → Ark VTXO)' : 'Cooperative offboarding (Ark VTXO → On-chain)'],
+        ['Network', 'Bitcoin regtest'],
+        ['Quote principal', sats(current.amountSats)],
+        ['Operator fee', sats(current.serviceFeeSats)],
+        ['Estimated batch commitment fee', sats(current.claimFeeSats)],
+        [boarding ? 'Total on-chain funding' : 'Total Ark VTXO debit', sats(current.invoiceSats)],
+        [boarding ? 'Estimated Ark VTXO credit' : 'Estimated on-chain payout', sats(totals.received)],
+        ['Estimated cost', sats(totals.lost)],
+      ]);
+      const mode = get('mode').dataset.mode;
+      const canExecuteArk = mode === 'regtest' && Boolean(csrf);
+      startButton.disabled = !canExecuteArk;
+      text('execution-status', canExecuteArk
+        ? 'Regtest Ark adapter ready · Press Start swap to submit.'
+        : mode === 'regtest'
+          ? 'Regtest Ark adapter · Sign in at Account to execute swap.'
+          : 'Simulation · Execution disabled (regtest only).');
+      dialog.showModal();
+      return;
+    }
+    startButton.disabled = true;
     details(get('review-details'), [
       ['Route', railLabel[pair.send] + ' → ' + railLabel[pair.receive]],
       ['Quote principal', sats(current.amountSats)],

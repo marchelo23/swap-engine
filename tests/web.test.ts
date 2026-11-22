@@ -6,7 +6,7 @@ import type { AddressInfo } from 'node:net';
 import { setup } from './helpers.js';
 import { createApi } from '../src/api/server.js';
 import { quoteTotals } from '../src/web/api.js';
-import { canQuote, defaultPair, linkRail, rails, stepRail } from '../src/web/rails.js';
+import { canQuote, defaultPair, isArkOnchainPair, linkRail, rails, stepRail } from '../src/web/rails.js';
 
 test('rail turns follow the cycle and linked selection always honors the explicit side', () => {
   assert.equal(stepRail('onchain', 1), 'lightning');
@@ -26,7 +26,11 @@ test('rail turns follow the cycle and linked selection always honors the explici
       const prior = { send, receive }[opposite];
       const fallback = { lightning: 'liquid', liquid: 'onchain', onchain: 'lightning', ark: 'onchain' } as const;
       assert.equal(next[opposite], rail === prior ? fallback[rail] : prior);
-      assert.equal(canQuote(next), next.send === 'lightning' && next.receive === 'onchain');
+      const expectedQuotable = (next.send === 'lightning' && next.receive === 'onchain')
+        || (next.send === 'onchain' && next.receive === 'ark')
+        || (next.send === 'ark' && next.receive === 'onchain');
+      assert.equal(canQuote(next), expectedQuotable);
+      assert.equal(isArkOnchainPair(next), (next.send === 'onchain' && next.receive === 'ark') || (next.send === 'ark' && next.receive === 'onchain'));
     }
   }
 });
@@ -69,6 +73,29 @@ test('same-origin frontend serves only allowlisted assets and uses the real quot
     });
     assert.equal(response.status, 201);
     assert.deepEqual(quoteTotals(await response.json(), 50_000), { received: 49_500, lost: 1_250 });
+
+    const boarding = await fetch(base + '/v1/ark/quotes', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: '{"route":"onchain-to-ark","amountSats":50000}',
+    });
+    assert.equal(boarding.status, 201);
+    const boardingQuote = await boarding.json();
+    assert.equal(boardingQuote.method, 'boarding');
+    assert.equal(boardingQuote.serviceFeeSats, 750);
+    assert.deepEqual(quoteTotals(boardingQuote, 50_000), { received: 49_738, lost: 1_012 });
+
+    const offboarding = await fetch(base + '/v1/ark/quotes', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: '{"route":"ark-to-onchain","amountSats":80000}',
+    });
+    assert.equal(offboarding.status, 201);
+    const offboardQuote = await offboarding.json();
+    assert.equal(offboardQuote.method, 'cooperative-offboarding');
+    assert.equal(offboardQuote.serviceFeeSats, 900);
+    assert.deepEqual(quoteTotals(offboardQuote, 80_000), { received: 79_759, lost: 1_141 });
+
+    const invalidArkRoute = await fetch(base + '/v1/ark/quotes', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: '{"route":"ark-to-lightning","amountSats":50000}',
+    });
+    assert.equal(invalidArkRoute.status, 400);
   } finally {
     await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
     await f.cleanup();
