@@ -63,6 +63,8 @@ export type Config = {
   deploymentId: string | null;
   signetChallenge: string | null;
   allowLegacyOfflineMigration: boolean;
+  features: { reverse: false; forward: false; guest: false; mining: false };
+  miningPolicy: 'disabled' | 'regtest-only';
   spendPolicy: 'disabled' | 'regtest-only';
   rails: { onchain: OnchainRailConfig; lightning: LightningRailConfig; ark: ArkRailConfig; liquid: LiquidRailConfig };
   /** Legacy flat fields retained for existing clients and scripts. */
@@ -201,6 +203,14 @@ export function config(env: NodeJS.ProcessEnv = process.env): Config {
   const signetChallenge = selectedEnvironment === 'signet' ? required(env, 'SIGNET_CHALLENGE') : null;
   if (signetChallenge !== null && !/^[0-9a-f]{1,200}$/.test(signetChallenge)) throw new Error('SIGNET_CHALLENGE_INVALID');
   if (deploymentId && !/^[A-Za-z0-9._-]{1,64}$/.test(deploymentId)) throw new Error('DEPLOYMENT_ID_INVALID');
+  for (const name of ['ENABLE_REVERSE_EXECUTION', 'FEATURE_REVERSE_EXECUTION', 'ENABLE_FORWARD_EXECUTION',
+    'FEATURE_FORWARD_EXECUTION', 'ENABLE_GUEST_EXECUTION', 'FEATURE_GUEST_EXECUTION', 'ENABLE_MINING', 'FEATURE_MINING'])
+    if (env[name] && env[name] !== 'false') throw new Error('FEATURE_EXECUTION_DISABLED');
+  const features = { reverse: false as const, forward: false as const, guest: false as const, mining: false as const };
+  const miningRaw = (env.MINING_POLICY ?? 'disabled').trim().toLowerCase();
+  if (!['disabled', 'regtest-only'].includes(miningRaw)) throw new Error('MINING_POLICY_INVALID');
+  const miningPolicy = miningRaw as 'disabled' | 'regtest-only';
+  if (miningPolicy === 'regtest-only' && (selectedEnvironment !== 'regtest' || mode !== 'regtest')) throw new Error('MINING_POLICY_REGTEST_ONLY');
   const spendRaw = (env.SPEND_POLICY ?? (env.ENABLE_REGTEST_SPENDING === 'true' ? 'regtest-only' : 'disabled')).trim().toLowerCase();
   if (!['disabled', 'regtest-only'].includes(spendRaw)) throw new Error('SPEND_POLICY_INVALID');
   const spendPolicy = spendRaw as 'disabled' | 'regtest-only';
@@ -251,7 +261,7 @@ export function config(env: NodeJS.ProcessEnv = process.env): Config {
   };
   return {
     environment: selectedEnvironment, mode, network: 'regtest', readOnly: true, chain, bitcoinNetwork, bitcoinGenesisHash,
-    deploymentId: deploymentId ?? null, signetChallenge, allowLegacyOfflineMigration, spendPolicy, rails: { onchain, lightning, ark, liquid },
+    deploymentId: deploymentId ?? null, signetChallenge, allowLegacyOfflineMigration, features, miningPolicy, spendPolicy, rails: { onchain, lightning, ark, liquid },
     bitcoinUrl: onchain.enabled ? onchain.url : '', cookie: onchain.enabled ? onchain.cookie : '',
     wallet: onchain.enabled ? onchain.wallet : '',
     lndUrl: lightning.enabled ? lightning.provider.url : '', cert: lightning.enabled ? lightning.provider.cert : '',

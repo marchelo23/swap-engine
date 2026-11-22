@@ -2,7 +2,9 @@ import { link, mkdir, open, readFile, unlink } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 
-export type StateScope = { environment: string; deploymentId: string; genesisHash: string | null; wallet: string };
+export type StateScope = { environment: string; deploymentId: string; genesisHash: string | null; wallet: string;
+  bitcoinOrigin?: string | null; providerOrigin?: string | null; payerOrigin?: string | null;
+  providerNode?: string | null; payerNode?: string | null };
 export type StateScopeOptions = { allowLegacyOfflineMigration?: boolean };
 
 const markerName = '.environment.json';

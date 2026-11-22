@@ -33,8 +33,9 @@ export function verifyBitcoinIdentity(chain: unknown, genesisHash: string,
   expected: BitcoinIdentityExpectation, mining?: unknown): { name: BitcoinIdentityExpectation['name']; genesisHash: string } {
   if (!hex64.test(expected.genesisHash) || expected.genesisHash !== genesisHash) throw identityError('GENESIS_MISMATCH');
   const parsed = chainInfo.parse(chain);
-  if (parsed.chain !== expected.name) {
-    if (parsed.chain === 'main' && expected.name !== 'mainnet') throw identityError('CHAIN_MAINNET_REJECTED');
+  const actualName = parsed.chain === 'main' ? 'mainnet' : parsed.chain;
+  if (actualName !== expected.name) {
+    if (actualName === 'mainnet' && expected.name !== 'mainnet') throw identityError('CHAIN_MAINNET_REJECTED');
     throw identityError('CHAIN_IDENTITY_MISMATCH');
   }
   if (parsed.initialblockdownload !== false || !Number.isSafeInteger(parsed.blocks)) throw identityError('CHAIN_UNVERIFIED');

@@ -4,7 +4,7 @@ import { LndClient } from '../lightning/LndClient.js';
 const bitcoinReads = new Set(['getblockchaininfo', 'getnetworkinfo', 'getindexinfo', 'getzmqnotifications',
   'listwallets', 'listwalletdir', 'getwalletinfo', 'getbalances', 'getaddressinfo', 'listunspent',
   'getblockhash', 'getblockheader', 'getblock', 'getrawtransaction', 'getrawmempool',
-  'gettxout', 'listlockunspent', 'getmempoolinfo']);
+  'gettxout', 'listlockunspent', 'getmempoolinfo', 'getmininginfo']);
 const lndReads = new Set(['/v1/state', '/v1/getinfo', '/v1/channels', '/v1/peers', '/v1/balance/blockchain',
   '/v2/wallet/addresses?account_name=default']);
 

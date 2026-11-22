@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
 
 const git = (...args) => execFileSync('git', args, { encoding: 'utf8', maxBuffer: 20_000_000 }).trim();
-const allowedEnvExamples = new Set(['.env.example', '.env.regtest.example', '.env.signet.example', '.env.mainnet.example', '.env.ark-regtest.example', '.env.liquid-regtest.example']);
+const allowedEnvExamples = new Set(['.env.example', '.env.regtest.example', '.env.signet.example', '.env.mainnet.example', '.env.ark.regtest.example', '.env.liquid.regtest.example', '.env.ark-regtest.example', '.env.liquid-regtest.example']);
 const forbidden = /(^|\/)(\.env(?:\..*)?|\.cookie|wallet\.dat|[^/]*\.(?:macaroon|pem|key|cert|db|sqlite|seed|backup)|data|node_modules|secrets)(\/|$)/i;
 const rules = [
   /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/,

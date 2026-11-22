@@ -35,7 +35,7 @@ async function json(req: IncomingMessage) {
  * custody/invoice calls. No HTTP request supplies credentials, destinations or node evidence. */
 export async function createOwnedPreparation<S extends { account: { id: string; role: string; username: string } }>(
   store: Store, sessions: OwnerSessions<S>, factory: PreparationFactory,
-  policy: { mode: 'regtest'; ownerId: string; ownerUsername: 'truja503'; origin: string; profileDigest: string },
+  policy: { mode: 'regtest'; ownerId: string; ownerUsername: string; origin: string; profileDigest: string },
 ) {
   if (policy.mode !== 'regtest' || !z.uuid().safeParse(policy.ownerId).success ||
     !/^[a-f0-9]{64}$/.test(policy.profileDigest) || new URL(policy.origin).origin !== policy.origin ||

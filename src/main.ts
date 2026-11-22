@@ -12,10 +12,29 @@ import { recoverInterruptedReverseRuns } from './api/reverseRecovery.js';
 import { parseOperatorCommand, runOperatorCLI } from '../scripts/run-controlled-reverse.js';
 import { isAbsolute } from 'node:path';
 import { checkedJSON } from './operator/OperatorFiles.js';
-import { createOwnedRuntimeFactory, ownedRuntimePolicySchema } from './operator/OwnedPreparationRuntime.js';
+import { createOwnedRuntimeFactory, ownedRuntimePolicySchema, type OwnedRuntimePolicy } from './operator/OwnedPreparationRuntime.js';
 import { createOwnedPreparation } from './api/ownedPreparation.js';
 import { assertStateScope } from './environment/StateScope.js';
 import { attestStartup, type StartupScope } from './environment/StartupAttestation.js';
+
+function sameOrigin(url: string, origin: string) { try { return new URL(url).origin === origin; } catch { return false; } }
+function assertOwnedPolicyBinding(policy: OwnedRuntimePolicy, c: ReturnType<typeof config>, identity: StartupScope | undefined) {
+  if (!identity || !identity.verified.onchain || !identity.verified.lightning || !identity.providerNode || !identity.payerNode)
+    throw new Error('OWNED_POLICY_IDENTITY_UNAVAILABLE');
+  if (!c.rails.onchain.enabled || !c.rails.lightning.enabled || !c.rails.lightning.alice)
+    throw new Error('OWNED_POLICY_RAILS_NOT_CONFIGURED');
+  if (policy.wallet !== identity.wallet) throw new Error('OWNED_POLICY_WALLET_MISMATCH');
+  const providerOrigin = new URL(c.rails.lightning.provider.url).origin;
+  const payerOrigin = new URL(c.rails.lightning.alice.url).origin;
+  if (!sameOrigin(c.rails.onchain.url, policy.routing.bitcoinOrigin) || policy.routing.providerOrigin !== providerOrigin ||
+    policy.routing.payerOrigin !== payerOrigin || policy.providerNode !== identity.providerNode ||
+    policy.payerNode !== identity.payerNode || policy.credentialPaths.bitcoinCookiePath !== c.rails.onchain.cookie ||
+    policy.credentialPaths.providerCertPath !== c.rails.lightning.provider.cert ||
+    policy.credentialPaths.providerReadMacaroonPath !== c.rails.lightning.provider.macaroon ||
+    policy.credentialPaths.payerCertPath !== c.rails.lightning.alice.cert ||
+    policy.credentialPaths.payerReadMacaroonPath !== c.rails.lightning.alice.macaroon)
+    throw new Error('OWNED_POLICY_IDENTITY_MISMATCH');
+}
 
 export function ownedStartupArguments(args: string[], mode: ApplicationMode) {
   if (args[0] !== '--owned-regtest') return undefined;
@@ -45,6 +64,9 @@ type Dependencies = {
 export async function startApplication(env: NodeJS.ProcessEnv = process.env, args: string[] = [], dependencies: Dependencies = {}) {
   const c = config(env); const ownedArgs = ownedStartupArguments(args, c.mode);
   const operatorArgs = ownedArgs ? undefined : controlledStartupArguments(args, c.mode);
+  if (ownedArgs && c.spendPolicy !== 'regtest-only') throw new Error('OWNED_EXECUTION_DISABLED');
+  if (operatorArgs && parseOperatorCommand(operatorArgs).mode === 'serve' && c.spendPolicy !== 'regtest-only')
+    throw new Error('CONTROLLED_EXECUTION_DISABLED');
   let liquidity: () => Promise<Balances>; let diagnostics: (() => ReturnType<typeof preflight>) | undefined;
   let operations: (() => Promise<OperationsBalances>) | undefined;
   let bitcoin: ReadOnlyBitcoinClient | null = null; let lnd: ReadOnlyLndClient | null = null;
@@ -55,25 +77,30 @@ export async function startApplication(env: NodeJS.ProcessEnv = process.env, arg
     lnd = c.rails.lightning.enabled ? new ReadOnlyLndClient(c.rails.lightning.provider.url, c.rails.lightning.provider.cert, c.rails.lightning.provider.macaroon) : null;
     alice = c.rails.lightning.enabled && c.rails.lightning.alice
       ? new ReadOnlyLndClient(c.rails.lightning.alice.url, c.rails.lightning.alice.cert, c.rails.lightning.alice.macaroon) : null;
-    liquidity = async () => {
-      if (!bitcoin || !lnd) throw new Error('NODE_RAILS_NOT_CONFIGURED');
-      await Promise.all([bitcoin.assertRegtest(), lnd.assertRegtest()]);
-      const [onchainSats, incomingSats] = await Promise.all([bitcoin.liquidity(), lnd.incomingLiquidity()]);
-      return { onchainSats, incomingSats };
-    };
+    if (c.mode === 'regtest') {
+      liquidity = async () => {
+        if (!bitcoin || !lnd) throw new Error('NODE_RAILS_NOT_CONFIGURED');
+        await Promise.all([bitcoin.assertRegtest(), lnd.assertRegtest()]);
+        const [onchainSats, incomingSats] = await Promise.all([bitcoin.liquidity(), lnd.incomingLiquidity()]);
+        return { onchainSats, incomingSats };
+      };
+    } else liquidity = async () => { throw new Error('NON_REGTEST_LIQUIDITY_DISABLED'); };
     const bitcoinClient = bitcoin; const lndClient = lnd;
-    diagnostics = bitcoinClient && lndClient ? () => preflight(bitcoinClient, lndClient,
+    diagnostics = c.mode === 'regtest' && bitcoinClient && lndClient ? () => preflight(bitcoinClient, lndClient,
       c.rails.onchain.enabled ? c.rails.onchain.wallet : c.wallet, c.mode) : undefined;
     operations = () => collectOperationsBalances({ bitcoin, provider: lnd, alice });
   } else liquidity = async () => { throw new Error('SIMULATION_MODE_HAS_NO_NODE_CONNECTIVITY'); };
   let identity = dependencies.identity;
-  if (c.mode === 'regtest' && !identity) {
+  if (!identity && (c.rails.onchain.enabled || c.rails.lightning.enabled)) {
     if (!bitcoin && !lnd) throw new Error('STARTUP_ATTESTATION_UNAVAILABLE');
     identity = await attestStartup(c, { bitcoin, provider: lnd, alice });
   }
   await assertStateScope(c.directory, { environment: c.environment,
     deploymentId: c.deploymentId ?? 'simulation', genesisHash: identity?.genesisHash ?? null,
-    wallet: identity?.wallet ?? '' }, { allowLegacyOfflineMigration: c.allowLegacyOfflineMigration });
+    wallet: identity?.wallet ?? '', bitcoinOrigin: identity?.bitcoinOrigin ?? null,
+    providerOrigin: identity?.providerOrigin ?? null, payerOrigin: identity?.payerOrigin ?? null,
+    providerNode: identity?.providerNode ?? null, payerNode: identity?.payerNode ?? null },
+  { allowLegacyOfflineMigration: c.allowLegacyOfflineMigration });
   const store = await Store.open(c.directory);
   try {
     await recoverInterruptedReverseRuns(store);
@@ -83,11 +110,12 @@ export async function startApplication(env: NodeJS.ProcessEnv = process.env, arg
       let factory: Awaited<ReturnType<typeof createOwnedRuntimeFactory>> | undefined;
       try {
         const policy = ownedRuntimePolicySchema.parse(await checkedJSON(ownedArgs.path, ownedArgs.hash));
+        assertOwnedPolicyBinding(policy, c, identity);
         // One Sessions instance, one catalog writer, exact account store and same browser origin.
         if (policy.authStorePath !== env.AUTH_STORE_PATH || policy.origin !== env.AUTH_ORIGIN || policy.port !== (dependencies.port ?? c.port)) throw new Error('OWNED_STARTUP_REJECTED');
         factory = await createOwnedRuntimeFactory(policy, server.controlled.operatorIO.sessions);
         server.controlled.installPreparation(await createOwnedPreparation(store, server.controlled.operatorIO.sessions, factory,
-          { mode: 'regtest', ownerId: policy.ownerId, ownerUsername: 'truja503', origin: policy.origin, profileDigest: ownedArgs.hash }));
+          { mode: 'regtest', ownerId: policy.ownerId, ownerUsername: policy.ownerUsername, origin: policy.origin, profileDigest: ownedArgs.hash }));
       } catch {
         await factory?.close?.();
         console.error('OWNED_PREPARATION_STOPPED: preserve runs; no automatic invoice or payment retry');

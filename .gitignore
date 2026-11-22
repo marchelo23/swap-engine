@@ -7,8 +7,8 @@ coverage/
 !.env.regtest.example
 !.env.signet.example
 !.env.mainnet.example
-!.env.ark-regtest.example
-!.env.liquid-regtest.example
+!.env.ark.regtest.example
+!.env.liquid.regtest.example
 data/
 *.log
 *.pem

@@ -10,9 +10,9 @@ import { preparationFixture } from './preparationFixture.js';
 async function fixture() {
   const f = await preparationFixture(); const run = join(f.directory, 'run'); const backup = join(f.directory, 'backup');
   await mkdir(run, { mode: 0o700 }); await mkdir(backup, { mode: 0o700 });
-  const auth = join(f.directory, 'users.json'); await provisionAccount(auth, 'truja503', 'USER', 'synthetic-custody-account-passphrase');
+  const auth = join(f.directory, 'users.json'); await provisionAccount(auth, 'truja503', 'ADMIN', 'synthetic-custody-account-passphrase');
   const [account] = await readAccounts(auth);
-  const policy = ownedRunPolicySchema.parse({ ownerUsername: 'truja503', ownerId: account!.id, authStorePath: auth,
+  const policy = ownedRunPolicySchema.parse({ ownerUsername: 'truja503', ownerId: account!.id, authStorePath: auth, wallet: 'lqwd-lab',
     origin: 'http://127.0.0.1:3101', port: 3101, backupDirectory: backup, tipHeight: f.spec.tipHeight,
     providerNode: f.spec.providerNode, payerNode: f.spec.payerNode, routing: f.spec.routing,
     claimDestination: f.spec.claimDestination, refundDestination: f.spec.refundDestination, input: f.spec.input,

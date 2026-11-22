@@ -23,7 +23,7 @@ async function fixture(ambiguous = false) {
   const alice = (await readAccounts(storePath)).find(a => a.username === 'alice')!;
   const args = ['--controlled-reverse', '--serve-jit', '--run-dir', f.directory, '--spec-sha256', 'ab'.repeat(32),
     '--action-config-sha256', 'cd'.repeat(32), '--backup-config-sha256', 'ef'.repeat(32), '--authorization-sha256', '12'.repeat(32), '--ui-config-sha256', '34'.repeat(32)];
-  const env = { APP_MODE: 'regtest', DEPLOYMENT_ID: 'controlled-test', DATA_DIR: join(f.directory, 'application'), AUTH_STORE_PATH: storePath, AUTH_ORIGIN: origin };
+  const env = { APP_MODE: 'regtest', SPEND_POLICY: 'regtest-only', DEPLOYMENT_ID: 'controlled-test', DATA_DIR: join(f.directory, 'application'), AUTH_STORE_PATH: storePath, AUTH_ORIGIN: origin };
   const report = { network: 'regtest' as const, capturedAt: '2026-11-18T12:00:00.000Z',
     core: { confirmedSats: 100000, unconfirmedSats: 0 }, provider: null, alice: null, rails: [] };
   let executions = 0; let recoveries = 0; let startups = 0; let balanceReads = 0;
@@ -55,7 +55,7 @@ async function fixture(ambiguous = false) {
         } });
       const lifetime = io.serve(f.store, api, 3000, () => {}); mounted(); return lifetime;
     };
-    app = await startApplication({ ...env, APP_MODE: mode, DATA_DIR: join(f.directory, mode === 'simulation' ? 'application-simulation' : 'application') }, install ? args : [], { operator, port: 0,
+    app = await startApplication({ ...env, APP_MODE: mode, SPEND_POLICY: mode === 'regtest' ? 'regtest-only' : 'disabled', DATA_DIR: join(f.directory, mode === 'simulation' ? 'application-simulation' : 'application') }, install ? args : [], { operator, port: 0,
       reads: { liquidity: async () => ({ onchainSats: 100000, incomingSats: 100000 }),
         operations: async () => { balanceReads++; return report; } },
       identity: { environment: 'regtest', deploymentId: 'controlled-test',
@@ -140,6 +140,8 @@ test('application startup is default-closed, regtest-only and rejects execution 
     assert.throws(() => controlledStartupArguments(x.args, 'simulation'));
     assert.throws(() => controlledStartupArguments(['--controlled-reverse', '--execute-jit', ...x.args.slice(2)], 'regtest'));
     await assert.rejects(startApplication({ ...x.env, APP_MODE: 'simulation' }, x.args));
+    await assert.rejects(startApplication({ ...x.env, SPEND_POLICY: 'disabled' }, x.args));
+    assert.equal(x.startups(), 0);
     await assert.rejects(startApplication({ ...x.env, ENABLE_LIVE_SWAPS: 'true' }, []));
     const simulation = await x.boot(false, false, 'simulation');
     const unavailable = createOwnedReverseApi(x.f.store, async () => undefined, { origin: 'http://localhost:3000' });

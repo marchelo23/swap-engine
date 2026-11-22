@@ -1,4 +1,5 @@
 import { once } from 'node:events';
+import { readFile } from 'node:fs/promises';
 import type { AddressInfo } from 'node:net';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
@@ -90,6 +91,26 @@ test('Ark and Liquid expose canonical config and read-only identity contracts wi
   assert.throws(() => config(env({ ...liquidEnv, LIQUID_NETWORK: 'liquidv1' })), /LIQUID_CONFIGURATION_INVALID/);
   assert.throws(() => config(env({ ...liquidEnv, LIQUID_RPC_URL: 'http://127.0.0.1:9999' })), /ELEMENTS_RPC_URL_CONFLICT/);
   assert.throws(() => config(env({ ...liquidEnv, APP_MODE: 'regtest' })), /APP_ENVIRONMENT_CONFLICT/);
+});
+
+test('all shipped profiles load as real multiline env files', async () => {
+  const parse = (text: string): Record<string, string> => Object.fromEntries(text.split(/\r?\n/).map(line => line.trim())
+    .filter(line => line && !line.startsWith('#')).map(line => { const at = line.indexOf('='); return [line.slice(0, at), line.slice(at + 1)]; }));
+  const signer = '02' + '11'.repeat(32); const policy = 'ab'.repeat(32); const parent = 'cd'.repeat(32);
+  const cases: Array<[string, string, Record<string, string>]> = [
+    ['.env.regtest.example', 'regtest', {}],
+    ['.env.signet.example', 'signet', { SIGNET_CHALLENGE: '51' + '00'.repeat(30) }],
+    ['.env.mainnet.example', 'mainnet', {}],
+    ['.env.ark.regtest.example', 'ark-regtest', { ARK_EXPECTED_SIGNER_PUBKEY: signer }],
+    ['.env.liquid.regtest.example', 'liquid-regtest', { LIQUID_POLICY_ASSET: policy, LIQUID_PARENT_GENESIS_HASH: parent }],
+  ];
+  for (const [file, expected, overrides] of cases) {
+    const text = await readFile(file, 'utf8');
+    assert.equal(text.includes('\\n'), false, file);
+    const values: Record<string, string> = { ...parse(text), DEPLOYMENT_ID: `test-${expected}`, ...overrides };
+    assert.equal(values.APP_ENV, expected, file);
+    assert.equal(config(values).environment, expected, file);
+  }
 });
 
 test('public capabilities endpoint is read-only and never infers availability from flags alone', async () => {

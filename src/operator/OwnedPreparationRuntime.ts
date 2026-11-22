@@ -50,7 +50,7 @@ const clockSynchronized = async () => {
   if (stdout.trim() !== 'yes') throw operatorStopped();
 };
 const nativeClients = (p: OwnedRuntimePolicy) => ({
-  bitcoin: new ReadOnlyBitcoinClient(p.routing.bitcoinOrigin, p.credentialPaths.bitcoinCookiePath, 'lqwd-lab'),
+  bitcoin: new ReadOnlyBitcoinClient(p.routing.bitcoinOrigin, p.credentialPaths.bitcoinCookiePath, p.wallet),
   provider: new ReadOnlyLndClient(p.routing.providerOrigin, p.credentialPaths.providerCertPath, p.credentialPaths.providerReadMacaroonPath),
   payer: new ReadOnlyLndClient(p.routing.payerOrigin, p.credentialPaths.payerCertPath, p.credentialPaths.payerReadMacaroonPath),
   invoices: new HttpsLndInvoiceTransport(p.routing.providerOrigin, p.credentialPaths.providerCertPath,

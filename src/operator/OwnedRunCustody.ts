@@ -11,11 +11,13 @@ import { SecretVault } from '../persistence/SecretVault.js';
 import { preparationSpecSchema } from '../core/ReversePreparation.js';
 import { reverseRoutingSchema } from '../core/ReverseTestPlan.js';
 import { operatorDirectory, protectedBytes, sha256, operatorStopped } from './OperatorFiles.js';
+import { Username } from '../auth/credentials.js';
 import { verifyCustodyBackup } from './CustodyBackup.js';
 
 const absolute = z.string().refine(isAbsolute); const pubkey = z.string().regex(/^(02|03)[a-f0-9]{64}$/);
 const hash = z.string().regex(/^[a-f0-9]{64}$/);
-export const ownedRunPolicySchema = z.object({ ownerUsername: z.literal('truja503'), ownerId: z.uuid(), authStorePath: absolute,
+export const ownedRunPolicySchema = z.object({ ownerUsername: Username, ownerId: z.uuid(), authStorePath: absolute,
+  wallet: z.string().regex(/^[A-Za-z0-9._-]{1,120}$/),
   origin: z.literal('http://127.0.0.1:3101'), port: z.literal(3101), backupDirectory: absolute,
   sourceAmountSats: z.number().int().min(11000).max(50000).optional(),
   tipHeight: z.number().int().positive().max(499999969), providerNode: pubkey, payerNode: pubkey,
@@ -39,7 +41,7 @@ export async function prepareOwnedRunCustody(directory: string, unverified: unkn
   directory = resolve(directory); await operatorDirectory(directory);
   const policy = ownedRunPolicySchema.parse(unverified);
   const account = (await readAccounts(policy.authStorePath)).find(a => a.id === policy.ownerId && a.username === policy.ownerUsername);
-  if (!account || !['USER', 'ADMIN'].includes(account.role) || policy.providerNode === policy.payerNode ||
+  if (!account || account.role !== 'ADMIN' || policy.providerNode === policy.payerNode ||
     policy.routing.providerOrigin === policy.routing.payerOrigin || password.length < 8 || password.length > 4096) throw operatorStopped();
   for (const destination of [policy.claimDestination, policy.refundDestination]) {
     if (!destination.startsWith('bcrt1')) throw operatorStopped(); address.toOutputScript(destination, networks.regtest);

@@ -14,15 +14,16 @@ import { startApplication } from '../src/main.js';
 
 const genesis = '0f9188f13cb7b2c71f2a335e3a4fc328bf5beb436012afca590b1a11466e2206';
 
-async function coreMock(options: { genesis?: string; wallet?: string } = {}) {
+async function coreMock(options: { genesis?: string; wallet?: string; chainName?: string; challenge?: string } = {}) {
   const server = createServer(async (req, res) => {
     let body = ''; for await (const chunk of req) body += chunk.toString();
     const request = JSON.parse(body) as { id: string; method: string; params?: unknown[] };
     const result = request.method === 'getblockchaininfo'
-      ? { chain: 'regtest', blocks: 10, bestblockhash: 'ab'.repeat(32), initialblockdownload: false }
+      ? { chain: options.chainName ?? 'regtest', blocks: 10, bestblockhash: 'ab'.repeat(32), initialblockdownload: false }
       : request.method === 'getblockhash' ? (options.genesis ?? genesis)
       : request.method === 'listwallets' ? ['test-wallet']
       : request.method === 'getwalletinfo' ? { walletname: options.wallet ?? 'test-wallet' }
+      : request.method === 'getmininginfo' ? { signet_challenge: options.challenge ?? '' }
       : null;
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ result, error: null, id: request.id }));
@@ -61,6 +62,26 @@ test('startup attestation verifies chain/genesis/wallet before any journal is op
         /WALLET_IDENTITY_MISMATCH/);
     } finally { wrongWallet.server.close(); }
   } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test('attests configured mainnet and signet profiles read-only, including the signet challenge', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'swap-attestation-net-'));
+  const mainnetGenesis = '000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f';
+  const signetGenesis = '00000008819873e925422c1ff0f99f7cc9bbb232af63a077a480a3633bee1ef6';
+  const main = await coreMock({ chainName: 'main', genesis: mainnetGenesis });
+  const signet = await coreMock({ chainName: 'signet', genesis: signetGenesis, challenge: '51' });
+  try {
+    const cookiePath = await cookie(directory);
+    const mainConfig = config({ ...environment(main.url, cookiePath, directory), APP_ENV: 'mainnet', APP_MODE: undefined,
+      DEPLOYMENT_ID: 'mainnet-attestation', SIGNET_CHALLENGE: undefined });
+    const mainIdentity = await attestStartup(mainConfig, { bitcoin: new ReadOnlyBitcoinClient(main.url, cookiePath, 'test-wallet') });
+    assert.equal(mainIdentity.verified.onchain, true); assert.equal(mainIdentity.genesisHash, mainnetGenesis);
+    assert.equal(mainConfig.capabilities(mainIdentity.verified).execution.enabled, false);
+    const signetConfig = config({ ...environment(signet.url, cookiePath, directory), APP_ENV: 'signet', APP_MODE: undefined,
+      DEPLOYMENT_ID: 'signet-attestation', SIGNET_CHALLENGE: '51' });
+    const signetIdentity = await attestStartup(signetConfig, { bitcoin: new ReadOnlyBitcoinClient(signet.url, cookiePath, 'test-wallet') });
+    assert.equal(signetIdentity.verified.onchain, true); assert.equal(signetIdentity.genesisHash, signetGenesis);
+  } finally { main.server.close(); signet.server.close(); await rm(directory, { recursive: true, force: true }); }
 });
 
 test('startApplication rejects a wrong Core identity before creating the journal or lock', async () => {
