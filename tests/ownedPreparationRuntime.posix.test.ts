@@ -201,6 +201,9 @@ test('verified completed legacy run remains owner-visible as read-only history w
         spend: { txid: claim!.getId(), height: 102, blockHash: 'a2'.repeat(32) } };
     }); await store.close();
     const before = await readFile(join(directory, 'store/state.json'));
+    const specPath = join(directory, 'spec.json'); const legacySpec = JSON.parse(await readFile(specPath, 'utf8')) as Record<string, unknown>;
+    delete legacySpec.wallet; const legacyBytes = Buffer.from(JSON.stringify(legacySpec, null, 2) + '\n');
+    await writeFile(specPath, legacyBytes, { mode: 0o600 }); assert.equal('wallet' in JSON.parse(legacyBytes.toString()), false);
     historyFactory = await createOwnedRuntimeFactory({ ...x.policy, archives: [{ directory, specSha256: sha256(await readFile(join(directory, 'spec.json'))) }] },
       { get: async () => undefined, verifyCsrf: () => false }, x.io);
     const history = await historyFactory.history!(); assert.equal(history.length, 1);
@@ -208,6 +211,7 @@ test('verified completed legacy run remains owner-visible as read-only history w
     const checked = await historyFactory.preflight!() as { archives: Array<{ checkpointHeight: number }> };
     assert.equal(checked.archives[0]!.checkpointHeight, 102);
     await assert.rejects(history[0]!.authorize('cannot-reopen-history')); assert.deepEqual(await readFile(join(directory, 'store/state.json')), before);
+    assert.deepEqual(await readFile(specPath), legacyBytes);
     assert.equal(x.counts().actions, 0); await historyFactory.close?.(); historyFactory = undefined;
     x.x.chain.blocks = 99;
     historyFactory = await createOwnedRuntimeFactory({ ...x.policy, archives: [{ directory, specSha256: sha256(await readFile(join(directory, 'spec.json'))) }] },

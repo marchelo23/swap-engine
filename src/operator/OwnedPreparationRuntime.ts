@@ -11,7 +11,7 @@ import { ownedRunPolicyBase, ownedRunPolicySchema, prepareOwnedRunCustody } from
 import { actionPathsSchema, inspectNativeActions, probeCoreAction, nativeActionDependencies } from './NativeActionCredentials.js';
 import { protectedBytes, checkedJSON, operatorDirectory, operatorArtifact, operatorStopped, sha256 } from './OperatorFiles.js';
 import { verifyCustodyBackup, backupSchema } from './CustodyBackup.js';
-import { verifyArchivedChain } from './ArchiveEvidence.js';
+import { archivedPreparationSpecSchema, verifyArchivedChain } from './ArchiveEvidence.js';
 import { ReadOnlyBitcoinClient, ReadOnlyLndClient } from '../diagnostics/ReadOnlyClients.js';
 import { HttpsLndInvoiceTransport } from '../lightning/LndInvoiceTransport.js';
 import { LndRecoveryClient, LndPayerRecovery, recoveryPaymentsPath, assertRecoveryNode } from '../lightning/LndPayerRecovery.js';
@@ -251,7 +251,7 @@ export async function createOwnedRuntimeFactory<S extends { account: { id: strin
       const coreScope = await io.probe(spec, policy.actions, inspected, clients.bitcoin);
       const archives = [];
       for (const archive of policy.archives) {
-        const archivedSpec = preparationSpecSchema.parse(await checkedJSON(join(archive.directory, 'spec.json'), archive.specSha256));
+        const archivedSpec = archivedPreparationSpecSchema.parse(await checkedJSON(join(archive.directory, 'spec.json'), archive.specSha256));
         const db = JSON.parse((await protectedBytes(join(archive.directory, 'store/state.json'))).toString());
         archives.push(await verifyArchivedChain(db, archivedSpec, policy.ownerId, policy.claimDestination, clients.bitcoin));
       }
@@ -263,7 +263,7 @@ export async function createOwnedRuntimeFactory<S extends { account: { id: strin
       const result: PreparedRuntime[] = [];
       for (const archive of policy.archives) {
         await operatorDirectory(archive.directory);
-        const spec = preparationSpecSchema.parse(await checkedJSON(join(archive.directory, 'spec.json'), archive.specSha256));
+        const spec = archivedPreparationSpecSchema.parse(await checkedJSON(join(archive.directory, 'spec.json'), archive.specSha256));
         if (spec.providerNode !== policy.providerNode || spec.payerNode !== policy.payerNode || spec.claimDestination !== policy.claimDestination ||
           spec.refundDestination !== policy.refundDestination || JSON.stringify(spec.routing) !== JSON.stringify(policy.routing)) throw operatorStopped();
         const store = await Store.open(join(archive.directory, 'store')); let shutdown: Promise<void> | undefined;

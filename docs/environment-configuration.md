@@ -72,10 +72,16 @@ fails with `PROTOCOL_POLICY_IMMUTABLE`.
 
 ## Preparation spec migration
 
-Reviewed preparation specs now carry an explicit wallet field. Recreate the spec
-and its SHA-256 checksum before use; old specs/digests without wallet are
-rejected. The owned runtime, controlled CLI readers, signing probe and Core
-wallet-scoped probes use this wallet instead of a developer literal.
+Fresh live preparation, restore and execution specs now require an explicit
+wallet field. Recreate those specs and SHA-256 checksums before use; omitting
+wallet is rejected.
+
+Completed archives are immutable evidence, not fresh execution specs. Their
+reads verify the original checksum first, then use an archive-only schema that
+allows a missing wallet; the historical spec bytes, custody and journal remain
+unchanged and receive no execution authority. Do not rewrite a completed
+archive to add wallet. The owned runtime, controlled CLI readers, signing probe
+and Core wallet-scoped probes use wallet only for new live work.
 
 ## Startup attestation and state scope
 
