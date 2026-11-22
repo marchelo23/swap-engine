@@ -52,7 +52,7 @@ test('BitcoinRpcClient exposes the port and verifies block hints without credent
   const f = fixture();
   class MockClient extends BitcoinRpcClient {
     constructor(private readonly transport: ConfirmationRpc) {
-      super('http://127.0.0.1:18443', 'never-read-cookie');
+      super('http://127.0.0.1:18443', 'never-read-cookie', 'test-wallet');
     }
     override call<T>(method: string, params: unknown[] = [], wallet = false): Promise<T> {
       assert.equal(wallet, false);

@@ -182,3 +182,19 @@ test('nonlegacy quote economics cannot install executable reverse', async () => 
       wallet: 'lab-wallet', verified: {} },
   }), /EXECUTION_ECONOMICS_UNSUPPORTED/);
 });
+test('entry config centralizes auth and legacy script settings', () => {
+  const c = config(env(base));
+  assert.deepEqual(c.auth, { storePath: null, origin: null });
+  assert.deepEqual(c.legacy, { refundDestination: null, lndAdminMacaroonPath: null });
+  const configured = config(env({ ...base, AUTH_STORE_PATH: '/var/lib/swap/auth.json',
+    AUTH_ORIGIN: 'http://127.0.0.1:3000', REFUND_DESTINATION: 'bcrt1qz62y94lnjfj4sqmzwsap2fvleqxkua95znqfwj',
+    LND_ADMIN_MACAROON_PATH: '/var/lib/lnd/admin.macaroon' }));
+  assert.equal(configured.auth.storePath, '/var/lib/swap/auth.json');
+  assert.equal(configured.auth.origin, 'http://127.0.0.1:3000');
+  assert.equal(configured.legacy.refundDestination, 'bcrt1qz62y94lnjfj4sqmzwsap2fvleqxkua95znqfwj');
+  assert.equal(configured.legacy.lndAdminMacaroonPath, '/var/lib/lnd/admin.macaroon');
+  for (const change of [{ AUTH_ORIGIN: 'http://127.0.0.1:3000/path' },
+    { REFUND_DESTINATION: 'bc1qndvk6ae280lqxd0ndsur2lczvgsjztyspp673g' },
+    { LND_ADMIN_MACAROON_PATH: 'relative.macaroon' }] as Record<string, string>[])
+    assert.throws(() => config(env({ ...base, ...change })));
+});

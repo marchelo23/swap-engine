@@ -27,7 +27,7 @@ test('independent invoice checks reject amount, hash, payee, network, deadline a
 async function portsFixture() {
   const f = await setup(); let created = 0; let fail = false; let network = 'regtest';
   const plan = createReverseTestPlan(f.quote, 100, { paymentHash: f.contract.paymentHash, claimPublicKey: f.contract.claimPublicKey },
-    f.contract.refundPublicKey, { claim: f.destination, refund: f.destination }, { provider: f.contract.claimPublicKey, payer: f.contract.refundPublicKey }, routingFixture());
+    f.contract.refundPublicKey, { claim: f.destination, refund: f.destination }, { provider: f.contract.claimPublicKey, payer: f.contract.refundPublicKey }, routingFixture(), 'lqwd-lab');
   const assertRegtest = async () => ({ chains: [{ chain: 'bitcoin', network: 'regtest' }], synced_to_chain: true });
   const provider = { assertRegtest,
     async call<T>(path: string): Promise<T> { assert.equal(path, '/v1/getinfo'); return { identity_pubkey: plan.providerNode, wallet_synced: true } as T; },

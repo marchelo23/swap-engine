@@ -49,7 +49,7 @@ export function verifyReverseTestPlan(value: unknown): ReverseTestPlan {
 
 export function createReverseTestPlan(quote: Quote, tipHeight: number, client: { paymentHash: string; claimPublicKey: string },
   refundPublicKey: string, destinations: { claim: string; refund: string }, nodes: { provider: string; payer: string }, routing: ReverseRouting,
-  wallet = 'lqwd-lab'): ReverseTestPlan {
+  wallet: string): ReverseTestPlan {
   const contract: Contract = { ...client, refundPublicKey, timeoutHeight: tipHeight + 30 };
   const htlc = buildHtlc(contract);
   return verifyReverseTestPlan({ network: 'regtest', wallet, createdAt: Date.now(), tipHeight,

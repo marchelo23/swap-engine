@@ -41,7 +41,7 @@ test('live mode cannot be enabled through environment flag', () => {
   finally { if (saved === undefined) delete process.env.ENABLE_LIVE_SWAPS; else process.env.ENABLE_LIVE_SWAPS = saved; }
 });
 test('node clients reject public endpoints and insecure LND TLS', () => {
-  assert.throws(() => new BitcoinRpcClient('http://example.com:18443', 'cookie'));
+  assert.throws(() => new BitcoinRpcClient('http://example.com:18443', 'cookie', 'lab-wallet'));
   assert.throws(() => new LndClient('http://127.0.0.1:8080', 'cert', 'macaroon'));
   assert.throws(() => new LndClient('https://example.com', 'cert', 'macaroon'));
 });

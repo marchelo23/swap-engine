@@ -34,7 +34,7 @@ if (args[0] !== '--approved-create-invoice-only' || args[1] !== '--plan-sha256' 
     client = await ClaimWallet.restore(clientVault, plan.contract.paymentHash);
     if (client.claimPublicKey !== plan.contract.claimPublicKey || await new RefundKeyVault(providerVault).publicKey(plan.contract.paymentHash) !== plan.contract.refundPublicKey) throw new Error('Durable key identity mismatch');
     const bitcoin = new ReadOnlyBitcoinClient(c.bitcoinUrl, c.cookie, c.wallet);
-    const refundDestination = process.env.REFUND_DESTINATION?.trim();
+    const refundDestination = c.legacy.refundDestination;
     if (!refundDestination || !c.aliceLnd || plan.wallet !== c.wallet ||
       plan.routing.bitcoinOrigin !== new URL(c.bitcoinUrl).origin ||
       plan.routing.providerOrigin !== new URL(c.lndUrl).origin ||
@@ -49,7 +49,7 @@ if (args[0] !== '--approved-create-invoice-only' || args[1] !== '--plan-sha256' 
         return super.call<T>(path, body);
       }
     }
-    const adminMacaroon = process.env.LND_ADMIN_MACAROON_PATH?.trim();
+    const adminMacaroon = c.legacy.lndAdminMacaroonPath;
     if (!adminMacaroon || !isAbsolute(adminMacaroon) || !c.aliceLnd) throw new Error('LEGACY_ACTION_CREDENTIALS_REQUIRED');
     const provider = new InvoiceCreationClient(c.lndUrl, c.cert, adminMacaroon);
     const payer = new ReadOnlyLndClient(c.aliceLnd.url, c.aliceLnd.cert, c.aliceLnd.macaroon);

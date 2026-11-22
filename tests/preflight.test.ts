@@ -125,7 +125,7 @@ test('preflight reports safe credential, connectivity and authentication failure
 });
 
 test('runtime read-only clients deny mutations before opening credential files or making requests', async () => {
-  const bitcoin = new ReadOnlyBitcoinClient('http://127.0.0.1:18443', 'nonexistent-cookie');
+  const bitcoin = new ReadOnlyBitcoinClient('http://127.0.0.1:18443', 'nonexistent-cookie', 'test-wallet');
   const lnd = new ReadOnlyLndClient('https://127.0.0.1:8080', 'nonexistent-cert', 'nonexistent-macaroon');
   for (const method of ['walletcreatefundedpsbt', 'walletprocesspsbt', 'finalizepsbt', 'signrawtransactionwithwallet',
     'sendrawtransaction', 'generatetoaddress', 'generateblock', 'loadwallet', 'createwallet', 'stop', 'unknown']) {

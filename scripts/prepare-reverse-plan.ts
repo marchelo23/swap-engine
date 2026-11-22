@@ -46,7 +46,7 @@ try {
   const claimDestination = accounts.account_with_addresses.flatMap(a => a.addresses).find(a => !a.is_internal && a.address.startsWith('bcrt1'))?.address;
   if (!claimDestination) throw new Error('Existing client receiving address unavailable');
   assertRegtestAddress(claimDestination);
-  const refundDestination = process.env.REFUND_DESTINATION?.trim();
+  const refundDestination = c.legacy.refundDestination;
   if (!refundDestination) throw new Error('REFUND_DESTINATION_REQUIRED');
   assertRegtestAddress(refundDestination);
   z.object({ ismine: z.literal(true) }).parse(await bitcoin.call('getaddressinfo', [refundDestination], true));

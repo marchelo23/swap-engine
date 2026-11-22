@@ -25,7 +25,7 @@ export async function readinessFixture() {
   const input = { txid: inputTx.getId(), vout: 0 };
   const plan = createReverseTestPlan(f.quote, 100, { paymentHash: f.contract.paymentHash, claimPublicKey: f.contract.claimPublicKey },
     f.contract.refundPublicKey, { claim: f.destination, refund: ownAddress },
-    { provider: f.contract.claimPublicKey, payer: f.contract.refundPublicKey }, routingFixture(`${channelTx.getId()}:0`));
+    { provider: f.contract.claimPublicKey, payer: f.contract.refundPublicKey }, routingFixture(`${channelTx.getId()}:0`), 'lqwd-lab');
   const tipHash = 'cd'.repeat(32); const blockHash = 'ab'.repeat(32);
   const genesisHash = '0f9188f13cb7b2c71f2a335e3a4fc328bf5beb436012afca590b1a11466e2206';
   const scope = { isolationId: randomUUID(), channelId: '12345', channelPoint: `${channelTx.getId()}:0`,

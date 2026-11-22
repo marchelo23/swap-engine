@@ -2,6 +2,7 @@ import { isAbsolute } from 'node:path';
 import type { Capabilities, Environment, RailId, RailReason } from './core/RailContract.js';
 import { environmentSchema } from './core/RailContract.js';
 import { LEGACY_ECONOMICS, validateEconomics, type EconomicsConfig } from './core/Economics.js';
+import { assertRegtestAddress } from './bitcoin/AddressPolicy.js';
 
 export type ApplicationMode = 'simulation' | 'regtest';
 
@@ -69,6 +70,8 @@ export type Config = {
   miningPolicy: 'disabled' | 'regtest-only';
   spendPolicy: 'disabled' | 'regtest-only';
   economics: EconomicsConfig;
+  auth: { storePath: string | null; origin: string | null };
+  legacy: { refundDestination: string | null; lndAdminMacaroonPath: string | null };
   rails: { onchain: OnchainRailConfig; lightning: LightningRailConfig; ark: ArkRailConfig; liquid: LiquidRailConfig };
   /** Legacy flat fields retained for existing clients and scripts. */
   bitcoinUrl: string; cookie: string; wallet: string;
@@ -288,6 +291,23 @@ export function config(env: NodeJS.ProcessEnv = process.env): Config {
       throw new Error('Read-only recovery configuration invalid');
     recovery = { payerUrl: payerUrl!, payerCert: payerCert!, payerMacaroon: payerMacaroon!, payerNode: payerNode!, providerNode: providerNode! };
   }
+  const authStorePath = optional(env, 'AUTH_STORE_PATH') ?? null;
+  const authOriginRaw = optional(env, 'AUTH_ORIGIN');
+  let authOrigin: string | null = null;
+  if (authOriginRaw !== undefined) {
+    try {
+      const parsed = new URL(authOriginRaw);
+      if (!['http:', 'https:'].includes(parsed.protocol) || parsed.origin !== authOriginRaw) throw new Error();
+      authOrigin = authOriginRaw;
+    } catch { throw new Error('AUTH_ORIGIN_INVALID'); }
+  }
+  const refundDestination = optional(env, 'REFUND_DESTINATION') ?? null;
+  if (refundDestination) assertRegtestAddress(refundDestination);
+  const lndAdminMacaroonPath = optional(env, 'LND_ADMIN_MACAROON_PATH') ?? null;
+  if (lndAdminMacaroonPath !== null && !isAbsolute(lndAdminMacaroonPath))
+    throw new Error('LND_ADMIN_MACAROON_PATH_INVALID');
+  const auth = { storePath: authStorePath, origin: authOrigin };
+  const legacy = { refundDestination, lndAdminMacaroonPath };
   const economics = economicsConfig(env);
   const onchain = onchainRail(env); const lightning = lightningRail(env);
   if (recovery && (!onchain.enabled || !lightning.enabled)) throw new Error('RECOVERY_RAILS_REQUIRED');
@@ -317,7 +337,7 @@ export function config(env: NodeJS.ProcessEnv = process.env): Config {
   };
   return {
     environment: selectedEnvironment, mode, network: 'regtest', readOnly: true, chain, bitcoinNetwork, bitcoinGenesisHash,
-    deploymentId: deploymentId ?? null, signetChallenge, allowLegacyOfflineMigration, features, reverseSwapExplicit, miningPolicy, spendPolicy, economics, rails: { onchain, lightning, ark, liquid },
+    deploymentId: deploymentId ?? null, signetChallenge, allowLegacyOfflineMigration, features, reverseSwapExplicit, miningPolicy, spendPolicy, economics, auth, legacy, rails: { onchain, lightning, ark, liquid },
     bitcoinUrl: onchain.enabled ? onchain.url : '', cookie: onchain.enabled ? onchain.cookie : '',
     wallet: onchain.enabled ? onchain.wallet : '',
     lndUrl: lightning.enabled ? lightning.provider.url : '', cert: lightning.enabled ? lightning.provider.cert : '',

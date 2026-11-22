@@ -142,14 +142,14 @@ export async function startApplication(env: NodeJS.ProcessEnv = process.env, arg
   try {
     await recoverInterruptedReverseRuns(store);
     const server = createApi(new SwapManager(store, c.economics), liquidity, diagnostics, c.mode,
-      { operations, auth: { storePath: env.AUTH_STORE_PATH, origin: env.AUTH_ORIGIN }, capabilities: () => c.capabilities(identity?.verified ?? {}), environment: c.environment });
+      { operations, auth: { storePath: c.auth.storePath ?? undefined, origin: c.auth.origin ?? undefined }, capabilities: () => c.capabilities(identity?.verified ?? {}), environment: c.environment });
     if (ownedArgs) {
       let factory: Awaited<ReturnType<typeof createOwnedRuntimeFactory>> | undefined;
       try {
         const policy = ownedRuntimePolicySchema.parse(await checkedJSON(ownedArgs.path, ownedArgs.hash));
         assertOwnedPolicyBinding(policy, c, identity);
         // One Sessions instance, one catalog writer, exact account store and same browser origin.
-        if (policy.authStorePath !== env.AUTH_STORE_PATH || policy.origin !== env.AUTH_ORIGIN || policy.port !== (dependencies.port ?? c.port)) throw new Error('OWNED_STARTUP_REJECTED');
+        if (policy.authStorePath !== (c.auth.storePath ?? undefined) || policy.origin !== (c.auth.origin ?? undefined) || policy.port !== (dependencies.port ?? c.port)) throw new Error('OWNED_STARTUP_REJECTED');
         factory = await createOwnedRuntimeFactory(policy, server.controlled.operatorIO.sessions);
         server.controlled.installPreparation(await createOwnedPreparation(store, server.controlled.operatorIO.sessions, factory,
           { mode: 'regtest', ownerId: policy.ownerId, ownerUsername: policy.ownerUsername, origin: policy.origin, profileDigest: ownedArgs.hash }));

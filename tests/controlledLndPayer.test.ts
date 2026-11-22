@@ -29,7 +29,7 @@ async function fixture(deadlineMs = 1000) {
   const initial = f.manager.get(f.swap.id)!;
   const plan = createReverseTestPlan(f.quote, 100, { paymentHash: f.contract.paymentHash, claimPublicKey: f.contract.claimPublicKey },
     f.contract.refundPublicKey, { claim: f.destination, refund: f.destination },
-    { provider: f.contract.claimPublicKey, payer: f.contract.refundPublicKey }, routingFixture());
+    { provider: f.contract.claimPublicKey, payer: f.contract.refundPublicKey }, routingFixture(), 'lqwd-lab');
   const input = { txid: 'ab'.repeat(32), vout: 0 }; const isolationId = randomUUID();
   const approval: ControlledRunApproval = { id: randomUUID(), swapId: f.swap.id, isolationId,
     expectedRevision: initial.revision, planDigest: controlledRunDigest(plan, input, f.swap.id, isolationId),

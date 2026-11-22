@@ -40,9 +40,9 @@ Legacy Bitcoin/LND variable names remain accepted. Ark/Liquid canonical names ar
   `ENABLE_LIVE_SWAPS`, and requested reverse/forward/guest/mining feature flags
   fail startup. `FEATURE_*`/`ENABLE_*` execution flags are centralized and
   reported false.
-- Ark/Liquid are configuration and read-only identity contracts only. They stay
-  `configured` but not `available` until a reviewed read-only probe verifies
-  them; no adapter is installed by this profile.
+- Liquid has a read-only Elements identity/asset/wallet attestation and remains
+  execution-less. Ark stays a configuration and read-only identity contract,
+  `configured` but `NOT_VERIFIED`; no adapter is installed by this profile.
 
 ## Economics
 
@@ -91,15 +91,20 @@ rejected before the journal is touched. A legacy `state.json` without the marker
 requires the explicit offline-regtest migration:
 
 ```sh
-systemctl --user stop swap-engine
+# Stop every writer, including user services, before copying anything.
+systemctl --user stop swap-engine swap-engine-owned-review
 cp -a "$DATA_DIR" "$DATA_DIR.backup-$(date +%Y%m%dT%H%M%S)"
-# Review that the journal belongs to this regtest chain, wallet and deployment.
+# Review that the backup/journal belongs to this regtest chain, wallet and deployment.
+# Confirm no other process still holds the data directory or writer lock.
 ALLOW_LEGACY_STATE_MIGRATION=offline-regtest npm start
-# Remove ALLOW_LEGACY_STATE_MIGRATION and restart normally.
+# Startup writes the marker and performs normal recovery/reconciliation, which
+# may update interrupted owned-preparation entries. Review the result, stop,
+# remove ALLOW_LEGACY_STATE_MIGRATION, then restart normally.
 ```
 
-This writes the marker only; it does not modify the journal. A simulation
-profile pointing at a regtest data directory is rejected by the same marker.
+Do not run the migration while any writer or reconciliation process is active.
+A simulation profile pointing at a regtest data directory is rejected by the
+same marker.
 
 ## Capabilities and balances
 
@@ -112,8 +117,11 @@ zero.
 
 ## Controlled legacy scripts
 
-Prepare and verify use the same attested read-only payer client as owned
-preparation. They do not invoke `lncli` or a second gRPC stack:
+Auth and legacy-script settings are parsed once by `config()` via
+`AUTH_STORE_PATH`, `AUTH_ORIGIN`, `REFUND_DESTINATION` and
+`LND_ADMIN_MACAROON_PATH`. Prepare and verify use the same attested read-only
+payer client as owned preparation. They do not invoke `lncli` or a second gRPC
+stack:
 
 - `ALICE_LND_REST_URL`, `ALICE_LND_TLS_CERT_PATH`,
   `ALICE_LND_MACAROON_PATH`: payer read-only REST identity. `/v2/wallet/addresses`
@@ -139,6 +147,15 @@ The hold-invoice script rejects a plan whose `wallet`, Bitcoin/provider/payer
 origin or explicit refund destination differs from the loaded profile before the
 admin macaroon is used. It creates no payment and broadcasts nothing.
 
+The owner HTTP smoke check takes an explicit owner id and username; it never
+assumes `truja503`:
+
+```sh
+npx tsx scripts/check-owned-http.ts --check-http-readonly \
+  --origin http://127.0.0.1:3101 --owner-id <uuid> \
+  --owner-username <reviewer> --archive-id <uuid>
+```
+
 ## Service installation
 
 The shipped units are systemd **user** units. Install them without enabling or
@@ -159,8 +176,8 @@ as system-unit `User=` account paths.
 
 ## Remaining gaps
 
-- Ark/Liquid have no live read-only probe in this branch; they remain
-  `NOT_VERIFIED` until wired to reviewed read-only seams.
+- Elements/Liquid has a read-only identity and policy-asset/wallet attestation.
+  Ark remains `NOT_VERIFIED` until wired to an approved read-only seam.
 - Linux POSIX native-operator, vault and fixture tests are skipped on non-Linux
   hosts; run them on Linux before merge.
 - Real mining/payment, deployments and the systemd miner timer remain off.

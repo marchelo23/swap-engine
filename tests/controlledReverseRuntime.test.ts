@@ -32,7 +32,7 @@ async function fixture(sourceAmountSats?: number) {
   const input = { txid: previous.getId(), vout: 0 };
   const plan = createReverseTestPlan(f.quote, tip, { paymentHash: f.contract.paymentHash, claimPublicKey: f.contract.claimPublicKey },
     f.contract.refundPublicKey, { claim: f.destination, refund: own.address! },
-    { provider: f.contract.claimPublicKey, payer: f.contract.refundPublicKey }, routingFixture(channelTx.getId() + ':0'));
+    { provider: f.contract.claimPublicKey, payer: f.contract.refundPublicKey }, routingFixture(channelTx.getId() + ':0'), 'lqwd-lab');
   const scope = { ...plan.routing, isolationId: randomUUID() };
   const approval: ControlledRunApproval = { id: randomUUID(), swapId: f.swap.id, expectedRevision: store.read().swaps[f.swap.id]!.revision,
     isolationId: scope.isolationId, scope: 'isolated-regtest-reverse', maxBlocks: 2, expiresAt: Date.now() + 60000,

@@ -167,7 +167,7 @@ test('the collector skips balance calls for sources that do not prove they are B
 });
 
 test('read-only clients permit the new balance reads without permitting mutations', async () => {
-  const bitcoin = new ReadOnlyBitcoinClient('http://127.0.0.1:18443', 'nonexistent-cookie');
+  const bitcoin = new ReadOnlyBitcoinClient('http://127.0.0.1:18443', 'nonexistent-cookie', 'test-wallet');
   const lnd = new ReadOnlyLndClient('https://127.0.0.1:8080', 'nonexistent-cert', 'nonexistent-macaroon');
   await assert.rejects(bitcoin.call('getbalances', [], true), error => !/READ_ONLY_MODE/.test(String(error)));
   await assert.rejects(lnd.call('/v1/balance/blockchain'), error => !/READ_ONLY_MODE/.test(String(error)));
