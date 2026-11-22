@@ -1,3 +1,4 @@
+import { networks, payments } from 'bitcoinjs-lib';
 import { createServer } from 'node:http';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
@@ -163,4 +164,37 @@ test('startApplication rejects a wrong Core identity before creating the journal
     assert.equal(existsSync(join(directory, 'engine.lock')), false);
     assert.equal(existsSync(join(directory, '.environment.json')), false);
   } finally { core.server.close(); await rm(directory, { recursive: true, force: true }); }
+});
+
+test('configured Ark telemetry verifies the operator pin without authorizing execution', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'ark-attestation-'));
+  const pin = '02' + '11'.repeat(32);
+  const forfeitAddress = payments.p2wpkh({ hash: Buffer.alloc(20, 1), network: networks.regtest }).address!;
+  const requests: Array<[string | undefined, string | undefined]> = [];
+  const operator = createServer((request, response) => {
+    requests.push([request.method, request.url]);
+    response.writeHead(200, { 'content-type': 'application/json' });
+    response.end(JSON.stringify({ network: 'regtest', version: 'mock', signerPubkey: pin, forfeitAddress, dust: 330 }));
+  });
+  operator.listen(0, '127.0.0.1'); await once(operator, 'listening');
+  try {
+    const url = 'http://127.0.0.1:' + (operator.address() as AddressInfo).port + '/v1/info';
+    for (const [expectedSigner, verified] of [[pin, true], ['03' + '22'.repeat(32), false]] as const) {
+      const app = await startApplication({
+        APP_ENV: 'regtest', DATA_DIR: join(directory, expectedSigner), DEPLOYMENT_ID: 'ark-mock',
+        ARK_ENABLED: 'true', ARK_NETWORK: 'regtest', ARK_OPERATOR_URL: url, ARK_EXPECTED_SIGNER_PUBKEY: expectedSigner,
+      }, [], { port: 0 });
+      try {
+        const base = 'http://127.0.0.1:' + (app.server.address() as AddressInfo).port;
+        const response = await fetch(base + '/v1/capabilities');
+        const capabilities = await response.json();
+        assert.equal(capabilities.rails.ark.verified, verified);
+        assert.equal(capabilities.execution.enabled, false);
+      } finally { await app.close(); }
+    }
+    assert.deepEqual(requests, [['GET', '/v1/info'], ['GET', '/v1/info']]);
+  } finally {
+    await new Promise<void>((resolve, reject) => operator.close(error => error ? reject(error) : resolve()));
+    await rm(directory, { recursive: true, force: true });
+  }
 });

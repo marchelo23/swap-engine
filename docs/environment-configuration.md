@@ -41,8 +41,52 @@ Legacy Bitcoin/LND variable names remain accepted. Ark/Liquid canonical names ar
   fail startup. `FEATURE_*`/`ENABLE_*` execution flags are centralized and
   reported false.
 - Liquid has a read-only Elements identity/asset/wallet attestation and remains
-  execution-less. Ark stays a configuration and read-only identity contract,
-  `configured` but `NOT_VERIFIED`; no adapter is installed by this profile.
+  execution-less. Ark can verify a configured operator and expose read-only telemetry.
+
+## Ark operator and wallet telemetry
+
+Use an ignored local .env file and start the app with npm start. Environment
+variables exported by the shell retain precedence.
+
+To add Ark telemetry to an existing Bitcoin and Lightning regtest profile, retain
+the existing Core and LND settings and add the Ark settings from
+`.env.ark.regtest.example`. Keep `APP_ENV=regtest` when using the existing
+authenticated Lightning-to-on-chain flow in the same process.
+
+- Set `ARK_ENABLED=true`, `ARK_NETWORK=regtest`, and
+  `ARK_OPERATOR_URL` to the actual loopback `/v1/info` address.
+- Set `ARK_EXPECTED_SIGNER_PUBKEY` to the operator key verified in the isolated
+  lab. Startup verifies the network, the key and the regtest forfeit address.
+- For wallet balances, set `ARK_LAB_ROOT` and `ARK_CLI_PATH` together. Use the
+  collaborator's CLI built against that isolated lab, on the same host as the
+  application. The lab must be installed and running separately. The app only
+  invokes read commands.
+- Keep `ARK_EXECUTION_ENABLED=false` and
+  `ARK_CONFIRMATION_POLICY=read-only`. An unverified or unreachable operator
+  yields unavailable telemetry. No historical output or address is used.
+
+After starting the application, check `GET /v1/capabilities` for the Ark
+verification result and use the authenticated Operations view to check the
+operator and wallet balances. Ark writes remain unavailable in this deployment.
+A submission or a returned transaction ID alone cannot prove settlement.
+
+## Guest Lightning-to-on-chain swaps
+
+Enable Guest on an explicitly attested Bitcoin and Lightning regtest deployment.
+The preview with only Ark and Core cannot issue a Guest Lightning invoice.
+Set `APP_ENV=regtest`, `GUEST_SWAP_ENABLED=true` and `SPEND_POLICY=regtest-only`.
+Use the reviewed Guest policy whose wallet, Core URL, LND identities,
+certificate paths and read credentials match that deployment profile.
+
+```sh
+npm start -- --guest-regtest --policy-path /ABS/PATH/guest-policy.json \
+  --policy-sha256 REVIEWED_SHA256 --guest-watch
+```
+
+Guest uses a capability token and presents the encrypted recovery export before
+showing the payable invoice. The user chooses a regtest destination and keeps
+the recovery material. The authenticated controlled startup remains a separate
+operating mode with its own reviewed policy and authorization.
 
 ## Economics
 
@@ -183,7 +227,7 @@ as system-unit `User=` account paths.
 ## Remaining gaps
 
 - Elements/Liquid has a read-only identity and policy-asset/wallet attestation.
-  Ark remains `NOT_VERIFIED` until wired to an approved read-only seam.
+  Ark reports `NOT_VERIFIED` until a configured regtest operator matches its pinned signer.
 - Linux POSIX native-operator, vault and fixture tests are skipped on non-Linux
   hosts; run them on Linux before merge.
 - Real mining/payment, deployments and the systemd miner timer remain off.

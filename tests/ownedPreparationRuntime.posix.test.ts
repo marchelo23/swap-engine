@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { mkdir, writeFile, readFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { readinessFixture } from './readinessFixture.js';
 import { provisionAccount } from '../scripts/provision-auth.js';
 import { readAccounts } from '../src/auth/store.js';
@@ -16,6 +17,7 @@ import { buildHtlc } from '../src/bitcoin/HtlcBuilder.js';
 import { ClaimWallet } from '../src/client/ClaimWallet.js';
 import { SecretVault } from '../src/persistence/SecretVault.js';
 
+process.env.MINER_LOCK_FILE ??= join(tmpdir(), `lqwd-miner-lock-${process.pid}.lock`);
 const linux = process.platform === 'linux';
 async function fixture(sourceAmountSats?: number) {
   const x = await readinessFixture(); const directory = x.f.directory;

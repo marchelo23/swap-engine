@@ -23,6 +23,7 @@ import { persistedReadinessCustody } from '../core/ControlledReadiness.js';
 import { createReverseRecovery } from '../api/reverseRecovery.js';
 import { createOwnedReverseApi, sessionOwnerAuthenticator, type OwnerSessions } from '../api/ownedReverse.js';
 import { PreparationRejected, type PreparationFactory, type PreparationEntry, type PreparedRuntime } from '../api/ownedPreparation.js';
+import { withMiningLock } from '../mining/MiningLock.js';
 
 const absolute = z.string().refine(isAbsolute);
 const historyInteger = z.string().regex(/^(0|[1-9][0-9]{0,19})$/).refine(v => BigInt(v) <= 0xffffffffffffffffn);
@@ -203,7 +204,8 @@ export async function createOwnedRuntimeFactory<S extends { account: { id: strin
           underlying = concrete.execute(context); return underlying as ReturnType<JitExecutor['execute']>;
         }, stopClient: stop };
         api.replaceExpiredApproval({ ownerId: policy.ownerId, swapId, expectedRevision: checked.revision, termsDigest: checked.termsDigest,
-          expiresAt: authority.startBefore, execute: () => createJustInTimeReverse(current, spec, readers, authority, executor).run() });
+          expiresAt: authority.startBefore,
+          execute: () => withMiningLock(() => createJustInTimeReverse(current, spec, readers, authority, executor).run()) });
         approvedUntil = authority.startBefore;
       };
       let shutdown: Promise<void> | undefined;

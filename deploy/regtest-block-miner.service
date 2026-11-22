@@ -1,0 +1,17 @@
+[Unit]
+Description=Regtest block miner (one block per timer tick)
+ConditionPathExists=%h/swap-engine/scripts/regtest-block-miner.sh
+After=network.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/swap-engine
+EnvironmentFile=-%h/.config/lqwd-regtest-miner.env
+ExecStart=/bin/bash %h/swap-engine/scripts/regtest-block-miner.sh --once
+Restart=no
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.local/share/lqwd-regtest-miner

@@ -35,7 +35,10 @@ test('SWAP prepares/reviews once, pays only after Start, then a second explicit 
     }, restore: async () => undefined,
   }, { mode: 'regtest', ownerId: owner.id, ownerUsername: 'reviewer', origin, profileDigest: 'cd'.repeat(32) });
   server.controlled.installPreparation(service);
-  const browser = await chromium.launch({ channel: process.env.WEB_TEST_BROWSER_CHANNEL });
+  const browser = await chromium.launch({
+    ...(process.env.WEB_TEST_BROWSER_CHANNEL ? { channel: process.env.WEB_TEST_BROWSER_CHANNEL } : {}),
+    ...(process.env.WEB_TEST_BROWSER_EXECUTABLE ? { executablePath: process.env.WEB_TEST_BROWSER_EXECUTABLE } : {}),
+  });
   let releaseExecution: (() => void) | undefined;
   let executionObserved!: () => void; const executionObservedOnServer = new Promise<void>(r => { executionObserved = r; });
   try {
@@ -117,7 +120,10 @@ for (const mode of ['lost-before-server', 'lost-after-server', 'left-during-revi
       return { api, swapId: id, terminal: async () => undefined, close: () => api.drain(), authorize: async () => { reviews++; api.replaceExpiredApproval(approval()); } };
     }, restore: async () => undefined,
   }, { mode: 'regtest', ownerId: owner.id, ownerUsername: 'reviewer', origin, profileDigest: 'cd'.repeat(32) }));
-  const browser = await chromium.launch({ channel: process.env.WEB_TEST_BROWSER_CHANNEL });
+  const browser = await chromium.launch({
+    ...(process.env.WEB_TEST_BROWSER_CHANNEL ? { channel: process.env.WEB_TEST_BROWSER_CHANNEL } : {}),
+    ...(process.env.WEB_TEST_BROWSER_EXECUTABLE ? { executablePath: process.env.WEB_TEST_BROWSER_EXECUTABLE } : {}),
+  });
   let release: (() => void) | undefined;
   try {
     const page = await browser.newPage({ reducedMotion: 'reduce' }); const keys: string[] = [];
