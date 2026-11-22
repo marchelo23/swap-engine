@@ -4,7 +4,8 @@ import { join } from 'node:path';
 
 export type StateScope = { environment: string; deploymentId: string; genesisHash: string | null; wallet: string;
   bitcoinOrigin?: string | null; providerOrigin?: string | null; payerOrigin?: string | null;
-  providerNode?: string | null; payerNode?: string | null; liquidOrigin?: string | null; liquidWallet?: string | null };
+  providerNode?: string | null; payerNode?: string | null; liquidOrigin?: string | null; liquidWallet?: string | null; liquidGenesisHash?: string | null;
+  liquidChainName?: string | null; liquidPolicyAsset?: string | null; liquidParentGenesisHash?: string | null };
 export type StateScopeOptions = { allowLegacyOfflineMigration?: boolean };
 
 const markerName = '.environment.json';
@@ -18,7 +19,9 @@ function sameScope(value: unknown, expected: StateScope): boolean {
     record.wallet === expected.wallet && record.bitcoinOrigin === expected.bitcoinOrigin &&
     record.providerOrigin === expected.providerOrigin && record.payerOrigin === expected.payerOrigin &&
     record.providerNode === expected.providerNode && record.payerNode === expected.payerNode &&
-    record.liquidOrigin === expected.liquidOrigin && record.liquidWallet === expected.liquidWallet;
+    record.liquidOrigin === expected.liquidOrigin && record.liquidWallet === expected.liquidWallet &&
+    record.liquidGenesisHash === expected.liquidGenesisHash && record.liquidChainName === expected.liquidChainName &&
+    record.liquidPolicyAsset === expected.liquidPolicyAsset && record.liquidParentGenesisHash === expected.liquidParentGenesisHash;
 }
 
 /** Binds an existing journal/lock directory to one explicit deployment and

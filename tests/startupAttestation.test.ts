@@ -108,12 +108,13 @@ test('startApplication attests a configured mainnet profile before serving read-
 
 test('Elements read-only identity uses fee_asset/policy asset and wallet without execution', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'swap-elements-attest-'));
-  const policy = 'ab'.repeat(32); const parent = 'cd'.repeat(32); const pegged = 'ef'.repeat(32);
+  const policy = 'ab'.repeat(32); const parent = 'cd'.repeat(32); const pegged = 'ef'.repeat(32); const nativeGenesis = '12'.repeat(32);
   let fee: string | undefined = policy;
   const server = createServer(async (req, res) => {
     let body = ''; for await (const chunk of req) body += chunk.toString();
     const request = JSON.parse(body) as { id: string; method: string };
-    const result = request.method === 'getblockchaininfo' ? { chain: 'elementsregtest' }
+    const result = request.method === 'getblockhash' ? nativeGenesis
+      : request.method === 'getblockchaininfo' ? { chain: 'elementsregtest' }
       : request.method === 'getsidechaininfo' ? { fee_asset: fee, pegged_asset: pegged, parent_blockhash: parent }
       : request.method === 'getwalletinfo' ? { walletname: 'liquid-wallet' } : null;
     res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ result, error: null, id: request.id }));
@@ -125,9 +126,10 @@ test('Elements read-only identity uses fee_asset/policy asset and wallet without
       AUTH_STORE_PATH: join(directory, 'auth.json'), AUTH_ORIGIN: 'http://127.0.0.1:3000', LIQUID_ENABLED: 'true',
       LIQUID_NETWORK: 'elementsregtest', ELEMENTS_RPC_URL: url, ELEMENTS_COOKIE_PATH: cookiePath,
       ELEMENTS_WALLET: 'liquid-wallet', LIQUID_POLICY_ASSET: policy, LIQUID_PARENT_GENESIS_HASH: parent,
-      LIQUID_CONFIRMATION_POLICY: 'read-only' };
+      LIQUID_CONFIRMATION_POLICY: 'read-only', LIQUID_GENESIS_HASH: nativeGenesis };
     const c = config(env); const identity = await attestStartup(c, { liquid: new ElementsReadOnlyClient(url, cookiePath, 'liquid-wallet') });
     assert.equal(identity.verified.liquid, true); assert.equal(identity.liquidWallet, 'liquid-wallet');
+    assert.equal(identity.liquidGenesisHash, nativeGenesis); assert.equal(c.chain.genesisHash, nativeGenesis);
     assert.equal(c.capabilities(identity.verified).execution.enabled, false);
     const app = await startApplication(env, [], { port: 0 });
     try {

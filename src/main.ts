@@ -102,7 +102,9 @@ export async function startApplication(env: NodeJS.ProcessEnv = process.env, arg
     wallet: identity?.wallet ?? '', bitcoinOrigin: identity?.bitcoinOrigin ?? null,
     providerOrigin: identity?.providerOrigin ?? null, payerOrigin: identity?.payerOrigin ?? null,
     providerNode: identity?.providerNode ?? null, payerNode: identity?.payerNode ?? null,
-    liquidOrigin: identity?.liquidOrigin ?? null, liquidWallet: identity?.liquidWallet ?? null },
+    liquidOrigin: identity?.liquidOrigin ?? null, liquidWallet: identity?.liquidWallet ?? null,
+    liquidGenesisHash: identity?.liquidGenesisHash ?? null, liquidChainName: identity?.liquidChainName ?? null,
+    liquidPolicyAsset: identity?.liquidPolicyAsset ?? null, liquidParentGenesisHash: identity?.liquidParentGenesisHash ?? null },
   { allowLegacyOfflineMigration: c.allowLegacyOfflineMigration });
   const store = await Store.open(c.directory);
   try {

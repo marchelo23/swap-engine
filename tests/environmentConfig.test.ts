@@ -91,6 +91,14 @@ test('Ark and Liquid expose canonical config and read-only identity contracts wi
   assert.throws(() => config(env({ ...liquidEnv, LIQUID_NETWORK: 'liquidv1' })), /LIQUID_CONFIGURATION_INVALID/);
   assert.throws(() => config(env({ ...liquidEnv, LIQUID_RPC_URL: 'http://127.0.0.1:9999' })), /ELEMENTS_RPC_URL_CONFLICT/);
   assert.throws(() => config(env({ ...liquidEnv, APP_MODE: 'regtest' })), /APP_ENVIRONMENT_CONFLICT/);
+  assert.equal(config(env({ ...liquidEnv, LIQUID_ENABLED: 'false' })).rails.liquid.enabled, false);
+  assert.equal(config(env({ ...arkEnv, ARK_ENABLED: 'false' })).rails.ark.enabled, false);
+  const flags = config(env({ ...base, GUEST_SWAP_ENABLED: 'true', REVERSE_SWAP_ENABLED: 'true',
+    FORWARD_SWAP_ENABLED: 'true', REGTEST_AUTO_MINING: 'true' }));
+  assert.deepEqual(flags.features, { guest: true, reverse: true, forward: true, mining: true });
+  assert.equal(flags.capabilities().execution.enabled, false);
+  assert.throws(() => config(env({ ...base, GUEST_SWAP_ENABLED: 'yes' })), /GUEST_SWAP_ENABLED_INVALID/);
+  assert.throws(() => config(env({ ...base, GUEST_SWAP_ENABLED: 'true', APP_ENV: 'mainnet', APP_MODE: '', DEPLOYMENT_ID: 'mainnet-flags' })), /FEATURE_REGTEST_ONLY/);
 });
 
 test('all shipped profiles load as real multiline env files', async () => {
@@ -102,7 +110,7 @@ test('all shipped profiles load as real multiline env files', async () => {
     ['.env.signet.example', 'signet', { SIGNET_CHALLENGE: '51' + '00'.repeat(30) }],
     ['.env.mainnet.example', 'mainnet', {}],
     ['.env.ark.regtest.example', 'ark-regtest', { ARK_EXPECTED_SIGNER_PUBKEY: signer }],
-    ['.env.liquid.regtest.example', 'liquid-regtest', { LIQUID_POLICY_ASSET: policy, LIQUID_PARENT_GENESIS_HASH: parent }],
+    ['.env.liquid.regtest.example', 'liquid-regtest', { LIQUID_POLICY_ASSET: policy, LIQUID_PARENT_GENESIS_HASH: parent, LIQUID_GENESIS_HASH: '12'.repeat(32) }],
   ];
   for (const [file, expected, overrides] of cases) {
     const text = await readFile(file, 'utf8');

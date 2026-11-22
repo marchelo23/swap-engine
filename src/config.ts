@@ -47,7 +47,7 @@ export type LightningRailConfig = {
 export type ArkRailConfig = { enabled: true; operatorInfoUrl: string; expectedSignerPubkey: string;
   labRoot: string | null; cliPath: string | null; storePath: string | null; confirmationPolicy: 'disabled' | 'read-only' } | { enabled: false };
 export type LiquidRailConfig = { enabled: true; rpcUrl: string; cookie: string; chainName: string;
-  policyAsset: string; parentGenesisHash: string; wallet: string; confirmationPolicy: 'disabled' | 'read-only' } | { enabled: false };
+  policyAsset: string; parentGenesisHash: string; genesisHash: string | null; wallet: string; confirmationPolicy: 'disabled' | 'read-only' } | { enabled: false };
 
 export type RecoveryConfig = { payerUrl: string; payerCert: string; payerMacaroon: string;
   payerNode: string; providerNode: string };
@@ -63,7 +63,7 @@ export type Config = {
   deploymentId: string | null;
   signetChallenge: string | null;
   allowLegacyOfflineMigration: boolean;
-  features: { reverse: false; forward: false; guest: false; mining: false };
+  features: { reverse: boolean; forward: boolean; guest: boolean; mining: boolean };
   miningPolicy: 'disabled' | 'regtest-only';
   spendPolicy: 'disabled' | 'regtest-only';
   rails: { onchain: OnchainRailConfig; lightning: LightningRailConfig; ark: ArkRailConfig; liquid: LiquidRailConfig };
@@ -134,6 +134,7 @@ function arkRail(env: NodeJS.ProcessEnv): ArkRailConfig {
   if (legacyEnabled !== undefined && !['true', 'false'].includes(legacyEnabled)) throw new Error('ARK_ENABLED_INVALID');
   const names = ['ARK_NETWORK', 'ARK_OPERATOR_URL', 'ARK_OPERATOR_INFO_URL', 'ARK_EXPECTED_SIGNER_PUBKEY',
     'ARK_SIGNER_PUBKEY', 'ARK_LAB_ROOT', 'ARK_CLI_PATH', 'ARK_LAB_CLI_PATH', 'ARK_STORE_PATH', 'ARK_CONFIRMATION_POLICY'];
+  if (legacyEnabled === 'false') return { enabled: false };
   if (legacyEnabled !== 'true' && !names.some(name => optional(env, name) !== undefined)) return { enabled: false };
   const network = required(env, 'ARK_NETWORK');
   if (network !== 'regtest') throw new Error('ARK_NETWORK_REGTEST_ONLY');
@@ -162,6 +163,7 @@ function liquidRail(env: NodeJS.ProcessEnv): LiquidRailConfig {
   const names = ['LIQUID_NETWORK', 'LIQUID_CHAIN_NAME', 'ELEMENTS_RPC_URL', 'LIQUID_RPC_URL',
     'ELEMENTS_WALLET', 'LIQUID_WALLET', 'ELEMENTS_COOKIE_PATH', 'LIQUID_COOKIE_PATH',
     'LIQUID_POLICY_ASSET', 'LIQUID_ASSET_ID', 'LIQUID_PARENT_GENESIS_HASH', 'LIQUID_CONFIRMATION_POLICY'];
+  if (legacyEnabled === 'false') return { enabled: false };
   if (legacyEnabled !== 'true' && !names.some(name => optional(env, name) !== undefined)) return { enabled: false };
   const rpcUrl = pick(env, 'ELEMENTS_RPC_URL', 'LIQUID_RPC_URL') ??
     (() => { throw new Error('ELEMENTS_RPC_URL_REQUIRED'); })();
@@ -174,12 +176,14 @@ function liquidRail(env: NodeJS.ProcessEnv): LiquidRailConfig {
   const policyAsset = (pick(env, 'LIQUID_POLICY_ASSET', 'LIQUID_ASSET_ID') ??
     (() => { throw new Error('LIQUID_POLICY_ASSET_REQUIRED'); })()).toLowerCase();
   const parentGenesisHash = required(env, 'LIQUID_PARENT_GENESIS_HASH').toLowerCase();
+  const liquidGenesis = optional(env, 'LIQUID_GENESIS_HASH')?.toLowerCase() ?? null;
+  if (liquidGenesis !== null && !/^[a-f0-9]{64}$/.test(liquidGenesis)) throw new Error('LIQUID_CONFIGURATION_INVALID');
   const confirmationRaw = (optional(env, 'LIQUID_CONFIRMATION_POLICY') ?? 'disabled').toLowerCase();
   if (!['disabled', 'read-only'].includes(confirmationRaw)) throw new Error('LIQUID_CONFIRMATION_POLICY_INVALID');
   if (!loopbackHttp(rpcUrl) || !absolutePath(cookie) || !/^[A-Za-z0-9._-]{1,120}$/.test(wallet) ||
     !/^[a-z0-9]+regtest$/.test(chainName) || !/^[a-f0-9]{64}$/.test(policyAsset) || !/^[a-f0-9]{64}$/.test(parentGenesisHash))
     throw new Error('LIQUID_CONFIGURATION_INVALID');
-  return { enabled: true, rpcUrl, cookie, wallet, chainName, policyAsset, parentGenesisHash,
+  return { enabled: true, rpcUrl, cookie, wallet, chainName, policyAsset, parentGenesisHash, genesisHash: liquidGenesis,
     confirmationPolicy: confirmationRaw as 'disabled' | 'read-only' };
 }
 
@@ -206,7 +210,13 @@ export function config(env: NodeJS.ProcessEnv = process.env): Config {
   for (const name of ['ENABLE_REVERSE_EXECUTION', 'FEATURE_REVERSE_EXECUTION', 'ENABLE_FORWARD_EXECUTION',
     'FEATURE_FORWARD_EXECUTION', 'ENABLE_GUEST_EXECUTION', 'FEATURE_GUEST_EXECUTION', 'ENABLE_MINING', 'FEATURE_MINING'])
     if (env[name] && env[name] !== 'false') throw new Error('FEATURE_EXECUTION_DISABLED');
-  const features = { reverse: false as const, forward: false as const, guest: false as const, mining: false as const };
+  const exactFlag = (name: string) => {
+    const raw = env[name]?.trim(); if (raw === undefined) return false;
+    if (!['true', 'false'].includes(raw)) throw new Error(`${name}_INVALID`); return raw === 'true';
+  };
+  const features = { guest: exactFlag('GUEST_SWAP_ENABLED'), reverse: exactFlag('REVERSE_SWAP_ENABLED'),
+    forward: exactFlag('FORWARD_SWAP_ENABLED'), mining: exactFlag('REGTEST_AUTO_MINING') };
+  if (Object.values(features).some(Boolean) && selectedEnvironment !== 'regtest') throw new Error('FEATURE_REGTEST_ONLY');
   const miningRaw = (env.MINING_POLICY ?? 'disabled').trim().toLowerCase();
   if (!['disabled', 'regtest-only'].includes(miningRaw)) throw new Error('MINING_POLICY_INVALID');
   const miningPolicy = miningRaw as 'disabled' | 'regtest-only';
@@ -241,7 +251,7 @@ export function config(env: NodeJS.ProcessEnv = process.env): Config {
     ? 'regtest' as const : selectedEnvironment === 'signet' ? 'signet' as const : selectedEnvironment === 'mainnet' ? 'mainnet' as const : null;
   const bitcoinGenesisHash = bitcoinNetwork ? BITCOIN_GENESIS[bitcoinNetwork] : null;
   const chain = selectedEnvironment === 'liquid-regtest'
-    ? { kind: 'liquid' as const, name: liquid.enabled ? liquid.chainName : 'liquid-regtest', genesisHash: liquid.enabled ? liquid.parentGenesisHash : null }
+    ? { kind: 'liquid' as const, name: liquid.enabled ? liquid.chainName : 'liquid-regtest', genesisHash: liquid.enabled ? liquid.genesisHash : null }
     : selectedEnvironment === 'ark-regtest'
       ? { kind: 'ark' as const, name: 'regtest', genesisHash: null }
       : { kind: 'bitcoin' as const, name: selectedEnvironment,

@@ -9,7 +9,8 @@ type LiquidReader = { origin?: string; call<T>(method: string, params?: unknown[
 export type StartupScope = { environment: Config['environment']; deploymentId: string;
   genesisHash: string | null; wallet: string; bitcoinOrigin?: string | null;
   providerOrigin?: string | null; payerOrigin?: string | null; providerNode?: string | null; payerNode?: string | null;
-  liquidOrigin?: string | null; liquidWallet?: string | null;
+  liquidOrigin?: string | null; liquidWallet?: string | null; liquidGenesisHash?: string | null;
+  liquidChainName?: string | null; liquidPolicyAsset?: string | null; liquidParentGenesisHash?: string | null;
   verified: Partial<Record<RailId, boolean>> };
 
 /** Read-only startup attestation. It runs before the journal/lock is opened and
@@ -22,7 +23,8 @@ export async function attestStartup(config: Config, clients: {
   let genesisHash: string | null = null; let wallet = ''; let bitcoinOrigin: string | null = null;
   let providerOrigin: string | null = null; let payerOrigin: string | null = null;
   let providerNode: string | null = null; let payerNode: string | null = null;
-  let liquidOrigin: string | null = null; let liquidWallet: string | null = null;
+  let liquidOrigin: string | null = null; let liquidWallet: string | null = null; let liquidGenesisHash: string | null = null;
+  let liquidChainName: string | null = null; let liquidPolicyAsset: string | null = null; let liquidParentGenesisHash: string | null = null;
   if (config.rails.onchain.enabled) {
     if (!clients.bitcoin) throw new Error('ONCHAIN_ATTESTATION_UNAVAILABLE');
     if (!config.bitcoinNetwork || !config.bitcoinGenesisHash) throw new Error('BITCOIN_ATTESTATION_UNAVAILABLE');
@@ -60,14 +62,19 @@ export async function attestStartup(config: Config, clients: {
   if (config.rails.liquid.enabled) {
     if (!clients.liquid) throw new Error('LIQUID_ATTESTATION_UNAVAILABLE');
     const blockchain = await clients.liquid.call('getblockchaininfo');
+    const genesis = await clients.liquid.call<string>('getblockhash', [0]);
     const sidechain = await clients.liquid.call('getsidechaininfo');
     const wallet = await clients.liquid.call<{ walletname?: string }>('getwalletinfo', [], true);
-    verifyLiquidIdentity(blockchain, sidechain, { chainName: config.rails.liquid.chainName,
+    const checked = verifyLiquidIdentity(blockchain, sidechain, { chainName: config.rails.liquid.chainName,
       policyAsset: config.rails.liquid.policyAsset, parentGenesisHash: config.rails.liquid.parentGenesisHash });
+    if (config.rails.liquid.genesisHash && config.rails.liquid.genesisHash !== genesis) throw new Error('LIQUID_GENESIS_MISMATCH');
     if (wallet.walletname !== config.rails.liquid.wallet) throw new Error('LIQUID_WALLET_IDENTITY_MISMATCH');
-    liquidOrigin = clients.liquid.origin ?? null; liquidWallet = config.rails.liquid.wallet; verified.liquid = true;
+    liquidOrigin = clients.liquid.origin ?? null; liquidWallet = config.rails.liquid.wallet; liquidGenesisHash = genesis;
+    liquidChainName = checked.chainName; liquidPolicyAsset = checked.policyAsset; liquidParentGenesisHash = checked.parentGenesisHash;
+    verified.liquid = true;
   }
   if (config.deploymentId === null) throw new Error('DEPLOYMENT_ID_REQUIRED');
   return { environment: config.environment, deploymentId: config.deploymentId, genesisHash, wallet,
-    bitcoinOrigin, providerOrigin, payerOrigin, providerNode, payerNode, liquidOrigin, liquidWallet, verified };
+    bitcoinOrigin, providerOrigin, payerOrigin, providerNode, payerNode, liquidOrigin, liquidWallet,
+    liquidGenesisHash, liquidChainName, liquidPolicyAsset, liquidParentGenesisHash, verified };
 }
