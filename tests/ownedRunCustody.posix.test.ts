@@ -13,7 +13,7 @@ async function fixture() {
   const auth = join(f.directory, 'users.json'); await provisionAccount(auth, 'truja503', 'ADMIN', 'synthetic-custody-account-passphrase');
   const [account] = await readAccounts(auth);
   const policy = ownedRunPolicySchema.parse({ ownerUsername: 'truja503', ownerId: account!.id, authStorePath: auth, wallet: 'lqwd-lab',
-    origin: 'http://127.0.0.1:3101', port: 3101, backupDirectory: backup, tipHeight: f.spec.tipHeight,
+    origin: 'http://127.0.0.1:3201', port: 3201, backupDirectory: backup, tipHeight: f.spec.tipHeight,
     providerNode: f.spec.providerNode, payerNode: f.spec.payerNode, routing: f.spec.routing,
     claimDestination: f.spec.claimDestination, refundDestination: f.spec.refundDestination, input: f.spec.input,
     credentialPaths: { bitcoinCookiePath: '/nonexistent/readonly.cookie', providerCertPath: '/nonexistent/provider.cert', providerReadMacaroonPath: '/nonexistent/provider.readonly',
@@ -57,7 +57,8 @@ test('partial or corrupted custody cannot generate replacement keys or overwrite
 test('unknown owner, foreign origin and nested backup fail before reserving local custody', { skip: process.platform !== 'linux' }, async () => {
   const x = await fixture(); try {
     for (const policy of [{ ...x.policy, ownerUsername: 'another' }, { ...x.policy, ownerId: x.f.spec.id },
-      { ...x.policy, origin: 'http://foreign.invalid' }, { ...x.policy, backupDirectory: x.run },
+      { ...x.policy, origin: 'http://foreign.invalid' }, { ...x.policy, origin: 'http://127.0.0.1:3202' },
+      { ...x.policy, backupDirectory: x.run },
       { ...x.policy, routing: { ...x.policy.routing, payerOrigin: x.policy.routing.providerOrigin } }])
       await assert.rejects(prepareOwnedRunCustody(x.run, policy, x.password));
     assert.deepEqual(await readdir(x.run), []);

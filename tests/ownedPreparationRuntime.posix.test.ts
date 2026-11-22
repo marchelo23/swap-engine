@@ -25,7 +25,7 @@ async function fixture(sourceAmountSats?: number) {
   const accounts = join(directory, 'accounts.json'); await provisionAccount(accounts, 'truja503', 'ADMIN', 'synthetic-owned-admin-password');
   const owner = (await readAccounts(accounts))[0]!;
   const policy = ownedRuntimePolicySchema.parse({ mode: 'regtest', ownerId: owner.id, ownerUsername: 'truja503', authStorePath: accounts, wallet: 'lqwd-lab',
-    origin: 'http://127.0.0.1:3101', port: 3101, runsDirectory: runs, backupsDirectory: backups, passwordPath: password,
+    origin: 'http://127.0.0.1:3201', port: 3201, runsDirectory: runs, backupsDirectory: backups, passwordPath: password,
     providerNode: x.plan.providerNode, payerNode: x.plan.payerNode, routing: x.plan.routing, claimDestination: x.plan.claimDestination, refundDestination: x.plan.refundDestination,
     credentialPaths: { bitcoinCookiePath: '/synthetic/cookie', providerCertPath: '/synthetic/provider.cert', providerReadMacaroonPath: '/synthetic/provider.read',
       providerInvoiceMacaroonPath: '/synthetic/provider.invoices', payerCertPath: '/synthetic/payer.cert', payerReadMacaroonPath: '/synthetic/payer.read' },
@@ -143,7 +143,8 @@ test('native policy cannot substitute mainnet, amount/fees, guest owner, externa
   const x = await fixture(); try {
     for (const patch of [{ mode: 'mainnet' }, { amountSats: 100000 }, { maxBlocks: 3 }, { routingFeeLimitSats: 10000 }, { ownerUsername: 'bad username!' },
       { routing: { ...x.policy.routing, payerOrigin: 'https://external.example' } },
-      { credentialPaths: { ...x.policy.credentialPaths, providerInvoiceMacaroonPath: '/synthetic/uninspected-admin.macaroon' } }])
+      { credentialPaths: { ...x.policy.credentialPaths, providerInvoiceMacaroonPath: '/synthetic/uninspected-admin.macaroon' } },
+      { port: 3202 }])
       assert.equal(ownedRuntimePolicySchema.safeParse({ ...x.policy, ...patch }).success, false);
     await assert.rejects(createOwnedRuntimeFactory({ ...x.policy, backupsDirectory: x.policy.runsDirectory }, { get: async () => undefined, verifyCsrf: () => false }, x.io));
   } finally { await x.cleanup(); }

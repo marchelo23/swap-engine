@@ -16,9 +16,13 @@ import { verifyCustodyBackup } from './CustodyBackup.js';
 
 const absolute = z.string().refine(isAbsolute); const pubkey = z.string().regex(/^(02|03)[a-f0-9]{64}$/);
 const hash = z.string().regex(/^[a-f0-9]{64}$/);
-export const ownedRunPolicySchema = z.object({ ownerUsername: Username, ownerId: z.uuid(), authStorePath: absolute,
+const loopbackOrigin = z.string().refine(value => {
+  try { const url = new URL(value); return url.origin === value && url.protocol === 'http:' &&
+    ['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname) && !!url.port; } catch { return false; }
+});
+export const ownedRunPolicyBase = z.object({ ownerUsername: Username, ownerId: z.uuid(), authStorePath: absolute,
   wallet: z.string().regex(/^[A-Za-z0-9._-]{1,120}$/),
-  origin: z.literal('http://127.0.0.1:3101'), port: z.literal(3101), backupDirectory: absolute,
+  origin: loopbackOrigin, port: z.number().int().min(1).max(65535), backupDirectory: absolute,
   sourceAmountSats: z.number().int().min(11000).max(50000).optional(),
   tipHeight: z.number().int().positive().max(499999969), providerNode: pubkey, payerNode: pubkey,
   routing: reverseRoutingSchema, claimDestination: z.string(), refundDestination: z.string(),
@@ -26,6 +30,8 @@ export const ownedRunPolicySchema = z.object({ ownerUsername: Username, ownerId:
   credentialPaths: z.object({ bitcoinCookiePath: absolute, providerCertPath: absolute, providerReadMacaroonPath: absolute,
     payerCertPath: absolute, payerReadMacaroonPath: absolute, providerInvoiceMacaroonPath: absolute }).strict(),
 }).strict();
+export const ownedRunPolicySchema = ownedRunPolicyBase.refine(p => new URL(p.origin).port === String(p.port),
+  'Origin port must match policy port');
 
 async function immutable(directory: string, name: string, bytes: Buffer) {
   const file = await open(join(directory, name), constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);

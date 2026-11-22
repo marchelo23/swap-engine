@@ -7,7 +7,7 @@ import { z } from 'zod';
 import { Store } from '../persistence/Store.js';
 import { SecretVault } from '../persistence/SecretVault.js';
 import { RefundKeyVault } from '../bitcoin/RefundKeyVault.js';
-import { ownedRunPolicySchema, prepareOwnedRunCustody } from './OwnedRunCustody.js';
+import { ownedRunPolicyBase, ownedRunPolicySchema, prepareOwnedRunCustody } from './OwnedRunCustody.js';
 import { actionPathsSchema, inspectNativeActions, probeCoreAction, nativeActionDependencies } from './NativeActionCredentials.js';
 import { protectedBytes, checkedJSON, operatorDirectory, operatorArtifact, operatorStopped, sha256 } from './OperatorFiles.js';
 import { verifyCustodyBackup, backupSchema } from './CustodyBackup.js';
@@ -36,14 +36,14 @@ function verifyAbsentHistory(value: unknown, hash: string) {
   } else if (page.first_index_offset !== page.payments[0]!.payment_index || page.last_index_offset !== page.payments.at(-1)!.payment_index ||
     page.payments.some((p, i) => BigInt(p.payment_index) < 1n || (i > 0 && BigInt(p.payment_index) <= BigInt(page.payments[i - 1]!.payment_index)))) throw operatorStopped();
 }
-export const ownedRuntimePolicySchema = ownedRunPolicySchema.omit({ backupDirectory: true, tipHeight: true, input: true }).extend({
+export const ownedRuntimePolicySchema = ownedRunPolicyBase.omit({ backupDirectory: true, tipHeight: true, input: true }).extend({
   mode: z.literal('regtest'), runsDirectory: absolute, backupsDirectory: absolute, passwordPath: absolute,
   actions: actionPathsSchema, amountSats: z.literal(50000), invoiceSats: z.literal(50750),
   fundingFeeLimitSats: z.literal(1000), routingFeeLimitSats: z.literal(100), claimFeeSats: z.literal(500),
   maxBlocks: z.literal(2), maxInputSats: z.number().int().min(61000).max(Number.MAX_SAFE_INTEGER),
   archives: z.array(z.object({ directory: absolute, specSha256: z.string().regex(/^[a-f0-9]{64}$/) }).strict()).max(20).default([]),
-}).strict().refine(p => p.actions.providerSettleMacaroonPath === p.credentialPaths.providerInvoiceMacaroonPath,
-  'Invoice creation must use the same inspected invoices-only credential');
+}).strict().refine(p => p.actions.providerSettleMacaroonPath === p.credentialPaths.providerInvoiceMacaroonPath &&
+  new URL(p.origin).port === String(p.port), 'Invoice creation must use the same inspected invoices-only credential');
 export type OwnedRuntimePolicy = z.infer<typeof ownedRuntimePolicySchema>;
 const clockSynchronized = async () => {
   const { stdout } = await promisify(execFile)('/usr/bin/timedatectl', ['show', '-p', 'NTPSynchronized', '--value'], { timeout: 5000, maxBuffer: 1024 });
@@ -124,7 +124,7 @@ export async function createOwnedRuntimeFactory<S extends { account: { id: strin
       if (!input) throw operatorStopped();
       await mkdir(directory, { mode: 0o700 }); await mkdir(backupDirectory, { mode: 0o700 });
       const custodyPolicy = ownedRunPolicySchema.parse({ ...Object.fromEntries(Object.entries(policy).filter(([key]) =>
-        ['ownerUsername','ownerId','authStorePath','origin','port','providerNode','payerNode','routing','claimDestination','refundDestination','credentialPaths'].includes(key))),
+        ['ownerUsername','ownerId','authStorePath','wallet','origin','port','providerNode','payerNode','routing','claimDestination','refundDestination','credentialPaths'].includes(key))),
         tipHeight: chain.blocks, input, backupDirectory, ...(entry.sourceAmountSats === undefined ? {} : { sourceAmountSats: entry.sourceAmountSats }) });
       await operatorArtifact(directory, 'admission.json', { id, entry, policyDigest: sha256(Buffer.from(JSON.stringify(policy))) });
       await operatorArtifact(directory, 'owner-policy.json', custodyPolicy);
@@ -136,7 +136,7 @@ export async function createOwnedRuntimeFactory<S extends { account: { id: strin
       admission.policyDigest !== sha256(Buffer.from(JSON.stringify(policy)))) throw operatorStopped();
     const ready = z.object({ artifacts: z.record(z.string(), z.string()) }).parse(JSON.parse((await protectedBytes(join(directory, 'custody-ready.json'))).toString()));
     const spec = preparationSpecSchema.parse(await checkedJSON(join(directory, 'spec.json'), ready.artifacts['spec.json']!));
-    if (spec.sourceAmountSats !== entry.sourceAmountSats) throw operatorStopped();
+    if (spec.wallet !== policy.wallet || spec.sourceAmountSats !== entry.sourceAmountSats) throw operatorStopped();
     const backup = backupSchema.parse(await checkedJSON(join(directory, 'custody-backup.json'), ready.artifacts['custody-backup.json']!));
     let store: Store | undefined; let client: SecretVault | undefined; let refund: SecretVault | undefined;
     let concrete: JitExecutor | undefined; let underlying: Promise<unknown> | undefined; let stopped = false;

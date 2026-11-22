@@ -164,9 +164,7 @@ test('native regtest process starts the authenticated default-closed gateway and
   const reservation = createServer(); reservation.listen(0, '127.0.0.1'); await once(reservation, 'listening');
   const port = (reservation.address() as AddressInfo).port; await new Promise<void>(r => reservation.close(() => r()));
   const child = spawn(process.execPath, ['node_modules/tsx/dist/cli.mjs', 'src/main.ts'], { cwd: process.cwd(),
-    env: { ...process.env, ...x.env, PORT: String(port), ENABLE_LIVE_SWAPS: 'false',
-      BITCOIN_RPC_URL: 'http://127.0.0.1:1', LND_REST_URL: 'https://127.0.0.1:2',
-      BITCOIN_COOKIE_PATH: '/nonexistent-test-cookie', LND_TLS_CERT_PATH: '/nonexistent-test-cert', LND_MACAROON_PATH: '/nonexistent-test-macaroon' },
+    env: { ...process.env, ...x.env, PORT: String(port), ENABLE_LIVE_SWAPS: 'false' },
     stdio: ['ignore', 'pipe', 'pipe'] });
   const exited = once(child, 'exit'); let output = ''; let errors = '';
   child.stderr.on('data', bytes => { errors += bytes.toString(); });
@@ -184,7 +182,7 @@ test('native regtest process starts the authenticated default-closed gateway and
     assert.equal((await fetch(base + '/v1/reverse/availability')).status, 401);
     child.kill('SIGTERM'); const [code, signal] = await exited;
     assert.equal(code, 0); assert.equal(signal, null); assert.equal(errors, '');
-    const resumed = await startApplication({ ...x.env, BITCOIN_RPC_URL: 'http://127.0.0.1:1', LND_REST_URL: 'https://127.0.0.1:2' }, [], { port: 0 });
+    const resumed = await startApplication({ ...x.env }, [], { port: 0 });
     await resumed.close(); // The actual process released its store writer lock.
     assert.equal(x.executions(), 0);
   } finally { child.kill('SIGTERM'); await exited; await x.cleanup(); }
