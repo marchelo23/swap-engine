@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { assertOperatorBinding, attestOperatorBinding } from '../src/environment/OperatorBinding.js';
+import { assertOperatorBinding, attestOperatorBinding, serveMutationPolicy } from '../src/environment/OperatorBinding.js';
 
 const expected = { wallet: 'wallet-a', genesisHash: '0f9188f13cb7b2c71f2a335e3a4fc328bf5beb436012afca590b1a11466e2206', bitcoinOrigin: 'http://127.0.0.1:18443', providerOrigin: 'https://127.0.0.1:8080',
   payerOrigin: 'https://127.0.0.1:8081', providerNode: '02' + '11'.repeat(32), payerNode: '03' + '22'.repeat(32),
@@ -44,4 +44,13 @@ test('unpinned native policy still attests both live LND pubkeys before custody'
     /OPERATOR_BINDING_MISMATCH/);
   await assert.rejects(attestOperatorBinding(clients(spec.providerNode, spec.providerNode), spec, paths, unpinned),
     /OPERATOR_BINDING_MISMATCH/);
+});
+test('serve-status never builds a mutation policy without payer or identity', () => {
+  let builds = 0; const build = () => { builds++; return spec; };
+  assert.equal(serveMutationPolicy('serve-status', build), undefined);
+  assert.equal(builds, 0);
+  assert.equal(serveMutationPolicy('review', build), undefined);
+  assert.equal(builds, 0);
+  assert.equal(serveMutationPolicy('serve', build), spec);
+  assert.equal(builds, 1);
 });

@@ -1,4 +1,4 @@
-import { address, networks } from 'bitcoinjs-lib';
+import { assertRegtestAddress } from '../bitcoin/AddressPolicy.js';
 import { z } from 'zod';
 import type { Quote } from './SwapTypes.js';
 import { buildHtlc, type Contract } from '../bitcoin/HtlcBuilder.js';
@@ -42,9 +42,8 @@ export function verifyReverseTestPlan(value: unknown): ReverseTestPlan {
     plan.providerNode === plan.payerNode || plan.routing.providerOrigin === plan.routing.payerOrigin) throw new Error('Reverse plan differs from test contract');
   const contract = buildHtlc(plan.contract);
   if (contract.address !== plan.address || contract.witnessScript.toString('hex') !== plan.witnessScript) throw new Error('Reverse contract reconstruction failed');
-  address.toOutputScript(plan.claimDestination, networks.regtest);
-  address.toOutputScript(plan.refundDestination, networks.regtest);
-  if (!plan.claimDestination.startsWith('bcrt1') || !plan.refundDestination.startsWith('bcrt1')) throw new Error('Only regtest witness destinations supported');
+  assertRegtestAddress(plan.claimDestination);
+  assertRegtestAddress(plan.refundDestination);
   return plan;
 }
 

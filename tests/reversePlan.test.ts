@@ -38,7 +38,9 @@ test('reverse plan rejects altered amounts, keys, scripts, destination networks 
   for (const changed of [{ ...p, network: 'mainnet' }, { ...p, executionApproved: true },
     { ...p, quote: { ...p.quote, invoiceSats: 50749 } }, { ...p, address: p.claimDestination },
     { ...p, contract: { ...p.contract, timeoutHeight: 160 } }, { ...p, providerNode: p.payerNode },
-    { ...p, claimDestination: 'bc1-invalid-mainnet' }, { ...p, contract: { ...p.contract, refundPublicKey: p.contract.claimPublicKey } }]) {
+    { ...p, claimDestination: 'bc1-invalid-mainnet' },
+    { ...p, claimDestination: 'bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080' },
+    { ...p, contract: { ...p.contract, refundPublicKey: p.contract.claimPublicKey } }]) {
     assert.throws(() => verifyReverseTestPlan(changed));
   }
 });

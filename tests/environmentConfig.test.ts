@@ -6,6 +6,9 @@ import { test } from 'node:test';
 import { createApi } from '../src/api/server.js';
 import { CapabilitiesResponse } from '../src/api/schemas.js';
 import { config } from '../src/config.js';
+import { SwapManager } from '../src/core/SwapManager.js';
+import { startApplication } from '../src/main.js';
+import { LEGACY_ECONOMICS } from '../src/core/Economics.js';
 import { setup } from './helpers.js';
 
 const base = {
@@ -140,4 +143,42 @@ test('public capabilities endpoint is read-only and never infers availability fr
       assert.equal((await fetch(`${baseUrl}/v1/capabilities?x=1`)).status, 404);
     } finally { await new Promise<void>(resolve => server.close(() => resolve())); }
   } finally { await f.cleanup(); }
+});
+
+test('per-profile economics apply to real quotes and reject unsafe combinations', async () => {
+  assert.deepEqual(config(env(base)).economics, LEGACY_ECONOMICS);
+  const c = config(env({ ...base, QUOTE_MIN_SATS: '20000', QUOTE_MAX_SATS: '60000',
+    QUOTE_SERVICE_FEE_BASE_SATS: '700', QUOTE_SERVICE_FEE_BPS: '100', QUOTE_TTL_SECONDS: '180' }));
+  assert.equal(c.economics.quote.minAmountSats, 20_000); assert.equal(c.economics.quote.ttlMs, 180_000);
+  const f = await setup();
+  const server = createApi(new SwapManager(f.store, c.economics), async () => ({ onchainSats: 1, incomingSats: 1 }));
+  server.listen(0, '127.0.0.1'); await once(server, 'listening');
+  try {
+    const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1/quotes`;
+    const response = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ amountSats: 50_000 }) });
+    assert.equal(response.status, 201);
+    const quote = await response.json() as { serviceFeeSats: number; ttl?: number; expiresAt: number };
+    assert.equal(quote.serviceFeeSats, 1_200);
+    assert.equal(quote.expiresAt - Date.now() > 170_000, true);
+    assert.equal((await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ amountSats: 19_999 }) })).status, 503);
+  } finally { await new Promise<void>(resolve => server.close(() => resolve())); await f.cleanup(); }
+  for (const change of [{ QUOTE_MIN_SATS: '9999' }, { QUOTE_MAX_SATS: '1000001' },
+    { INVOICE_MIN_SATS: '10999' }, { INVOICE_MAX_SATS: '50001' }, { QUOTE_TTL_SECONDS: '29' },
+    { QUOTE_SERVICE_FEE_BPS: '1001' }, { INVOICE_SERVICE_FEE_DIVISOR: '1' },
+    { INVOICE_CLAIM_FEE_SATS: '20000' }, { CONFIRMATIONS_REQUIRED: '0' },
+    { READINESS_MAX_BLOCKS: '3' }, { READINESS_TIMEOUT_MS: '60000' }] as Record<string, string>[])
+    assert.throws(() => config(env({ ...base, ...change })), /_OUT_OF_RANGE|_INVALID|ECONOMICS_UNSAFE|PROTOCOL_POLICY_IMMUTABLE/);
+});
+test('nonlegacy quote economics cannot install executable reverse', async () => {
+  const args = ['--controlled-reverse', '--serve-jit', '--run-dir', process.cwd(), '--spec-sha256', 'ab'.repeat(32),
+    '--action-config-sha256', 'cd'.repeat(32), '--backup-config-sha256', 'ef'.repeat(32),
+    '--authorization-sha256', '12'.repeat(32), '--ui-config-sha256', '34'.repeat(32)];
+  await assert.rejects(startApplication({ ...base, SPEND_POLICY: 'regtest-only', QUOTE_MIN_SATS: '20000' }, args, {
+    reads: { liquidity: async () => ({ onchainSats: 1, incomingSats: 1 }) },
+    identity: { environment: 'regtest', deploymentId: 'lab-a',
+      genesisHash: '0f9188f13cb7b2c71f2a335e3a4fc328bf5beb436012afca590b1a11466e2206',
+      wallet: 'lab-wallet', verified: {} },
+  }), /EXECUTION_ECONOMICS_UNSUPPORTED/);
 });

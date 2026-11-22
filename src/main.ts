@@ -15,11 +15,12 @@ import { checkedJSON, protectedBytes } from './operator/OperatorFiles.js';
 import { createOwnedRuntimeFactory, ownedRuntimePolicySchema, type OwnedRuntimePolicy } from './operator/OwnedPreparationRuntime.js';
 import { createOwnedPreparation } from './api/ownedPreparation.js';
 import { assertStateScope } from './environment/StateScope.js';
-import { assertOperatorBinding, type OperatorBindingExpectation } from './environment/OperatorBinding.js';
+import { assertOperatorBinding, serveMutationPolicy, type OperatorBindingExpectation } from './environment/OperatorBinding.js';
 import { preparationSpecSchema } from './core/ReversePreparation.js';
 import { readPathsSchema } from '../scripts/run-controlled-reverse.js';
 import { attestStartup, type StartupScope } from './environment/StartupAttestation.js';
 import { ElementsReadOnlyClient } from './environment/ElementsReadOnlyClient.js';
+import { isLegacyEconomics } from './core/Economics.js';
 
 function sameOrigin(url: string, origin: string) { try { return new URL(url).origin === origin; } catch { return false; } }
 function assertOwnedPolicyBinding(policy: OwnedRuntimePolicy, c: ReturnType<typeof config>, identity: StartupScope | undefined) {
@@ -83,6 +84,8 @@ export async function startApplication(env: NodeJS.ProcessEnv = process.env, arg
   if (ownedArgs && !reverseMutationAllowed) throw new Error('OWNED_EXECUTION_DISABLED');
   if (operatorArgs && parseOperatorCommand(operatorArgs).mode === 'serve' && !reverseMutationAllowed)
     throw new Error('CONTROLLED_EXECUTION_DISABLED');
+  if ((ownedArgs || (operatorArgs && parseOperatorCommand(operatorArgs).mode === 'serve')) && !isLegacyEconomics(c.economics))
+    throw new Error('EXECUTION_ECONOMICS_UNSUPPORTED');
   let liquidity: () => Promise<Balances>; let diagnostics: (() => ReturnType<typeof preflight>) | undefined;
   let operations: (() => Promise<OperationsBalances>) | undefined;
   let bitcoin: ReadOnlyBitcoinClient | null = null; let lnd: ReadOnlyLndClient | null = null;
@@ -138,7 +141,7 @@ export async function startApplication(env: NodeJS.ProcessEnv = process.env, arg
   const store = await Store.open(c.directory);
   try {
     await recoverInterruptedReverseRuns(store);
-    const server = createApi(new SwapManager(store), liquidity, diagnostics, c.mode,
+    const server = createApi(new SwapManager(store, c.economics), liquidity, diagnostics, c.mode,
       { operations, auth: { storePath: env.AUTH_STORE_PATH, origin: env.AUTH_ORIGIN }, capabilities: () => c.capabilities(identity?.verified ?? {}), environment: c.environment });
     if (ownedArgs) {
       let factory: Awaited<ReturnType<typeof createOwnedRuntimeFactory>> | undefined;
@@ -157,10 +160,12 @@ export async function startApplication(env: NodeJS.ProcessEnv = process.env, arg
     }
     await new Promise<void>((ready, reject) => { server.once('error', reject); server.listen(dependencies.port ?? c.port, '127.0.0.1', () => { server.off('error', reject); ready(); }); });
     // Failed readiness leaves the app usable with controlled execution closed; never retry.
+    const operatorCommand = operatorArgs ? parseOperatorCommand(operatorArgs) : undefined;
     const runtime = operatorArgs
       ? dependencies.operator
         ? dependencies.operator(operatorArgs, server.controlled.operatorIO)
-        : runOperatorCLI(operatorArgs, server.controlled.operatorIO, operatorPolicy(c, identity!))
+        : runOperatorCLI(operatorArgs, server.controlled.operatorIO,
+          serveMutationPolicy(operatorCommand?.mode, () => operatorPolicy(c, identity!)))
       : undefined;
     void runtime?.catch(() => { console.error('CONTROLLED_RUNTIME_STOPPED: preserve intents; reconcile without retry'); });
     let shutdown: Promise<void> | undefined;

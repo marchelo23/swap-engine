@@ -4,27 +4,33 @@ import { assertLiquidity, type Balances } from '../liquidity/LiquidityManager.js
 import { Store } from '../persistence/Store.js';
 import { transition } from './SwapStateMachine.js';
 import type { Quote, Swap } from './SwapTypes.js';
+import { LEGACY_ECONOMICS, type EconomicsConfig, type InvoiceEconomics } from './Economics.js';
 
 /** User-specified Lightning debit, bounded by the existing controlled regtest profile. */
-export function invoiceBudget(invoiceSats: number) {
-  if (!Number.isSafeInteger(invoiceSats) || invoiceSats < 11_000 || invoiceSats > 50_000) throw new Error('Amount must be 11000..50000 sats');
-  const serviceFeeSats = 500 + Math.ceil(invoiceSats / 200);
-  return { amountSats: invoiceSats - serviceFeeSats, serviceFeeSats, invoiceSats, fundingReserveSats: 1000, claimFeeSats: 500 };
+export function invoiceBudget(invoiceSats: number, policy: InvoiceEconomics = LEGACY_ECONOMICS.invoice) {
+  if (!Number.isSafeInteger(invoiceSats) || invoiceSats < policy.minSats || invoiceSats > policy.maxSats)
+    throw new Error('Amount must be ' + policy.minSats + '..' + policy.maxSats + ' sats');
+  const serviceFeeSats = policy.serviceFeeBaseSats + Math.ceil(invoiceSats / policy.serviceFeeDivisor);
+  return { amountSats: invoiceSats - serviceFeeSats, serviceFeeSats, invoiceSats,
+    fundingReserveSats: policy.fundingReserveSats, claimFeeSats: policy.claimFeeSats };
 }
 
 export class SwapManager {
-  constructor(readonly store: Store) {}
+  constructor(readonly store: Store, readonly economics: EconomicsConfig = LEGACY_ECONOMICS) {}
   async quote(amountSats: number, now = Date.now()): Promise<Quote> {
-    if (!Number.isSafeInteger(amountSats) || amountSats < 10_000 || amountSats > 1_000_000) throw new Error('Amount must be 10000..1000000 sats');
-    const serviceFeeSats = 500 + Math.ceil(amountSats * 0.005);
-    const quote = { id: randomUUID(), amountSats, serviceFeeSats, invoiceSats: amountSats + serviceFeeSats, fundingReserveSats: 1000, claimFeeSats: 500, expiresAt: now + 120_000 };
+    const policy = this.economics.quote;
+    if (!Number.isSafeInteger(amountSats) || amountSats < policy.minAmountSats || amountSats > policy.maxAmountSats)
+      throw new Error('Amount must be ' + policy.minAmountSats + '..' + policy.maxAmountSats + ' sats');
+    const serviceFeeSats = policy.serviceFeeBaseSats + Math.ceil(amountSats * policy.serviceFeeBps / 10_000);
+    const quote = { id: randomUUID(), amountSats, serviceFeeSats, invoiceSats: amountSats + serviceFeeSats,
+      fundingReserveSats: policy.fundingReserveSats, claimFeeSats: policy.claimFeeSats, expiresAt: now + policy.ttlMs };
     return this.store.transaction(db => {
       for (const [id, q] of Object.entries(db.quotes)) if (q.expiresAt < now) delete db.quotes[id];
       db.quotes[quote.id] = quote; return quote;
     });
   }
   async quoteInvoice(invoiceSats: number, now = Date.now()): Promise<Quote> {
-    const quote = { id: randomUUID(), ...invoiceBudget(invoiceSats), expiresAt: now + 120_000 };
+    const quote = { id: randomUUID(), ...invoiceBudget(invoiceSats, this.economics.invoice), expiresAt: now + this.economics.invoice.ttlMs };
     return this.store.transaction(db => {
       for (const [id, q] of Object.entries(db.quotes)) if (q.expiresAt < now) delete db.quotes[id];
       db.quotes[quote.id] = quote; return quote;

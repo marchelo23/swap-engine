@@ -44,3 +44,8 @@ export async function attestOperatorBinding(clients: {
       throw new Error('OPERATOR_BINDING_MISMATCH');
   }
 }
+/** Builds a mutation policy only for serve; status/review paths stay
+ * read-only and must not require payer or mutation identity. */
+export function serveMutationPolicy<T>(mode: string | undefined, build: () => T): T | undefined {
+  return mode === 'serve' ? build() : undefined;
+}

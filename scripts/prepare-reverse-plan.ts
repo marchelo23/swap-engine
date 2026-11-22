@@ -2,9 +2,7 @@ import { readFileSync } from 'node:fs';
 import { open, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { z } from 'zod';
-import { address, networks } from 'bitcoinjs-lib';
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
+import { assertRegtestAddress } from '../src/bitcoin/AddressPolicy.js';
 import { config } from '../src/config.js';
 import { ReadOnlyBitcoinClient, ReadOnlyLndClient } from '../src/diagnostics/ReadOnlyClients.js';
 import { preflight } from '../src/diagnostics/preflight.js';
@@ -25,7 +23,8 @@ let step = 'readiness';
 try {
   const bitcoin = new ReadOnlyBitcoinClient(c.bitcoinUrl, c.cookie, c.wallet);
   const provider = new ReadOnlyLndClient(c.lndUrl, c.cert, c.macaroon);
-  const payer = new ReadOnlyLndClient('https://127.0.0.1:8081', '/home/truja/.lnd-alice/tls.cert', '/home/truja/.lnd-alice/data/chain/bitcoin/regtest/readonly.macaroon');
+  if (!c.aliceLnd) throw new Error('PAYER_LND_REQUIRED');
+  const payer = new ReadOnlyLndClient(c.aliceLnd.url, c.aliceLnd.cert, c.aliceLnd.macaroon);
   const reports = await Promise.all([preflight(bitcoin, provider, c.wallet), preflight(bitcoin, payer, c.wallet)]);
   if (reports.some(r => !r.prerequisitesSatisfied)) throw new Error('Node readiness unresolved');
   const nodeSchema = z.object({ identity_pubkey: z.string().regex(/^(02|03)[a-f0-9]{64}$/) });
@@ -40,14 +39,16 @@ try {
     bitcoinOrigin: bitcoin.origin, providerOrigin: provider.origin, payerOrigin: payer.origin });
   const tip = z.object({ chain: z.literal('regtest'), blocks: z.number().int().positive() }).parse(await bitcoin.call('getblockchaininfo'));
   step = 'destinations';
-  // Retrieve exact bytes from the existing wallet, never copy an address from wrapped terminal output.
-  const listed = await promisify(execFile)('lncli', ['--lnddir=/home/truja/.lnd-alice', '--network=regtest', '--rpcserver=127.0.0.1:10010',
-    '--macaroonpath=/home/truja/.lnd-alice/data/chain/bitcoin/regtest/readonly.macaroon', 'wallet', 'addresses', 'list'], { timeout: 15000, maxBuffer: 2000000 });
-  const accounts = z.object({ account_with_addresses: z.array(z.object({ addresses: z.array(z.object({ address: z.string(), is_internal: z.boolean().optional() })) })) }).parse(JSON.parse(listed.stdout));
+  if (!c.aliceLnd) throw new Error('PAYER_LND_REQUIRED');
+  // Fixed default external-address inventory from the attested payer; never derive a new address.
+  const accounts = z.object({ account_with_addresses: z.array(z.object({ addresses: z.array(z.object({ address: z.string(), is_internal: z.boolean() })) })) })
+    .parse(await payer.call('/v2/wallet/addresses?account_name=default'));
   const claimDestination = accounts.account_with_addresses.flatMap(a => a.addresses).find(a => !a.is_internal && a.address.startsWith('bcrt1'))?.address;
   if (!claimDestination) throw new Error('Existing client receiving address unavailable');
-  address.toOutputScript(claimDestination, networks.regtest);
-  const refundDestination = 'bcrt1qz62y94lnjfj4sqmzwsap2fvleqxkua95znqfwj';
+  assertRegtestAddress(claimDestination);
+  const refundDestination = process.env.REFUND_DESTINATION?.trim();
+  if (!refundDestination) throw new Error('REFUND_DESTINATION_REQUIRED');
+  assertRegtestAddress(refundDestination);
   z.object({ ismine: z.literal(true) }).parse(await bitcoin.call('getaddressinfo', [refundDestination], true));
   step = 'quote';
   const response = await fetch(`http://127.0.0.1:${c.port}/v1/quotes`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{"amountSats":50000}', signal: AbortSignal.timeout(10000) });
@@ -65,7 +66,7 @@ try {
   step = 'contract';
   const plan = createReverseTestPlan(quote, tip.blocks, client.toJSON(), refund.publicKey,
     { claim: claimDestination, refund: refundDestination },
-    { provider: p.identity_pubkey, payer: a.identity_pubkey }, routing);
+    { provider: p.identity_pubkey, payer: a.identity_pubkey }, routing, c.wallet);
   const path = join(c.directory, 'reverse-test-plan.json');
   step = 'public_plan';
   const file = await open(path, 'wx', 0o600);

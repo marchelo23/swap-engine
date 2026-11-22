@@ -1,6 +1,7 @@
 import { isAbsolute } from 'node:path';
 import type { Capabilities, Environment, RailId, RailReason } from './core/RailContract.js';
 import { environmentSchema } from './core/RailContract.js';
+import { LEGACY_ECONOMICS, validateEconomics, type EconomicsConfig } from './core/Economics.js';
 
 export type ApplicationMode = 'simulation' | 'regtest';
 
@@ -67,6 +68,7 @@ export type Config = {
   reverseSwapExplicit: boolean;
   miningPolicy: 'disabled' | 'regtest-only';
   spendPolicy: 'disabled' | 'regtest-only';
+  economics: EconomicsConfig;
   rails: { onchain: OnchainRailConfig; lightning: LightningRailConfig; ark: ArkRailConfig; liquid: LiquidRailConfig };
   /** Legacy flat fields retained for existing clients and scripts. */
   bitcoinUrl: string; cookie: string; wallet: string;
@@ -188,6 +190,43 @@ function liquidRail(env: NodeJS.ProcessEnv): LiquidRailConfig {
     confirmationPolicy: confirmationRaw as 'disabled' | 'read-only' };
 }
 
+function economicsConfig(env: NodeJS.ProcessEnv): EconomicsConfig {
+  const integer = (name: string, fallback: number, min: number, max: number) => {
+    const raw = env[name]?.trim(); if (raw === undefined) return fallback;
+    if (!/^[0-9]+$/.test(raw)) throw new Error(`${name}_INVALID`);
+    const value = Number(raw); if (!Number.isSafeInteger(value) || value < min || value > max) throw new Error(`${name}_OUT_OF_RANGE`);
+    return value;
+  };
+  const seconds = (name: string, fallback: number) => integer(name, fallback, 30, 600) * 1_000;
+  const fixed = (name: string, expected: number) => {
+    const raw = env[name]?.trim(); if (raw === undefined) return expected;
+    if ((!/^[0-9]+$/.test(raw) || Number(raw) !== expected)) throw new Error('PROTOCOL_POLICY_IMMUTABLE');
+    return expected;
+  };
+  const quoteMin = integer('QUOTE_MIN_SATS', LEGACY_ECONOMICS.quote.minAmountSats, 10_000, 1_000_000);
+  const quoteMax = integer('QUOTE_MAX_SATS', LEGACY_ECONOMICS.quote.maxAmountSats, quoteMin, 1_000_000);
+  const invoiceMin = integer('INVOICE_MIN_SATS', LEGACY_ECONOMICS.invoice.minSats, 11_000, 50_000);
+  const invoiceMax = integer('INVOICE_MAX_SATS', LEGACY_ECONOMICS.invoice.maxSats, invoiceMin, 50_000);
+  const economics: EconomicsConfig = {
+    quote: { minAmountSats: quoteMin, maxAmountSats: quoteMax,
+      serviceFeeBaseSats: integer('QUOTE_SERVICE_FEE_BASE_SATS', LEGACY_ECONOMICS.quote.serviceFeeBaseSats, 0, 10_000),
+      serviceFeeBps: integer('QUOTE_SERVICE_FEE_BPS', LEGACY_ECONOMICS.quote.serviceFeeBps, 0, 1_000),
+      fundingReserveSats: integer('QUOTE_FUNDING_RESERVE_SATS', LEGACY_ECONOMICS.quote.fundingReserveSats, 0, 100_000),
+      claimFeeSats: integer('QUOTE_CLAIM_FEE_SATS', LEGACY_ECONOMICS.quote.claimFeeSats, 0, 10_000),
+      ttlMs: seconds('QUOTE_TTL_SECONDS', LEGACY_ECONOMICS.quote.ttlMs / 1_000) },
+    invoice: { minSats: invoiceMin, maxSats: invoiceMax,
+      serviceFeeBaseSats: integer('INVOICE_SERVICE_FEE_BASE_SATS', LEGACY_ECONOMICS.invoice.serviceFeeBaseSats, 0, 10_000),
+      serviceFeeDivisor: integer('INVOICE_SERVICE_FEE_DIVISOR', LEGACY_ECONOMICS.invoice.serviceFeeDivisor, 1, 10_000),
+      fundingReserveSats: integer('INVOICE_FUNDING_RESERVE_SATS', LEGACY_ECONOMICS.invoice.fundingReserveSats, 0, 100_000),
+      claimFeeSats: integer('INVOICE_CLAIM_FEE_SATS', LEGACY_ECONOMICS.invoice.claimFeeSats, 0, 10_000),
+      ttlMs: seconds('INVOICE_TTL_SECONDS', LEGACY_ECONOMICS.invoice.ttlMs / 1_000) },
+    readiness: { confirmations: fixed('CONFIRMATIONS_REQUIRED', LEGACY_ECONOMICS.readiness.confirmations) as 1,
+      maxBlocks: fixed('READINESS_MAX_BLOCKS', LEGACY_ECONOMICS.readiness.maxBlocks) as 2,
+      timeoutMs: fixed('READINESS_TIMEOUT_MS', LEGACY_ECONOMICS.readiness.timeoutMs) as 90_000 },
+  };
+  validateEconomics(economics);
+  return economics;
+}
 export function config(env: NodeJS.ProcessEnv = process.env): Config {
   const rawEnvironment = env.APP_ENV?.trim();
   const modeEnvironment = env.APP_MODE?.trim() ? environment(applicationMode(env.APP_MODE)) : undefined;
@@ -249,6 +288,7 @@ export function config(env: NodeJS.ProcessEnv = process.env): Config {
       throw new Error('Read-only recovery configuration invalid');
     recovery = { payerUrl: payerUrl!, payerCert: payerCert!, payerMacaroon: payerMacaroon!, payerNode: payerNode!, providerNode: providerNode! };
   }
+  const economics = economicsConfig(env);
   const onchain = onchainRail(env); const lightning = lightningRail(env);
   if (recovery && (!onchain.enabled || !lightning.enabled)) throw new Error('RECOVERY_RAILS_REQUIRED');
   const ark = arkRail(env); const liquid = liquidRail(env);
@@ -277,7 +317,7 @@ export function config(env: NodeJS.ProcessEnv = process.env): Config {
   };
   return {
     environment: selectedEnvironment, mode, network: 'regtest', readOnly: true, chain, bitcoinNetwork, bitcoinGenesisHash,
-    deploymentId: deploymentId ?? null, signetChallenge, allowLegacyOfflineMigration, features, reverseSwapExplicit, miningPolicy, spendPolicy, rails: { onchain, lightning, ark, liquid },
+    deploymentId: deploymentId ?? null, signetChallenge, allowLegacyOfflineMigration, features, reverseSwapExplicit, miningPolicy, spendPolicy, economics, rails: { onchain, lightning, ark, liquid },
     bitcoinUrl: onchain.enabled ? onchain.url : '', cookie: onchain.enabled ? onchain.cookie : '',
     wallet: onchain.enabled ? onchain.wallet : '',
     lndUrl: lightning.enabled ? lightning.provider.url : '', cert: lightning.enabled ? lightning.provider.cert : '',
