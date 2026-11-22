@@ -139,7 +139,7 @@ test('three faces quote a real route and preserve keyboard, account and responsi
 
   await audit(page);
   await page.getByRole('link', { name: 'Account', exact: true }).click();
-  assert.equal(await page.locator('.footer-squares').getAttribute('data-view-active'), 'account');
+  await page.locator('.footer-squares[data-view-active="account"]').waitFor();
   assert.equal(await page.getByRole('button', { name: 'Sign in' }).isEnabled(), true);
   assert.equal(await page.locator('#account-dashboard').isVisible(), false);
   assert.equal(await page.locator(':focus').getAttribute('id'), 'account-title');
