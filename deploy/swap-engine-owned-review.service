@@ -1,11 +1,10 @@
 [Unit]
+# Install as a systemd --user unit; do not enable or start during verification.
 Description=Swap Engine isolated regtest review candidate
 After=network.target
 
 [Service]
 Type=simple
-User=truja
-Group=truja
 WorkingDirectory=%h/swap-engine
 EnvironmentFile=%h/.config/swap-engine/review.env
 ExecStart=/usr/bin/node --import tsx src/main.ts
@@ -21,4 +20,4 @@ IPAddressDeny=any
 IPAddressAllow=localhost
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=default.target

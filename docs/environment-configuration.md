@@ -72,6 +72,13 @@ existing `core`/`provider`/`alice` fields with a typed `rails` array. Satoshis
 are integer base units; `null` means unavailable/unknown and `0` means verified
 zero.
 
+## Service installation
+
+The shipped units are systemd **user** units: run them as the intended login user with
+`systemctl --user`, install environment files under `%h/.config/swap-engine/`, and keep
+them disabled until review. Do not enable or start them during verification. `%h` is the
+user home only for user units; it is not the `User=` account home for system units.
+
 ## Remaining gaps
 
 - Ark/Liquid have no live read-only probe in this branch; they remain
