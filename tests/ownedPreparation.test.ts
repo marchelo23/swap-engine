@@ -115,9 +115,11 @@ test('parallel preparation keys create one invoice, explicit review never pays, 
   const x = await fixture(); try {
     const h = await x.login(); const responses = await Promise.all(['first-prepare-key', 'other-prepare-key', 'first-prepare-key'].map(k => x.request('/v1/reverse/preparations', h, { amountSats: 50000 }, k)));
     const statuses = responses.map(r => r.status).sort();
-    assert.ok(statuses.join(',') === '202,202,409' || statuses.join(',') === '202,409,409', statuses.join(','));
-    const admittedResponse = responses.slice(0, 2).find(r => r.status === 202)!;
-    const admitted = await admittedResponse.json();
+    assert.ok(['200,202,409', '202,202,409', '202,409,409'].includes(statuses.join(',')), statuses.join(','));
+    const accepted = await Promise.all(responses.filter(r => r.status === 200 || r.status === 202)
+      .map(async response => ({ status: response.status, body: await response.json() as { id: string } })));
+    const admitted = accepted.find(response => response.status === 202)!.body;
+    for (const response of accepted) assert.equal(response.body.id, admitted.id);
     const ready = await x.wait(admitted.id, h); assert.equal(ready.status, 'READY'); assert.equal(x.counts().creates, 1); assert.equal(x.counts().executes, 0);
     assert.equal((await x.request('/v1/reverse/preparations/' + ready.id + '/review', h, {}, 'review-first-key')).status, 200);
     assert.equal((await x.request('/v1/reverse/preparations/' + ready.id + '/review', h, {}, 'review-first-key')).status, 200);
