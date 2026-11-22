@@ -133,6 +133,8 @@ function lightningRail(env: NodeJS.ProcessEnv): LightningRailConfig {
     alice: alice ? { url: alice[0]!, cert: alice[1]!, macaroon: alice[2]! } : null };
 }
 function arkRail(env: NodeJS.ProcessEnv): ArkRailConfig {
+  if (env.ARK_LAB_E2E_FIXTURE !== undefined && env.ARK_LAB_E2E_FIXTURE !== 'false')
+    throw new Error('ARK_LAB_E2E_FIXTURE_FORBIDDEN');
   const execution = optional(env, 'ARK_EXECUTION_ENABLED');
   if (execution !== undefined && !['true', 'false'].includes(execution)) throw new Error('ARK_EXECUTION_ENABLED_INVALID');
   if (execution === 'true') throw new Error('ARK_EXECUTION_FORBIDDEN');

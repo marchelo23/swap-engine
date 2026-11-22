@@ -11,7 +11,7 @@
     "test": "tsx --test tests/*.test.ts",
     "demo": "tsx --test --test-name-pattern=OFFLINE tests/coordinator.test.ts",
     "secrets:check": "node scripts/check-secrets.mjs",
-    "start": "tsx src/main.ts",
+    "start": "node --import tsx --import ./scripts/load-local-env.mjs src/main.ts",
     "inspect": "tsx scripts/inspect.ts",
     "verify:readonly": "tsx scripts/verify-readonly.ts",
     "diagnose": "tsx scripts/diagnose.ts",

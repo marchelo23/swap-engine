@@ -1,4 +1,4 @@
-import { resolve } from 'node:path';
+import { isAbsolute, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createApi } from './api/server.js';
 import { ReadOnlyBitcoinClient, ReadOnlyLndClient } from './diagnostics/ReadOnlyClients.js';
@@ -10,7 +10,6 @@ import { SwapManager } from './core/SwapManager.js';
 import { config, type ApplicationMode } from './config.js';
 import { recoverInterruptedReverseRuns } from './api/reverseRecovery.js';
 import { parseOperatorCommand, runOperatorCLI } from '../scripts/run-controlled-reverse.js';
-import { isAbsolute, join } from 'node:path';
 import { checkedJSON, protectedBytes } from './operator/OperatorFiles.js';
 import { createOwnedRuntimeFactory, ownedRuntimePolicySchema, type OwnedRuntimePolicy } from './operator/OwnedPreparationRuntime.js';
 import { createOwnedPreparation } from './api/ownedPreparation.js';
@@ -21,6 +20,7 @@ import { readPathsSchema } from '../scripts/run-controlled-reverse.js';
 import { attestStartup, type StartupScope } from './environment/StartupAttestation.js';
 import { ElementsReadOnlyClient } from './environment/ElementsReadOnlyClient.js';
 import { isLegacyEconomics } from './core/Economics.js';
+import { createArkLabCliRunner, createArkRegtestCliPort, type ArkRegtestPort } from './ark/ArkAdapter.js';
 
 function sameOrigin(url: string, origin: string) { try { return new URL(url).origin === origin; } catch { return false; } }
 function assertOwnedPolicyBinding(policy: OwnedRuntimePolicy, c: ReturnType<typeof config>, identity: StartupScope | undefined) {
@@ -115,6 +115,17 @@ export async function startApplication(env: NodeJS.ProcessEnv = process.env, arg
   if (!identity && (c.rails.onchain.enabled || c.rails.lightning.enabled || c.rails.liquid.enabled)) {
     identity = await attestStartup(c, { bitcoin, provider: lnd, alice, liquid });
   }
+  let ark: ArkRegtestPort | undefined;
+  let arkVerified = false;
+  if (!dependencies.reads && c.rails.ark.enabled && c.bitcoinNetwork === 'regtest') {
+    const settings = c.rails.ark;
+    const cli = settings.cliPath && settings.labRoot
+      ? createArkLabCliRunner(settings.cliPath, { cwd: settings.labRoot, readOnly: true })
+      : undefined;
+    ark = createArkRegtestCliPort({ operatorInfoUrl: settings.operatorInfoUrl,
+      expectedSignerPubkey: settings.expectedSignerPubkey, cli });
+    arkVerified = (await ark.telemetry()).operatorStatus === 'ok';
+  }
   if (operatorArgs && !dependencies.operator) {
     const command = parseOperatorCommand(operatorArgs);
     if (command.mode === 'serve') {
@@ -142,7 +153,7 @@ export async function startApplication(env: NodeJS.ProcessEnv = process.env, arg
   try {
     await recoverInterruptedReverseRuns(store);
     const server = createApi(new SwapManager(store, c.economics), liquidity, diagnostics, c.mode,
-      { operations, auth: { storePath: c.auth.storePath ?? undefined, origin: c.auth.origin ?? undefined }, capabilities: () => c.capabilities(identity?.verified ?? {}), environment: c.environment });
+      { operations, ark, auth: { storePath: c.auth.storePath ?? undefined, origin: c.auth.origin ?? undefined }, capabilities: () => c.capabilities({ ...identity?.verified, ark: arkVerified }), environment: c.environment });
     if (ownedArgs) {
       let factory: Awaited<ReturnType<typeof createOwnedRuntimeFactory>> | undefined;
       try {

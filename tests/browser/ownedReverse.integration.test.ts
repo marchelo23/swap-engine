@@ -36,7 +36,10 @@ for (const ambiguous of [false, true]) test(`actual browser/session/gateway ${am
       const s = f.store.read().swaps[id]!; return { id, state: s.state, revision: s.revision };
     } });
   const mounted = server.controlled.operatorIO.serve(f.store, api, 3000, () => {});
-  const browser = await chromium.launch({ channel: process.env.WEB_TEST_BROWSER_CHANNEL });
+  const browser = await chromium.launch({
+    ...(process.env.WEB_TEST_BROWSER_CHANNEL ? { channel: process.env.WEB_TEST_BROWSER_CHANNEL } : {}),
+    ...(process.env.WEB_TEST_BROWSER_EXECUTABLE ? { executablePath: process.env.WEB_TEST_BROWSER_EXECUTABLE } : {}),
+  });
   try {
     const page = await browser.newPage({ reducedMotion: 'reduce' });
     const errors: string[] = []; page.on('pageerror', e => errors.push(e.message));

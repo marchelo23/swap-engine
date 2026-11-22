@@ -133,6 +133,13 @@ h2 { font-size: 1.15rem; font-weight: 720; letter-spacing: -.035em; }
 .details { display: grid; gap: 6px; padding-block: 10px; }
 .details div { border-bottom: 1px solid var(--stroke); padding-bottom: 6px; }
 .details dd { min-width: 0; max-width: 68%; }
+.tx-list { list-style: none; margin: 11px 0 0; padding: 0; display: grid; gap: 10px; }
+.tx-card { padding: 11px; border: 1px solid var(--stroke); border-radius: 4px; background: var(--inset); }
+.tx-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 10px; margin-bottom: 6px; }
+.tx-route { font-weight: 720; font-size: .86rem; }
+.tx-time { color: var(--muted); font: 400 .72rem/1.4 var(--mono); }
+.tx-card .details { padding-block: 4px 0; }
+.tx-card .details div:last-child { border-bottom: 0; padding-bottom: 0; }
 .prepared-link { position: relative; justify-self: center; margin-top: 20px; }
 #track { width: 100%; }
 .owned-toolbar, .owned-actions { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px; margin-top: 14px; }
@@ -142,6 +149,12 @@ h2 { font-size: 1.15rem; font-weight: 720; letter-spacing: -.035em; }
 dialog { width: min(480px, calc(100% - 28px)); max-height: calc(100% - 28px); padding: 20px; color: var(--text); background: var(--surface); border: 1px solid #979797; border-radius: 6px; }
 dialog::backdrop { background: #16161670; }
 .dialog-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 13px; }
+.ark-fields { display: grid; gap: 10px; margin-top: 8px; padding-top: 10px; border-top: 1px solid var(--stroke); }
+.ark-fields > div { display: grid; gap: 8px; }
+.ark-fields input, .ark-fields select {
+  width: 100%; min-height: 40px; padding: 7px 10px; border: 1px solid #aaa; border-radius: 4px;
+  background: var(--inset); color: var(--text); font: 400 .8rem/1.4 var(--mono);
+}
 .notice { padding-block: 10px; }
 .skip { position: fixed; top: 8px; left: 8px; z-index: 5; transform: translateY(-180%); padding: 8px 12px; color: #fff; background: #111; }
 .skip:focus { transform: none; }
@@ -249,6 +262,7 @@ dialog::backdrop { background: #16161670; }
 .rail-field select option { color: #111; background: #fff; }
 .select-icon { position: absolute; right: 3px; pointer-events: none; color: #3b3b3b; width: .88rem; }
 .rail-icon { width: 19px; height: 19px; }
+.cube-outer[data-rail="ark"] .rail-field, .turn-label[data-rail="ark"] { column-gap: 10px; }
 .cube-outer .rail-field .rail-icon {
   transition: opacity 180ms ease-in-out, transform 180ms ease-in-out;
 }
