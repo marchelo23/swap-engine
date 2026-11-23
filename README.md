@@ -6,20 +6,20 @@ Swap Engine explores Lightning-to-Bitcoin reverse submarine swaps, noncustodial 
 
 > **Experimental software. No production/mainnet swap execution.** A successful build, quote, QR code or simulated transaction does not prove that funds moved. Mainnet and Signet profiles are **read-only**. Never use mainnet funds with an unreviewed deployment.
 
-## Project status (November 22, 2026)
+## Project status (November 23, 2026)
 
 | Area | Current state | Evidence and boundaries |
 | --- | --- | --- |
-| Reverse swap, Lightning → Bitcoin | **Controlled regtest execution demonstrated** | [Independent recorded run](docs/fresh-reverse-success.md); owner-bound application integrated in [PR #68](https://github.com/Truja503/swap-engine/pull/68) |
-| **Guest reverse swap, no account** | **Implemented in `main`; laboratory execution is policy-gated** | [PR #71](https://github.com/Truja503/swap-engine/pull/71) includes destination entry, hold-invoice creation, BOLT11 QR, client-held recovery material, browser claim signing and state observation. Automated browser/adapter tests passed. The PR does **not** claim a new live Guest Lightning E2E payment; verify independently before declaring #66 complete |
+| Reverse swap, Lightning → Bitcoin | **Controlled regtest execution demonstrated; authenticated one-click flow merged** | [Independent recorded run](docs/fresh-reverse-success.md); [PR #68](https://github.com/Truja503/swap-engine/pull/68) established owner-bound runtime and [PR #75](https://github.com/Truja503/swap-engine/pull/75) simplified approved authenticated regtest preparation/execution. A live test on the newly deployed release is still a separate check |
+| **Guest reverse swap, no account** | **Merged with QR, client-side claim, encrypted recovery and backup import** | [PR #71](https://github.com/Truja503/swap-engine/pull/71) integrated the flow; [PR #74](https://github.com/Truja503/swap-engine/pull/74) allows importing a saved encrypted recovery file in a new browser session. Real payment/claim/settlement evidence for the latest deployed commit is not established by browser fixtures |
 | Network/deployment configuration | **Merged** | [PR #70](https://github.com/Truja503/swap-engine/pull/70): validated profiles, network/genesis/wallet checks, isolated state and fail-closed execution policies |
-| Arkade / Ark | **Read-only operator and wallet integration in `main`** | [PR #71](https://github.com/Truja503/swap-engine/pull/71). Lab evidence exists in the separate [Ark PR stack](https://github.com/Truja503/swap-engine/pull/64), but the app does not enable Ark financial execution or Ark↔Lightning swaps |
-| Liquid / Elements | **Read-only configuration/identity verification** | An Elements regtest profile checks chain, policy asset and wallet. No Liquid transfer/swap execution is enabled |
+| Arkade / Ark | **Read-only operator/indexer and UI integrated** | [PR #73](https://github.com/Truja503/swap-engine/pull/73) adds readiness and VM overlay; [PR #76](https://github.com/Truja503/swap-engine/pull/76) adds owner-grouped balance cards that show unavailable until verified sources respond. Ark financial writes remain gated |
+| Liquid / Elements | **Read-only identity checks and isolated Elements regtest evidence** | [PR #73](https://github.com/Truja503/swap-engine/pull/73) documents a separately funded Elements regtest lab; Lightning↔Liquid execution and fee policy remain blocked. [PR #76](https://github.com/Truja503/swap-engine/pull/76) adds owner-grouped display without inventing balances |
 | Forward swap, Bitcoin → Lightning | **Not yet implemented end-to-end** | [#12](https://github.com/Truja503/swap-engine/issues/12), [#13](https://github.com/Truja503/swap-engine/issues/13) |
 | Regtest block miner | **Script, systemd timer and tests prepared** | [#67](https://github.com/Truja503/swap-engine/issues/67); **not confirmed installed/enabled**. See [mining runbook](docs/regtest-mining.md) |
 | RGB and other routes | **Future research** | No live cross-rail contract or payments in this application |
 
-**Most recent merged integration:** [PR #71](https://github.com/Truja503/swap-engine/pull/71), merged at commit `b10e4a79`. Its reported validation: **479 tests passed, one skipped, 20 browser tests passed, and zero secret findings**, with a successful Linux CI workflow. Those are tests of the merged implementation, not proof of a newly executed Guest payment on physical nodes.
+**Latest merged baseline:** [PR #76](https://github.com/Truja503/swap-engine/pull/76), commit `2741d8b4` (November 23, 2026). [PR #73](https://github.com/Truja503/swap-engine/pull/73) aligned the entered amount to the exact debit and added private history/readiness; [PR #74](https://github.com/Truja503/swap-engine/pull/74) added Guest backup import; [PR #75](https://github.com/Truja503/swap-engine/pull/75) added authenticated one-click reverse; [PR #76](https://github.com/Truja503/swap-engine/pull/76) added owner-grouped rail balances. PR #76 reports a successful build, 461 backend tests and 22 Edge/browser tests in its frontend verification; this is not a new live financial E2E run.
 
 ### Evidence of a real controlled reverse swap
 
@@ -169,6 +169,8 @@ The recovery file, passphrase and private key stay in the browser. The existing 
 
 The backend stores the guest capability **hash** and public proof material, not the private claim key or preimage. Recovery encryption uses AES-GCM with a passphrase-based key derivation scheme. Keep both the recovery export and passphrase safe; losing them may make a claim unrecoverable.
 
+As of [PR #74](https://github.com/Truja503/swap-engine/pull/74), a **new browser session can import an existing encrypted Guest recovery file** and verify the original swap identity and funding state before allowing an explicit claim. Importing the recovery file **must not generate a fresh payable invoice**.
+
 Guest is **not activated by enabling its feature flag alone**. It requires the regtest spending policy, attested Core/LND identities, a reviewed private Guest policy and the dedicated watcher. After preparing and verifying the environment (see the detailed [configuration runbook](docs/environment-configuration.md)):
 
 ```bash
@@ -241,6 +243,142 @@ Always identify the service name and actual release commit before starting, stop
 | `POST /v1/ark/swaps` | Guarded/unavailable in shipped runtime | Ark financial writes are disabled |
 
 Requests involving a payment or claim require stricter identity, network, quote, expiry, fee, revision and idempotency validation. Client UI status is never the financial source of truth.
+
+## Running the current `main` yourself (Ubuntu VM)
+
+**First rule: inspect the running deployment before starting another server.** A source checkout, a GitHub merge and an active systemd process can all point to different commits. Never reuse an active `DATA_DIR`, custody directory or wallet spending policy in a second app.
+
+### 1. Inspect the actual lab without changing it
+
+In the existing Ubuntu VM:
+
+```bash
+date -u
+timedatectl status
+
+systemctl --user list-units --type=service --all | grep -Ei 'swap|bitcoin|lnd|miner' || true
+systemctl --user list-unit-files | grep -Ei 'swap|miner' || true
+ss -ltnp | grep -E ':(3000|3100|3101|3103|3200)\b' || true
+pgrep -af 'src/main.ts|swap-engine|tsx' || true
+```
+
+An old failed service named after a commit (for example `swap-engine-owned-434f519.service`) is **not proof that it runs the latest main**. The example `3103` port is not guaranteed to be active. Check the actual listener, then query its own port:
+
+```bash
+# Replace 3101 with a port confirmed by ss.
+curl -fsS http://127.0.0.1:3101/v1/health
+curl -fsS http://127.0.0.1:3101/v1/capabilities
+curl -fsS http://127.0.0.1:3101/v1/guest/availability
+
+# Inspect a real user unit; no sudo for --user.
+systemctl --user status swap-engine-owned-434f519.service --no-pager -l
+journalctl --user -u swap-engine-owned-434f519.service -n 50 --no-pager
+```
+
+`/v1/health` only confirms HTTP liveness. The Guest availability response must report both `configured: true` and `watching: true` before a payable Guest flow is attempted. Any startup failure may print only `APPLICATION_STARTUP_REJECTED`; inspect policy, identity, permissions, state locks, environment and port before restarting. Do not assume the NTP clock is the cause.
+
+### 2. Run the latest main in a separate, safe preview
+
+Do **not** run `git pull` directly into a checkout used by a live systemd service. For learning and verifying the repository, use a fresh directory and an independent simulation state:
+
+```bash
+cd "$HOME"
+git clone https://github.com/Truja503/swap-engine.git swap-engine-main-review
+cd swap-engine-main-review
+git switch main
+git log -1 --format='%h %s'
+node --version                    # >= 22
+npm ci
+npm run build
+npm test
+npm run secrets:check
+
+# This instance is simulation-only, with its own state and port.
+install -d -m 700 "$HOME/.local/share/swap-engine-main-preview"
+DATA_DIR="$HOME/.local/share/swap-engine-main-preview" PORT=3200 \
+  node --env-file=deploy/simulation.env.example --import tsx src/main.ts
+```
+
+In a second Ubuntu shell:
+
+```bash
+curl -fsS http://127.0.0.1:3200/v1/health
+curl -fsS http://127.0.0.1:3200/v1/capabilities
+```
+
+On Windows, if the VM still uses `192.168.56.108`, create an SSH tunnel in another PowerShell window:
+
+```powershell
+ssh -N -L 3200:127.0.0.1:3200 truja@192.168.56.108
+```
+
+Open `http://127.0.0.1:3200/`. Stop only this preview with **Ctrl+C** when finished. It does not create real Lightning invoices or spend on-chain funds.
+
+### 3. Running actual regtest swaps
+
+Use the **existing reviewed Guest deployment** or plan a backup-first cutover of the live service to the newer commit. Do not start a second spending application with the same Core/LND operator wallets merely because it uses a different TCP port or `DATA_DIR`: wallet-level funding reservations may conflict.
+
+A new Guest deployment requires the profile and private policy described in [environment configuration](docs/environment-configuration.md#guest-lightning-to-on-chain-swaps):
+
+```bash
+# TEMPLATE ONLY: replace placeholders with a reviewed local policy.
+node --env-file=.env.regtest.local --import tsx src/main.ts \
+  --guest-regtest --policy-path /ABS/PATH/guest-policy.json \
+  --policy-sha256 REVIEWED_64_HEX_SHA256 --guest-watch
+```
+
+Required conditions include `APP_ENV=regtest`, `GUEST_SWAP_ENABLED=true`, `SPEND_POLICY=regtest-only`, distinct LND provider/payer identities, valid macaroon/TLS paths, matching actual Bitcoin/LND regtest identities, fee/HTLC limits, a safe active-swap mining lock, and a reviewed private policy. Feature flags **do not** create policy authority. No placeholder values should be pasted into a live deployment.
+
+`npm start` loads a local `.env` when present; it does not automatically choose `.env.regtest.local`. An explicit `node --env-file=...` avoids ambiguous profile selection. Keep source, credentials, encrypted run custody and live journal directories separate.
+
+## Repeatable regtest swap testing (many swaps, safely)
+
+The objective is to repeat **verified completed operations**, not to generate a pile of invoices or send payments to unknown states.
+
+### Before each batch
+
+1. Confirm the **deployed commit**, HTTP availability, Core regtest height, wallet readiness, and both LND nodes/channels. Use [VM preflight](docs/regtest-runbook.md) and `GET /v1/preflight`.
+2. Verify **Alice outgoing Lightning liquidity**, provider capacity/UTXOs, and enough confirmed, unlocked Core inputs. A new on-chain funding input must be eligible for each run.
+3. Review all existing `INTENT`, `PREPARATION_UNKNOWN`, `UNKNOWN`, `MANUAL_REVIEW` and pending invoice/claim records. Reconcile them **before** opening another financial intent. Never assume a timeout means a payment failed.
+4. Keep the [automatic miner](docs/regtest-mining.md) disabled unless its shared kernel lock and CLTV controls have been reviewed and activated. Generate confirmation blocks **only** through the approved coordinated operator procedure.
+5. Save evidence under a private test-results directory. Never log recovery material, preimages, capability tokens, macarons, passwords or private keys.
+
+### Manual test matrix
+
+| Test | Requested Lightning debit | Goal |
+| --- | ---: | --- |
+| G01 | 12,000 sats | Guest first successful reverse swap; verify the quoted net on-chain receipt |
+| G02 | 20,000 sats | New guest identity, quote, invoice, recovery bundle and funding UTXO |
+| G03 | 50,000 sats | Guest at the existing maximum invoice budget |
+| G04 | 20,000 sats | Same amount as G02, but a **new** verified swap, never replay the paid invoice |
+| G05 | No payment | Start/review a quote and intentionally stop; verify expiry and zero fund movement |
+| G06 | No extra payment | Import G02/G03 encrypted recovery in a fresh browser session; verify lookup/claim eligibility without generating another invoice |
+| G07 | No extra payment | Refresh the status of a pending run; verify idempotent lookup and no duplicate funding or settle |
+| A01 | Amount within approved owned policy | Authenticated Admin one-click reverse, with explicit reviewed policy and eligible liquidity ([PR #75](https://github.com/Truja503/swap-engine/pull/75)) |
+
+The test amounts are **proposed** within the current Guest range (11,000–50,000 sats), not guaranteed available quotes; the backend's verified liquidity, budget and policies decide eligibility. A01 can have an approved `maxSourceAmountSats` up to 1,000,000, but older approved policies remain capped at 50,000. Do not raise limits just to force a test.
+
+### Exact manual Guest procedure
+
+1. Open the **running regtest Guest application**, not the simulation preview. Select **Lightning → Bitcoin On-chain**, choose amount and enter a fresh valid `bcrt1...` receiving address that you control.
+2. Inspect the quote's **invoice debit**, service/claim fees and expected on-chain payout. Do not pay if the amounts, network or address differ from what you authorized.
+3. Create and **save the encrypted recovery bundle**, preserve its passphrase privately, and verify its import/restore step **before paying**.
+4. Scan/copy the actual **BOLT11 QR** and pay from the existing Alice **regtest** Lightning wallet. Keep the pending payment running as required by the hold-invoice protocol; `ACCEPTED` is **not** `SETTLED`.
+5. Observe real HTLC funding and confirmations. Only sign the claim in the browser when the application has independently verified the required funding and claim terms.
+6. Reconcile the claim TXID, on-chain receipt, invoice `SETTLED`, payer `SUCCEEDED`, fees, network heights and terminal `COMPLETED`. Use the node evidence, not a frontend banner, as the source of truth.
+7. Only after terminal verification, begin the next **fresh** swap. Preserve all prior journals and encrypted recovery exports.
+
+For each successful run record: timestamp, deployed commit, environment/deployment ID, swap ID, sats debited, sats received, quoted vs actual fees, funding TXID and outpoint, claim TXID, confirmations, LND payment/invoice status, restart/recovery result and exceptions. Keep the record sanitized.
+
+### Scaling from 3 to 10+ swaps
+
+Start **sequentially**, with G01–G04 and completion evidence for every run. Next perform ten small sequential swaps with a fresh capability, invoice, recovery export and idempotency key per **new** intent. **Retry the same unresolved intent using its original key/status lookup**; do not create a second operation because of a timeout or lost HTTP response.
+
+Only consider concurrency and automated load generation **after** proving cross-swap UTXO reservations, liquidity ceilings, LND invoice identity, worker restart/recovery, miner lock coordination, deadline behavior and idempotent exact-once financial intent admission. Browser tests using mocks/fixtures are useful regression checks but do not constitute ten financial transactions.
+
+If an invoice stays `ACCEPTED`, claim is unconfirmed, or an operation enters `UNKNOWN`/`MANUAL_REVIEW`, **stop the batch**, inspect readonly evidence, and do not force-mine or repeat payment.
+
+See [Guest contract #66](https://github.com/Truja503/swap-engine/issues/66), [environment and owner policy](docs/environment-configuration.md), [mining safety](docs/regtest-mining.md) and the [historical verified reverse run](docs/fresh-reverse-success.md).
 
 ## Security, limitations and roadmap
 
