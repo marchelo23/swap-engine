@@ -336,6 +336,11 @@ test('administrator wallets group batteries by owner and use independent rail an
   const page = await browser.newPage({ reducedMotion: 'reduce' });
   await page.clock.install();
   await page.route('**/v1/auth/session', route => route.fulfill({ json: session('ADMIN') }));
+  await page.route('**/v1/liquid/lightning/availability', route => route.fulfill({ json: {
+    route: 'liquid-to-lightning', available: false, executionEnabled: false,
+    reason: 'LIQUID_LIGHTNING_ATOMIC_ADAPTER_UNAVAILABLE', atomicAdapterInstalled: false,
+    invoiceValidationAvailable: false, recoveryAvailable: false, refundAvailable: false,
+  } }));
   let denied = false;
   let zeroSnapshot = false;
   let releaseRefresh!: () => void;
@@ -379,6 +384,11 @@ test('administrator wallets group batteries by owner and use independent rail an
         { rail: 'liquid', account: 'provider', status: 'available', reason: null, balances: { assetId, confirmedSats: 2_500, unconfirmedSats: 100 } },
         { rail: 'liquid', account: 'alice', status: 'available', reason: null, balances: { assetId: aliceAssetId, confirmedSats: 500, unconfirmedSats: 0 } },
       ],
+      liquid: { wallet: 'lqwd-liquid-ops', chain: 'elementsregtest', height: 2,
+        genesisHash: '20'.repeat(32), assetId: 'b2'.repeat(32),
+        confirmedBaseUnits: 2_100_000_000, unconfirmedBaseUnits: 0, spendableBaseUnits: 2_100_000_000,
+        utxoCount: 1, assetEvidence: 'confirmed-wallet-and-coinbase', feePolicyVerified: false,
+        readOnly: true },
     } });
   });
   await page.goto(`http://127.0.0.1:${(server.address() as AddressInfo).port}/#operations`);
@@ -416,6 +426,16 @@ test('administrator wallets group batteries by owner and use independent rail an
   await page.getByText(/relative to the larger known confirmed balance/).waitFor();
   await page.getByText(/reported channel capacity/).waitFor();
   assert.equal(await page.locator('#balance-time').getAttribute('datetime'), capturedAt);
+  assert.equal(await page.locator('#liquid-tag').textContent(), 'READ ONLY');
+  assert.equal(await page.locator('#liquid-confirmed').textContent(), '21.00000000 Liquid units');
+  assert.equal(await page.locator('#liquid-spendable').textContent(), '21.00000000 Liquid units');
+  assert.equal(await page.locator('#liquid-utxos').textContent(), '1');
+  assert.equal(await page.locator('#liquid-wallet').textContent(), 'lqwd-liquid-ops');
+  assert.equal(await page.locator('#liquid-chain').textContent(), 'elementsregtest');
+  assert.equal(await page.locator('#liquid-asset').getAttribute('title'), 'b2'.repeat(32));
+  await page.getByText(/Wallet asset matched to coinbase/).waitFor();
+  assert.equal(await page.locator('#liquid-lightning-tag').textContent(), 'BLOCKED');
+  await page.getByText(/no attested Liquid HTLC atomic adapter/).waitFor();
   await audit(page);
   await mkdir(evidence, { recursive: true });
   const walletPanel = page.getByRole('article', { name: 'Wallet balances by owner' });

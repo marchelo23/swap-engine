@@ -17,11 +17,19 @@ export type ChainKind = typeof chainKinds[number];
 export const chainKindSchema = z.enum(chainKinds);
 
 const sats = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).nullable();
+const baseUnits = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 const status = z.enum(['available', 'unavailable', 'unknown']);
 const onchainBalance = z.object({ confirmedSats: sats, unconfirmedSats: sats }).strict();
 const lightningBalance = z.object({ localSats: sats, remoteSats: sats, capacitySats: sats }).strict();
 const arkBalance = z.object({ spendableSats: sats, pendingSats: sats, recoverableSats: sats }).strict();
 const liquidBalance = z.object({ assetId: z.string().regex(/^[a-f0-9]{64}$/), confirmedSats: sats, unconfirmedSats: sats }).strict();
+const liquidWalletBalance = z.object({
+  assetId: z.string().regex(/^[a-f0-9]{64}$/),
+  confirmedBaseUnits: baseUnits,
+  unconfirmedBaseUnits: baseUnits,
+  spendableBaseUnits: baseUnits,
+  utxoCount: z.number().int().nonnegative().safe(),
+}).strict();
 
 export const railBalanceEntrySchema = z.discriminatedUnion('rail', [
   z.object({ rail: z.literal('onchain'), account: z.enum(['core', 'provider', 'alice']), status,
@@ -31,7 +39,7 @@ export const railBalanceEntrySchema = z.discriminatedUnion('rail', [
   z.object({ rail: z.literal('ark'), account: z.string().min(1).max(40), status,
     reason: railReasonSchema.nullable(), balances: arkBalance.nullable() }).strict(),
   z.object({ rail: z.literal('liquid'), account: z.string().min(1).max(40), status,
-    reason: railReasonSchema.nullable(), balances: liquidBalance.nullable() }).strict(),
+    reason: railReasonSchema.nullable(), balances: z.union([liquidBalance, liquidWalletBalance]).nullable() }).strict(),
 ]);
 export type RailBalanceEntry = z.infer<typeof railBalanceEntrySchema>;
 

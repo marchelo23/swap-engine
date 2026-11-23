@@ -242,6 +242,28 @@
         </div>
       </section>
     </article>
+    <article class="panel inset" id="liquid-panel" aria-labelledby="liquid-title">
+      <div class="panel-header"><h2 id="liquid-title">Liquid wallet</h2><span id="liquid-tag" class="tag">UNAVAILABLE</span></div>
+      <p id="liquid-status" class="status" role="status">Liquid wallet data unavailable.</p>
+      <dl class="metric-grid">
+        <div><dt>Confirmed</dt><dd id="liquid-confirmed">Unavailable</dd></div>
+        <div><dt>Unconfirmed</dt><dd id="liquid-unconfirmed">Unavailable</dd></div>
+        <div><dt>Spendable</dt><dd id="liquid-spendable">Unavailable</dd></div>
+        <div><dt>UTXOs</dt><dd id="liquid-utxos">Unavailable</dd></div>
+      </dl>
+      <dl class="details">
+        <div><dt>Asset</dt><dd id="liquid-asset">Unavailable</dd></div>
+        <div><dt>Wallet</dt><dd id="liquid-wallet">Unavailable</dd></div>
+        <div><dt>Chain</dt><dd id="liquid-chain">Unavailable</dd></div>
+        <div><dt>Height / genesis</dt><dd id="liquid-chain-identity">Unavailable</dd></div>
+        <div><dt>Evidence</dt><dd id="liquid-evidence">Unavailable</dd></div>
+      </dl>
+      <p class="balance-scale">Liquid amounts are Liquid test units and base units, not real BTC. Application execution remains disabled.</p>
+    </article>
+    <article class="panel inset" id="liquid-lightning-panel" aria-labelledby="liquid-lightning-title">
+      <div class="panel-header"><h2 id="liquid-lightning-title">Liquid → Lightning</h2><span id="liquid-lightning-tag" class="tag">CHECKING</span></div>
+      <p id="liquid-lightning-status" class="status" role="status">Checking route readiness…</p>
+    </article>
     <article class="panel inset">
       <div class="panel-header"><h2>Regtest preflight</h2><button class="secondary" id="refresh" type="button">Refresh</button></div>
       <p class="status" id="diagnostic-status" role="status">Checking diagnostic availability…</p>

@@ -107,12 +107,39 @@ const preflight = z.object({
 });
 
 const nullableSats = z.nullable(amount);
+const liquidSnapshot = z.object({
+  wallet: z.string().check(z.minLength(1)),
+  chain: z.string().check(z.minLength(1)),
+  height: amount,
+  genesisHash: z.string().check(z.regex(/^[a-f0-9]{64}$/)),
+  assetId: z.string().check(z.regex(/^[a-f0-9]{64}$/)),
+  confirmedBaseUnits: amount,
+  unconfirmedBaseUnits: amount,
+  spendableBaseUnits: amount,
+  utxoCount: amount,
+  assetEvidence: z.enum(['confirmed-wallet-and-coinbase', 'not-collected']),
+  feePolicyVerified: z.literal(false),
+  readOnly: z.literal(true),
+});
+export type LiquidBalanceSnapshot = z.infer<typeof liquidSnapshot>;
 const operationsBalances = z.object({
   network: z.literal('regtest'),
   capturedAt: z.iso.datetime(),
   rails: z.array(railBalanceEntrySchema),
+  liquid: z.optional(liquidSnapshot),
 });
 export type OperationsBalances = z.infer<typeof operationsBalances>;
+const liquidLightningAvailability = z.object({
+  route: z.literal('liquid-to-lightning'),
+  available: z.literal(false),
+  executionEnabled: z.literal(false),
+  reason: z.string().check(z.minLength(1)),
+  atomicAdapterInstalled: z.literal(false),
+  invoiceValidationAvailable: z.literal(false),
+  recoveryAvailable: z.literal(false),
+  refundAvailable: z.literal(false),
+});
+export type LiquidLightningAvailability = z.infer<typeof liquidLightningAvailability>;
 
 const preparation = z.object({ id: z.string().check(z.regex(/^[a-f0-9]{64}$/)),
   status: z.enum(['INTENT', 'READY', 'UNKNOWN', 'COMPLETED', 'EXPIRED', 'REJECTED']), swapId: z.nullable(z.uuid()), statusUrl: z.string() });
@@ -313,6 +340,8 @@ export const api = {
   },
   preflight: () => request('/v1/preflight', preflight, {}, true),
   operationsBalances: (signal: AbortSignal) => request('/v1/operations/balances', operationsBalances, { signal }),
+  liquidLightningAvailability: (signal: AbortSignal) =>
+    request('/v1/liquid/lightning/availability', liquidLightningAvailability, { signal }),
   async session() {
     const response = await fetchApi('/v1/auth/session');
     if (response.status === 401) return null;
