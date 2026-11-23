@@ -287,15 +287,16 @@ export function validateOutpoint(candidate: string): string {
 
 /**
  * Deterministic regtest quote calculation for Ark <-> On-chain routes.
- * Service fee: 500 + Math.ceil(amountSats * 0.005) sats (consistent with SwapManager.quote; 750 sats at 50,000 sats).
+ * Service fee: 500 + Math.ceil(debitSats * 0.005) sats (750 sats at 50,000 sats).
  * On-chain -> Ark (boarding): 262 sats est. commitment network fee.
  * Ark -> On-chain (cooperative offboarding): 241 sats est. commitment network fee.
  */
-export function buildArkQuote(route: ArkRouteKind, amountSats: number, now = Date.now()): ArkQuote {
-  if (!Number.isSafeInteger(amountSats) || amountSats < 10_000 || amountSats > 1_000_000) {
+export function buildArkQuote(route: ArkRouteKind, debitSats: number, now = Date.now()): ArkQuote {
+  if (!Number.isSafeInteger(debitSats) || debitSats < 10_000 || debitSats > 1_000_000) {
     throw new Error('Amount must be 10000..1000000 sats');
   }
-  const serviceFeeSats = 500 + Math.ceil(amountSats * 0.005);
+  const serviceFeeSats = 500 + Math.ceil(debitSats * 0.005);
+  const amountSats = debitSats - serviceFeeSats;
   const networkFeeSats = route === 'onchain-to-ark' ? 262 : 241;
   return ArkQuoteResponse.parse({
     id: randomUUID(),
@@ -304,7 +305,7 @@ export function buildArkQuote(route: ArkRouteKind, amountSats: number, now = Dat
     method: route === 'onchain-to-ark' ? 'boarding' : 'cooperative-offboarding',
     amountSats,
     serviceFeeSats,
-    invoiceSats: amountSats + serviceFeeSats,
+    invoiceSats: debitSats,
     fundingReserveSats: 0,
     claimFeeSats: networkFeeSats,
     netSats: amountSats - networkFeeSats,

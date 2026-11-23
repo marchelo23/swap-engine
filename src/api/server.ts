@@ -154,7 +154,7 @@ export function createApi(
       }
       if (req.method === 'POST' && path === '/v1/quotes') {
         const input = QuoteRequest.parse(await body(req));
-        return send(201, QuoteResponse.parse(await manager.quote(input.amountSats)));
+        return send(201, QuoteResponse.parse(await manager.quoteDebit(input.amountSats)));
       }
       if (req.method === 'POST' && path === '/v1/ark/quotes') {
         const input = ArkQuoteRequest.parse(await body(req));

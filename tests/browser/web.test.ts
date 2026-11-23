@@ -64,7 +64,7 @@ test('three faces quote a real route and preserve keyboard, account and responsi
   await page.waitForFunction(() => document.getElementById('mode')?.dataset.mode === 'simulation');
   assert.equal(await page.locator('header.top').innerText(), 'SWAP\nACCOUNT\nOPERATIONS');
   assert.equal(await page.locator('.footer-squares i').count(), 3);
-  await page.getByText('49,500', { exact: true }).waitFor();
+  await page.getByText('48,750', { exact: true }).waitFor();
   assert.deepEqual(quoteRequests, [50_000]);
   assert.equal(await page.locator('#quote-form .cube-unit').count(), 3);
   assert.equal(await page.locator('#swap .cube-send .plane-front #amount').count(), 1);
@@ -90,7 +90,7 @@ test('three faces quote a real route and preserve keyboard, account and responsi
   await page.getByText(/Enter 10,000/).waitFor();
   assert.deepEqual(quoteRequests, [50_000]);
   await amount.fill('50000');
-  await page.getByText('49,500', { exact: true }).waitFor();
+  await page.getByText('48,750', { exact: true }).waitFor();
   assert.equal(await page.locator('#service').textContent(), '750 sats');
   assert.equal(await page.locator('#claim').textContent(), '500 sats');
   assert.equal(await page.locator('#cost').textContent(), '1,250 sats');
@@ -100,7 +100,7 @@ test('three faces quote a real route and preserve keyboard, account and responsi
   await swap.press('Enter');
   const dialog = page.getByRole('dialog', { name: 'Review quote' });
   await dialog.waitFor();
-  await dialog.getByText('50,750 sats', { exact: true }).waitFor();
+  await dialog.getByText('50,000 sats', { exact: true }).waitFor();
   await dialog.getByText('Unknown', { exact: true }).waitFor();
   await dialog.getByText(/Simulation.*Execution disabled/).waitFor();
   assert.equal(await dialog.getByRole('button', { name: 'Start swap' }).isDisabled(), true);
@@ -127,10 +127,10 @@ test('three faces quote a real route and preserve keyboard, account and responsi
   await amount.fill('60000');
   await captured;
   await amount.fill('70000');
-  await page.getByText('69,500', { exact: true }).waitFor();
+  await page.getByText('68,650', { exact: true }).waitFor();
   release();
   assert.deepEqual(quoteRequests, [50_000, 50_000, 60_000, 70_000]);
-  assert.equal(await page.locator('#received-preview').textContent(), '69,500');
+  assert.equal(await page.locator('#received-preview').textContent(), '68,650');
 
   await page.getByLabel('Send network').selectOption('onchain');
   await waitForRails(page, 'onchain', 'lightning');
@@ -141,7 +141,7 @@ test('three faces quote a real route and preserve keyboard, account and responsi
   await waitForRails(page, 'lightning', 'liquid');
   await page.getByLabel('Receive network').selectOption('onchain');
   await waitForRails(page, 'lightning', 'onchain');
-  await page.getByText('69,500', { exact: true }).waitFor();
+  await page.getByText('68,650', { exact: true }).waitFor();
   assert.deepEqual(quoteRequests, [50_000, 50_000, 60_000, 70_000, 70_000]);
 
   await audit(page);
@@ -741,7 +741,7 @@ test('actual mouse and touch gestures rotate in both directions and linked anima
   await page.goto(url);
   await page.locator('#opening-overlay').waitFor({ state: 'hidden' });
   await page.locator('.cube-swap').evaluate(cube => Promise.all(cube.getAnimations().map(animation => animation.finished)));
-  await page.getByText('49,500', { exact: true }).waitFor();
+  await page.getByText('48,750', { exact: true }).waitFor();
 
   const send = page.getByLabel('Send network');
   const receive = page.getByLabel('Receive network');
@@ -792,7 +792,7 @@ test('actual mouse and touch gestures rotate in both directions and linked anima
   await waitForRails(page, 'onchain', 'liquid');
   await receive.selectOption('onchain');
   await waitForRails(page, 'lightning', 'onchain');
-  await page.getByText('49,500', { exact: true }).waitFor();
+  await page.getByText('48,750', { exact: true }).waitFor();
   assert.equal(observations.length, 2);
   assert.deepEqual(await Promise.all(observations), [[false, 'lightning', 'onchain'], [false, 'lightning', 'onchain']]);
 
@@ -808,12 +808,12 @@ test('actual mouse and touch gestures rotate in both directions and linked anima
   const receiveGrip = page.getByRole('button', { name: 'Rotate receive cube' });
   await send.selectOption('onchain');
   await waitForRails(page, 'onchain', 'ark');
-  await page.getByText('49,738', { exact: true }).waitFor();
+  await page.getByText('48,988', { exact: true }).waitFor();
   await receiveGrip.hover();
   await page.mouse.wheel(0, 80);
   await page.mouse.wheel(0, 80);
   await waitForRails(page, 'lightning', 'onchain');
-  await page.getByText('49,500', { exact: true }).waitFor();
+  await page.getByText('48,750', { exact: true }).waitFor();
   await receiveGrip.hover();
   await page.mouse.wheel(0, -80);
   await waitForRails(page, 'lightning', 'ark');
@@ -937,7 +937,7 @@ test('Ark regtest UI requires explicit inputs, keeps SUBMITTED pending without Â
   await waitForRails(page, 'onchain', 'lightning');
   await page.getByLabel('Receive network').selectOption('ark');
   await waitForRails(page, 'onchain', 'ark');
-  await page.getByText('49,738', { exact: true }).waitFor();
+  await page.getByText('48,988', { exact: true }).waitFor();
 
   const capturedSwaps: Array<{ key: string; csrf: string; body: unknown }> = [];
   page.on('request', req => {
@@ -1109,7 +1109,7 @@ test('Ark regtest UI requires explicit inputs, keeps SUBMITTED pending without Â
   await page.getByRole('link', { name: 'Operations', exact: true }).click();
   await page.waitForFunction(() => document.getElementById('activity-completed')?.textContent === '1');
   assert.equal(await page.locator('#activity-pending').textContent(), '0');
-  assert.equal(await page.locator('#activity-ark-sent').textContent(), '50,750 sats');
+  assert.equal(await page.locator('#activity-ark-sent').textContent(), '50,000 sats');
   assert.equal(await page.locator('#activity-onchain-received').textContent(), '49,759 sats');
   assert.equal(await page.locator('#fee-collected').textContent(), '750 sats');
   assert.equal(await page.locator('#fee-network').textContent(), '241 sats');

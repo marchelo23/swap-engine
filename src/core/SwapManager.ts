@@ -18,10 +18,18 @@ export function invoiceBudget(invoiceSats: number, policy: InvoiceEconomics = LE
 export class SwapManager {
   constructor(readonly store: Store, readonly economics: EconomicsConfig = LEGACY_ECONOMICS) {}
   async quote(amountSats: number, now = Date.now()): Promise<Quote> {
+    return this.quoteWithPolicy(amountSats, now, false);
+  }
+  async quoteDebit(invoiceSats: number, now = Date.now()): Promise<Quote> {
+    return this.quoteWithPolicy(invoiceSats, now, true);
+  }
+  private async quoteWithPolicy(requestedSats: number, now: number, exactDebit: boolean): Promise<Quote> {
     const policy = this.economics.quote;
-    if (!Number.isSafeInteger(amountSats) || amountSats < policy.minAmountSats || amountSats > policy.maxAmountSats)
+    if (!Number.isSafeInteger(requestedSats) || requestedSats < policy.minAmountSats || requestedSats > policy.maxAmountSats)
       throw new Error('Amount must be ' + policy.minAmountSats + '..' + policy.maxAmountSats + ' sats');
-    const serviceFeeSats = policy.serviceFeeBaseSats + Math.ceil(amountSats * policy.serviceFeeBps / 10_000);
+    const serviceFeeSats = policy.serviceFeeBaseSats + Math.ceil(requestedSats * policy.serviceFeeBps / 10_000);
+    const amountSats = exactDebit ? requestedSats - serviceFeeSats : requestedSats;
+    if (amountSats <= policy.claimFeeSats) throw new Error('Quote leaves no payout after fees');
     const quote = { id: randomUUID(), amountSats, serviceFeeSats, invoiceSats: amountSats + serviceFeeSats,
       fundingReserveSats: policy.fundingReserveSats, claimFeeSats: policy.claimFeeSats, expiresAt: now + policy.ttlMs };
     return this.store.transaction(db => {

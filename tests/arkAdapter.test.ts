@@ -57,16 +57,16 @@ test('buildArkQuote enforces 10,000..1,000,000 sats and calculates boarding and 
   assert.equal(bq.method, 'boarding');
   assert.equal(bq.serviceFeeSats, 750);
   assert.equal(bq.claimFeeSats, 262);
-  assert.equal(bq.invoiceSats, 50_750);
-  assert.equal(bq.netSats, 49_738);
+  assert.equal(bq.invoiceSats, 50_000);
+  assert.equal(bq.netSats, 48_988);
   assert.equal(bq.expiresAt, 121_000);
 
   const oq = buildArkQuote('ark-to-onchain', 75_000, 2_000);
   assert.equal(oq.method, 'cooperative-offboarding');
   assert.equal(oq.serviceFeeSats, 875);
   assert.equal(oq.claimFeeSats, 241);
-  assert.equal(oq.invoiceSats, 75_875);
-  assert.equal(oq.netSats, 74_759);
+  assert.equal(oq.invoiceSats, 75_000);
+  assert.equal(oq.netSats, 73_884);
   assert.equal(oq.expiresAt, 122_000);
 
   for (const invalid of [0, 329, 9_999, 1_000_001, 50_000.5, NaN]) {
@@ -238,9 +238,9 @@ test('HTTP API exposes Ark quotes, enforces auth/CSRF/idempotency on Ark swaps a
     });
     assert.equal(lnQuoteRes.status, 201);
     const lnQuote = await lnQuoteRes.json();
-    assert.equal(lnQuote.amountSats, 50_000);
+    assert.equal(lnQuote.amountSats, 49_250);
     assert.equal(lnQuote.serviceFeeSats, 750);
-    assert.equal(lnQuote.invoiceSats, 50_750);
+    assert.equal(lnQuote.invoiceSats, 50_000);
     assert.equal(lnQuote.claimFeeSats, 500);
 
     // 2. Unauthenticated access to telemetry and swap submission is denied

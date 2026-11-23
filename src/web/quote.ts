@@ -258,7 +258,7 @@ export function mountQuote(prepare?: (stillVisible: () => boolean, amountSats: n
       : api.quote(value, active.signal, csrf);
     const work = request.then(result => {
       if (version !== revision) return;
-      const totals = quoteTotals(result, value, Date.now(), !route && controlled === true);
+      const totals = quoteTotals(result, value, Date.now(), true);
       quote = result;
       animateValues([sats(result.serviceFeeSats), sats(result.claimFeeSats), sats(totals.lost), integer(totals.received)]);
       if (route) {
@@ -399,7 +399,7 @@ export function mountQuote(prepare?: (stillVisible: () => boolean, amountSats: n
       status('Quote expired · press Swap');
       return;
     }
-    const totals = quoteTotals(current, value, now);
+    const totals = quoteTotals(current, value, now, true);
     if (route) {
       const boarding = route === 'onchain-to-ark';
       details(get('review-details'), [

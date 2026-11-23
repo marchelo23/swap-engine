@@ -49,7 +49,7 @@ export function createOperatorApi(manager: SwapManager, liquidity: () => Promise
       }
       if (req.method === 'POST' && path === '/v1/quotes') {
         const input = QuoteRequest.parse(await body(req));
-        return send(201, QuoteResponse.parse(await manager.quote(input.amountSats)));
+        return send(201, QuoteResponse.parse(await manager.quoteDebit(input.amountSats)));
       }
       if (req.method === 'POST' && path === '/v1/swaps/reverse') {
         ReverseRequest.parse(await body(req));
