@@ -374,9 +374,6 @@ export function mountQuote(prepare?: (stillVisible: () => boolean, quote: Quote,
 
   function schedule(delay: number) {
     if (!visible) return;
-    const destination = get('owned-quote-destination');
-    destination.hidden = !ownedDestination || !admin || controlled !== true || pair.send !== 'lightning' || pair.receive !== 'onchain';
-    destination.textContent = destination.hidden ? '' : 'Bitcoin regtest payout address ' + ownedDestination;
     const value = principal();
     if (value === undefined) amount.setAttribute('aria-invalid', 'true'); else amount.removeAttribute('aria-invalid');
     if (!aligned || !canQuote(pair)) {

@@ -65,7 +65,7 @@ test('Admin SWAP executes the exact 1,000,000 sat debit once and allows another 
     await amount.fill('1000000');
     await page.waitForFunction(() => document.getElementById('received-preview')?.textContent?.includes('994,000'));
     assert.equal(creates, 0); assert.equal(executes, 0);
-    assert.ok((await page.locator('#owned-quote-destination').textContent())?.includes(f.spec.claimDestination));
+    assert.ok(!(await page.locator('#quote-form').textContent())?.includes(f.spec.claimDestination));
     await page.evaluate(() => localStorage.setItem('swap-engine.prepared.unrelated-owner.unrelated-swap.execute.once', 'retain-this-other-request'));
     await page.getByRole('button', { name: 'SWAP', exact: true }).click();
     await executionObservedOnServer;
