@@ -169,7 +169,7 @@ test('three faces quote a real route and preserve keyboard, account and responsi
   assert.equal(await page.locator('#icon-ark image').getAttribute('href'), '/arkade-mark.svg');
   assert.deepEqual(await page.locator('.cube-send .rail-icon').evaluate(icon =>
     [getComputedStyle(icon).width, getComputedStyle(icon).height]), ['19px', '19px']);
-  await page.getByText('69,759', { exact: true }).waitFor();
+  await page.getByText('68,909', { exact: true }).waitFor();
   assert.equal(await page.locator('#service').textContent(), '850 sats');
   assert.equal(await page.locator('#claim').textContent(), '241 sats');
   assert.equal(await page.locator('#cost').textContent(), '1,091 sats');
@@ -179,7 +179,7 @@ test('three faces quote a real route and preserve keyboard, account and responsi
   await page.getByLabel('Receive network').selectOption('ark');
   await waitForRails(page, 'onchain', 'ark');
   await amount.fill('80000');
-  await page.getByText('79,738', { exact: true }).waitFor();
+  await page.getByText('78,838', { exact: true }).waitFor();
   await page.getByText('Ark boarding quote ready Â· regtest only', { exact: true }).waitFor();
   assert.equal(await swap.isDisabled(), false);
   assert.equal(await page.locator('#service').textContent(), '900 sats');
@@ -1040,7 +1040,7 @@ test('Ark regtest UI requires explicit inputs, keeps SUBMITTED pending without Â
   await page.getByRole('link', { name: 'Swap', exact: true }).click();
   await page.getByLabel('Send network').selectOption('ark');
   await waitForRails(page, 'ark', 'onchain');
-  await page.getByText('49,759', { exact: true }).waitFor();
+  await page.getByText('49,009', { exact: true }).waitFor();
   await page.getByRole('button', { name: 'SWAP', exact: true }).click();
   await dialog.waitFor({ state: 'visible' });
   assert.equal(await page.locator('#ark-offboard-fields').isVisible(), true);
