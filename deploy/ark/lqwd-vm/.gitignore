@@ -1,0 +1,5 @@
+compose.env
+gateway.env
+data/
+*.key
+known_hosts
