@@ -285,7 +285,7 @@ test('HTTP API exposes Ark quotes, enforces auth/CSRF/idempotency on Ark swaps a
         route: 'onchain-to-ark',
         wallet: 'alice',
         fundingOutpoint: boardingOutpoint,
-        amountSats: 50_000,
+        amountSats: bQuote.amountSats,
       }),
     })).status, 403);
 
@@ -303,7 +303,7 @@ test('HTTP API exposes Ark quotes, enforces auth/CSRF/idempotency on Ark swaps a
         route: 'onchain-to-ark',
         wallet: 'alice',
         fundingOutpoint: boardingOutpoint,
-        amountSats: 50_000,
+        amountSats: bQuote.amountSats,
       }),
     });
     assert.equal(boardSubmit.status, 202);
@@ -326,7 +326,7 @@ test('HTTP API exposes Ark quotes, enforces auth/CSRF/idempotency on Ark swaps a
         route: 'onchain-to-ark',
         wallet: 'alice',
         fundingOutpoint: boardingOutpoint,
-        amountSats: 50_000,
+        amountSats: bQuote.amountSats,
       }),
     });
     assert.equal(replaySubmit.status, 202);
@@ -360,7 +360,7 @@ test('HTTP API exposes Ark quotes, enforces auth/CSRF/idempotency on Ark swaps a
         route: 'ark-to-onchain',
         vtxoOutpoint: offboardVtxo,
         destinationAddress: offboardDestination,
-        amountSats: 30_000,
+        amountSats: oQuote.amountSats,
       }),
     });
     assert.equal(offboardSubmit.status, 202);
@@ -434,7 +434,7 @@ test('ArkSwapService persists swaps to disk and reloads them across restarts', a
       route: 'ark-to-onchain',
       vtxoOutpoint: offboardVtxo,
       destinationAddress: offboardDestination,
-      amountSats: 50_000,
+      amountSats: q.amountSats,
     });
     assert.equal(submitted.status, 'SUBMITTED');
 
@@ -472,7 +472,7 @@ test('ArkSwapService fences uncertain submissions and prevents duplicate input s
     route: 'onchain-to-ark',
     wallet: 'alice',
     fundingOutpoint: boardingOutpoint,
-    amountSats: 50_000,
+    amountSats: quote.amountSats,
   });
   assert.equal(first.status, 'UNCERTAIN');
   assert.equal(calls, 1);
@@ -483,7 +483,7 @@ test('ArkSwapService fences uncertain submissions and prevents duplicate input s
     route: 'onchain-to-ark',
     wallet: 'alice',
     fundingOutpoint: boardingOutpoint,
-    amountSats: 50_000,
+    amountSats: quote.amountSats,
   });
   assert.deepEqual(replay, first);
   assert.equal(calls, 1);
@@ -495,7 +495,7 @@ test('ArkSwapService fences uncertain submissions and prevents duplicate input s
     route: 'onchain-to-ark',
     wallet: 'alice',
     fundingOutpoint: boardingOutpoint,
-    amountSats: 50_000,
+    amountSats: quote2.amountSats,
   }), /ARK_INPUT_ALREADY_RESERVED/);
   assert.equal(calls, 1);
 });
@@ -596,7 +596,7 @@ test('regression: POST /v1/ark/swaps requires explicit inputs and loopback check
     const missingBoard = await fetch(`${origin}/v1/ark/swaps`, {
       method: 'POST',
       headers: { ...authHeaders, 'idempotency-key': 'missing-board-1' },
-      body: JSON.stringify({ quoteId: bQuote.id, route: 'onchain-to-ark', wallet: 'alice', amountSats: 50_000 }),
+      body: JSON.stringify({ quoteId: bQuote.id, route: 'onchain-to-ark', wallet: 'alice', amountSats: bQuote.amountSats }),
     });
     assert.equal(missingBoard.status, 400);
 
@@ -604,7 +604,7 @@ test('regression: POST /v1/ark/swaps requires explicit inputs and loopback check
     const missingVtxo = await fetch(`${origin}/v1/ark/swaps`, {
       method: 'POST',
       headers: { ...authHeaders, 'idempotency-key': 'missing-vtxo-1' },
-      body: JSON.stringify({ quoteId: oQuote.id, route: 'ark-to-onchain', destinationAddress: offboardDestination, amountSats: 50_000 }),
+      body: JSON.stringify({ quoteId: oQuote.id, route: 'ark-to-onchain', destinationAddress: offboardDestination, amountSats: oQuote.amountSats }),
     });
     assert.equal(missingVtxo.status, 400);
 
@@ -612,7 +612,7 @@ test('regression: POST /v1/ark/swaps requires explicit inputs and loopback check
     const missingDest = await fetch(`${origin}/v1/ark/swaps`, {
       method: 'POST',
       headers: { ...authHeaders, 'idempotency-key': 'missing-dest-1' },
-      body: JSON.stringify({ quoteId: oQuote.id, route: 'ark-to-onchain', vtxoOutpoint: offboardVtxo, amountSats: 50_000 }),
+      body: JSON.stringify({ quoteId: oQuote.id, route: 'ark-to-onchain', vtxoOutpoint: offboardVtxo, amountSats: oQuote.amountSats }),
     });
     assert.equal(missingDest.status, 400);
   } finally {
@@ -807,7 +807,7 @@ test('regression: SUBMITTED is pending and excluded from settled accounting, whi
           route: 'onchain-to-ark',
           wallet: 'alice',
           fundingOutpoint: boardingOutpoint,
-          amountSats: 50_000,
+          amountSats: qSub.amountSats,
         }),
       });
       assert.equal(subRes.status, 202);
@@ -834,7 +834,7 @@ test('regression: SUBMITTED is pending and excluded from settled accounting, whi
           route: 'ark-to-onchain',
           vtxoOutpoint: offboardVtxo,
           destinationAddress: offboardDestination,
-          amountSats: 30_000,
+          amountSats: qRej.amountSats,
         }),
       });
       assert.equal(rejRes.status, 503);

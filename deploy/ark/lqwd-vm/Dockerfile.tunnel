@@ -1,5 +1,7 @@
 FROM docker.io/alpine:3.20
 
-RUN apk add --no-cache openssh-client netcat-openbsd
+RUN apk add --no-cache openssh-client netcat-openbsd \
+    && addgroup -g 1000 ark \
+    && adduser -D -u 1000 -G ark ark
 
 USER 1000:1000

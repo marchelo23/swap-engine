@@ -259,7 +259,7 @@ test('gateway defenses', async t => {
 
   await t.test('non-JSON content type is rejected', async () => {
     const response = await request(gateway.port, {
-      headers: { authorization, 'content-type': 'text/plain' },
+      headers: { authorization, 'content-type': 'application/octet-stream' },
       body: '{"jsonrpc":"2.0","method":"getblockchaininfo","params":[],"id":8}',
     });
     assert.equal(response.status, 415);

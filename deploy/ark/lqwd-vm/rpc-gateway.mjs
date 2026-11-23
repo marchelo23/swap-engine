@@ -27,6 +27,7 @@ const PROFILES = {
     'getrawmempool',
     'getrawtransaction',
     'gettxout',
+    'help',
   ],
 };
 
@@ -107,8 +108,9 @@ function canonicalize(parsed) {
 
 function reject(res, status, message, code = -32601, headers = {}) {
   if (res.headersSent || res.writableEnded) return;
-  res.writeHead(status, { 'content-type': 'application/json', connection: 'close', ...headers });
-  res.end(JSON.stringify({ jsonrpc: '2.0', error: { code, message }, id: null }));
+  const body = JSON.stringify({ jsonrpc: '2.0', error: { code, message }, id: null });
+  res.writeHead(status, { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body), connection: 'close', ...headers });
+  res.end(body);
 }
 
 function log(...parts) {
@@ -134,8 +136,8 @@ const server = http.createServer((req, res) => {
     return;
   }
   const contentType = (req.headers['content-type'] ?? '').split(';')[0].trim().toLowerCase();
-  if (contentType !== 'application/json') {
-    reject(res, 415, 'application/json required', -32600);
+  if (req.headers.origin !== undefined || !['application/json', 'application/json-rpc', 'text/plain'].includes(contentType)) {
+    reject(res, 415, 'JSON-RPC content type required', -32600);
     return;
   }
   log('content-type-ok');
