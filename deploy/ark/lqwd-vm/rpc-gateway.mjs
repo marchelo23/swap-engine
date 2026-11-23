@@ -20,6 +20,7 @@ const PROFILES = {
     'getblockfilter',
     'getblockhash',
     'getblockheader',
+    'getblockstats',
     'getchaintips',
     'getindexinfo',
     'getmempoolentry',
