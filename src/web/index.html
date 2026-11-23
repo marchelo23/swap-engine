@@ -56,7 +56,7 @@
           <div class="cube-plane plane-front">
             <header class="face-header"><h2 id="send-label">SEND</h2></header>
             <div class="rail-field"><svg class="rail-icon icon" aria-hidden="true"><use id="send-icon" href="#icon-lightning"/></svg><label class="sr-only" for="send-network">Send network</label><select id="send-network" name="send-network"><option value="onchain">On-chain</option><option value="lightning" selected>Lightning</option><option value="liquid">Liquid</option><option value="ark">Ark</option></select><svg class="select-icon icon" aria-hidden="true"><use href="#icon-select"/></svg></div>
-            <div class="face-value"><label for="amount" class="sr-only">Quote principal in sats</label><input id="amount" name="amount" value="50000" inputmode="numeric" maxlength="7" aria-describedby="amount-help" autocomplete="off"><span aria-hidden="true">sats</span></div><p id="amount-help" class="face-note">10,000&ndash;1,000,000 sats</p>
+            <div class="face-value"><label for="amount" id="amount-label" class="sr-only">Quote principal in sats</label><input id="amount" name="amount" value="50000" inputmode="numeric" maxlength="7" aria-describedby="amount-help" autocomplete="off"><span aria-hidden="true">sats</span></div><p id="amount-help" class="face-note">10,000&ndash;1,000,000 sats</p>
             <button type="button" class="rail-grip" id="send-grip" aria-label="Rotate send cube" aria-describedby="rotation-help"><svg class="icon" aria-hidden="true"><use href="#icon-down"/></svg></button>
           </div>
         </div>
@@ -143,8 +143,13 @@
       </article>
       <article class="panel inset">
         <div class="panel-header"><h2>Swap history</h2><span id="account-history-tag" class="tag">UNAVAILABLE</span></div>
-        <p id="account-history-status" class="muted">Private history requires swaps with verified owner IDs.</p>
-        <dl class="metric-grid"><div><dt>Active swaps</dt><dd id="account-active-swaps">—</dd></div><div><dt>Completed swaps</dt><dd id="account-completed-swaps">—</dd></div><div><dt>Failed or refunded swaps</dt><dd id="account-failed-swaps">—</dd></div></dl>
+        <p id="account-history-status" class="muted" role="status">Checking private history&hellip;</p>
+        <dl class="metric-grid"><div><dt>Pending</dt><dd id="account-active-swaps">—</dd></div><div><dt>Confirmed</dt><dd id="account-completed-swaps">—</dd></div><div><dt>Failed</dt><dd id="account-failed-swaps">—</dd></div><div><dt>Expired</dt><dd id="account-expired-swaps">—</dd></div><div><dt>Refunded</dt><dd id="account-refunded-swaps">—</dd></div></dl>
+        <div class="owned-toolbar">
+          <div><label for="account-history-route">History route</label><select id="account-history-route"><option value="">All routes</option><option>Lightning → On-chain</option><option>On-chain → Ark</option><option>Ark → On-chain</option></select></div>
+          <div><label for="account-history-state">History status</label><select id="account-history-state"><option value="">All statuses</option></select></div>
+        </div>
+        <p id="account-history-results" class="muted" role="status"></p>
         <ul id="account-history-list" class="tx-list" hidden></ul>
       </article>
     </div>

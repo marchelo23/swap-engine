@@ -3,7 +3,7 @@ import { api, type Session, type ReverseAvailability, type OwnedPreparation } fr
 /** Persist admission/review keys before POST. Network uncertainty retains the same
  * attempt across reload; this module has no payment/execution API call. */
 export async function prepareForReview(owner: Session, available: ReverseAvailability, amountSats: number): Promise<string> {
-  if (owner.user.role !== 'ADMIN' || !available.preparationAvailable) throw new Error('Preparation unavailable for this account.');
+  if (!available.controlledReverseConfigured || !available.preparationAvailable) throw new Error('Preparation unavailable for this account.');
   const name = `swap-engine.preparation.${owner.user.id}`;
   type Saved = { key: string; id?: string; amountSats?: number; reviewKey?: string; reviewState?: 'INTENT' | 'CONFIRMED'; reviewedUntil?: number };
   const save = (value: Saved) => { localStorage.setItem(name, JSON.stringify(value)); return value; };

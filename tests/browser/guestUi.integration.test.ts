@@ -33,7 +33,7 @@ async function guestUiBundle() {
   return result.outputFiles[0]!.text;
 }
 
-test('guest cubes require a regtest payout address and show the exact invoice QR after recovery and watcher readiness', async context => {
+test('guest cubes work after signed-in reverse is denied and show an exact invoice QR only after recovery', async context => {
   const f = await setup();
   context.after(f.cleanup);
   const admission = new GuestAdmission(f.store);
@@ -66,17 +66,25 @@ test('guest cubes require a regtest payout address and show the exact invoice QR
   const page = await browser.newPage({ reducedMotion: 'reduce', permissions: ['clipboard-read', 'clipboard-write'], viewport: { width: 390, height: 844 } });
   const bundle = await guestUiBundle();
   await page.route('**/app.js', route => route.fulfill({ contentType: 'text/javascript', body: bundle }));
-  await page.route('**/v1/auth/session', route => route.fulfill({ status: 401, json: {} }));
+  await page.context().addCookies([{ name: 'mock-owner', value: 'account-cookie', url: base, httpOnly: true }]);
+  await page.route('**/v1/auth/session', route => route.fulfill({ json: {
+    user: { id: 'owner-without-reverse', username: 'guest-option', role: 'USER' },
+    csrfToken: 'a'.repeat(64), expiresAt: Date.now() + 60_000,
+  } }));
+  await page.route('**/v1/reverse/availability', route => route.fulfill({ status: 403, json: { error: 'FORBIDDEN' } }));
   const guestQuotes: string[] = [];
+  const guestHeaders: Array<Promise<Record<string, string>>> = [];
   const remoteRequests: string[] = [];
   page.on('request', request => {
     const url = new URL(request.url());
     if (url.origin !== base) remoteRequests.push(url.origin);
     if (url.pathname === '/v1/guest/quotes' && request.method() === 'POST') {
       guestQuotes.push(request.postDataJSON().destination);
+      guestHeaders.push(request.allHeaders());
     }
   });
   await page.goto(base);
+  await page.getByRole('textbox', { name: 'Amount to send in sats' }).waitFor();
   const requestedSats = Number(await page.locator('#amount').inputValue());
   await page.getByRole('button', { name: 'SWAP', exact: true }).click();
   const dialog = page.getByRole('dialog', { name: 'Guest swap recovery' });
@@ -101,7 +109,15 @@ test('guest cubes require a regtest payout address and show the exact invoice QR
   assert.equal(await field.getAttribute('aria-invalid'), null);
   await create.click();
   await dialog.getByLabel('Encrypted recovery export', { exact: true }).waitFor();
+  const terms = await page.locator('#guest-details').textContent();
+  assert.match(terms ?? '', /Amount to send\s*50,000 sats/);
+  assert.match(terms ?? '', /Lightning invoice amount\s*50,000 sats/);
+  assert.match(terms ?? '', /Estimated net receipt\s*48,750 sats/);
   assert.deepEqual(guestQuotes, [destination]);
+  const [headers] = await Promise.all(guestHeaders);
+  assert.equal(headers?.['x-csrf-token'], undefined);
+  assert.equal(headers?.cookie, undefined);
+  assert.match(headers?.authorization ?? '', /^Bearer /);
   assert.equal(await invoiceField.inputValue(), '');
   assert.equal(await qr.isVisible(), false);
   await dialog.getByRole('button', { name: 'Download encrypted recovery' }).click();

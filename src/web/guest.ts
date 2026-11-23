@@ -1,5 +1,5 @@
 import { address, payments, networks } from 'bitcoinjs-lib';
-import { api, ApiResponseError, type GuestQuote, type GuestStatus } from './api.js';
+import { api, ApiResponseError, quoteTotals, type GuestQuote, type GuestStatus } from './api.js';
 import {
   createGuestRecoveryBundle, createGuestRecoverySecrets, decryptGuestRecovery, encryptGuestRecovery,
   generateGuestRecoveryIdentity, parseEncryptedRecovery, recoveryCommitment, serializeEncryptedRecovery,
@@ -28,17 +28,21 @@ type Flow = {
 };
 
 const terminal = new Set(['COMPLETED', 'EXPIRED', 'REFUNDED', 'FAILED', 'MANUAL_REVIEW', 'PREPARATION_UNKNOWN', 'UNKNOWN']);
+const guestFinished = (status: GuestStatus) => terminal.has(status.status) || terminal.has(status.swapState ?? '');
 const hex = /^[a-f0-9]{64}$/;
 function bytes(value: string) { return Uint8Array.from(value.match(/../g) ?? [], part => Number.parseInt(part, 16)); }
 function statusText(status: GuestStatus) {
   if (status.status === 'COMPLETED' || status.swapState === 'COMPLETED') return 'Guest swap completed.';
+  if (status.status === 'EXPIRED' || status.swapState === 'EXPIRED') return 'Guest swap expired.';
+  if (status.status === 'REFUNDED' || status.swapState === 'REFUNDED') return 'Guest swap refunded.';
+  if (status.status === 'FAILED' || status.swapState === 'FAILED') return 'Guest swap failed.';
+  if (status.swapState === 'REFUND_PENDING') return 'Guest refund pending.';
   if (status.status === 'CLAIM_BROADCAST_PENDING_CONFIRMATION') return 'Claim broadcast. Waiting for confirmation and settlement.';
   if (status.status === 'PAYMENT_ACCEPTED_NOT_SETTLED') return 'Invoice accepted. Waiting for the watcher to confirm the on-chain funding.';
   if (status.status === 'FUNDED_AWAITING_CLAIM') return 'Funding confirmed. Sign the claim locally when you are ready.';
   if (status.status === 'INVOICE_CREATED') return 'Waiting for payment and confirmed funding.';
-  if (status.status === 'MANUAL_REVIEW' || status.status === 'UNKNOWN' || status.status === 'PREPARATION_UNKNOWN')
+  if (status.status === 'MANUAL_REVIEW' || status.swapState === 'MANUAL_REVIEW' || status.status === 'UNKNOWN' || status.status === 'PREPARATION_UNKNOWN')
     return 'Manual review required. No claim was submitted and nothing will be retried.';
-  if (terminal.has(status.status)) return 'This guest swap is closed. No further action is available.';
   return 'Guest status updated.';
 }
 function canClaim(status: GuestStatus) {
@@ -59,7 +63,8 @@ function validStatus(flow: Flow, status: GuestStatus) {
     status.claimPublicKey !== flow.identity.claimPublicKey ||
     (flow.status?.invoice !== undefined && status.invoice !== undefined && status.invoice !== flow.status.invoice) ||
     status.amountSats !== quote.amountSats || status.invoiceSats !== quote.invoiceSats ||
-    status.claimFeeSats !== quote.claimFeeSats) throw new Error('Guest status changed identity or terms.');
+    status.claimFeeSats !== quote.claimFeeSats || status.serviceFeeSats !== quote.serviceFeeSats)
+    throw new Error('Guest status changed identity or terms.');
   return status;
 }
 
@@ -110,10 +115,10 @@ export function mountGuest(presentation: GuestPresentation = {}) {
       setPaymentStatus('Guest swap completed. The resulting claim is confirmed and the invoice is settled.');
       return;
     }
-    const claimable = canClaim(status);
+    const claimable = !guestFinished(status) && canClaim(status);
     claimButton.hidden = !claimable;
     claimButton.disabled = !claimable || current.uncertain === true;
-    if (terminal.has(status.status)) {
+    if (guestFinished(status)) {
       stopPolling(current); claimButton.hidden = true; claimButton.disabled = true;
     }
   }
@@ -127,7 +132,7 @@ export function mountGuest(presentation: GuestPresentation = {}) {
       const status = validStatus(current, await api.guestStatus(quote.id, current.identity.capabilityToken, controller.signal));
       if (flow !== current) return;
       current.status = status; render(current);
-      if (!terminal.has(status.status) && status.swapState !== 'COMPLETED')
+      if (!guestFinished(status))
         current.poll = window.setTimeout(() => void poll(current), 3000);
     } catch (error) {
       if (flow !== current || !dialog.open) return;
@@ -151,7 +156,7 @@ export function mountGuest(presentation: GuestPresentation = {}) {
     flow = current;
     details(get('guest-details'), [
       ['Network', 'Bitcoin Regtest'],
-      ['Quote principal', sats(amountSats)],
+      ['Amount to send', sats(amountSats)],
       ['On-chain destination', presentation.readDestination ? 'Use the destination field in this dialog' : 'Derived from the recovery key'],
       ['Recovery export', 'Required before the payable invoice is shown'],
     ]);
@@ -189,14 +194,15 @@ export function mountGuest(presentation: GuestPresentation = {}) {
         const quote = await api.guestQuote(current.identity, destination, current.amountSats, current.quoteKey);
         if (!current.active()) return;
         if (quote.destination !== destination || quote.paymentHash !== current.identity.paymentHash ||
-          quote.claimPublicKey !== current.identity.claimPublicKey || quote.invoiceSats !== current.amountSats ||
-          quote.amountSats + quote.serviceFeeSats !== quote.invoiceSats)
+          quote.claimPublicKey !== current.identity.claimPublicKey)
           throw new Error('Guest quote changed identity, destination or amount.');
+        const amounts = quoteTotals(quote, current.amountSats, Date.now(), true);
         current.quote = quote;
         details(get('guest-details'), [
           ['Network', 'Bitcoin Regtest'], ['Destination', quote.destination],
-          ['Quote principal', sats(quote.amountSats)], ['Lightning invoice', sats(quote.invoiceSats)],
-          ['Service fee', sats(quote.serviceFeeSats)], ['Claim fee', sats(quote.claimFeeSats)],
+          ['Amount to send', sats(current.amountSats)], ['Lightning invoice amount', sats(quote.invoiceSats)],
+          ['Service fee', sats(quote.serviceFeeSats)], ['Estimated claim fee', sats(quote.claimFeeSats)],
+          ['Estimated net receipt', sats(amounts.received)],
           ['Recovery export', 'Required before the payable invoice is shown'],
         ]);
       } else if (current.quote.destination !== destination) throw new Error('Destination changed after the quote was created.');

@@ -11,7 +11,8 @@ const regtestArkPattern = /^tark1[qpzry9x8gf2tvdw0s3jn54khce6mua7l]{20,140}$/;
 
 type GuestFlow = { begin(amountSats: number, active: () => boolean): Promise<void>; cancel(): void };
 
-export function mountQuote(prepare?: (stillVisible: () => boolean, amountSats: number) => Promise<void>, guestFlow?: GuestFlow) {
+export function mountQuote(prepare?: (stillVisible: () => boolean, amountSats: number) => Promise<void>, guestFlow?: GuestFlow,
+  recordQuote?: (pair: Pair, quote: Quote) => void) {
   const form = get<HTMLFormElement>('quote-form');
   const amount = get<HTMLInputElement>('amount');
   const action = get<HTMLButtonElement>('swap-action');
@@ -36,6 +37,7 @@ export function mountQuote(prepare?: (stillVisible: () => boolean, amountSats: n
   let controlled: boolean | 'unavailable' | null = null;
   let csrf: string | undefined;
   let canPrepare = false; let preparing = false;
+  let hasPreparedSwap = false;
   let guestConfigured = false; let guestAvailable = false;
   let revision = 0;
   let quote: Quote | ArkQuote | undefined;
@@ -289,7 +291,11 @@ export function mountQuote(prepare?: (stillVisible: () => boolean, amountSats: n
     for (const id of numbers) text(id, '—');
   }
 
-  function guestRoute() { return !csrf && pair.send === 'lightning' && pair.receive === 'onchain'; }
+  function guestRoute() {
+    const guestOnly = !csrf || controlled === false || controlled === 'unavailable'
+      || (controlled === true && !canPrepare && !hasPreparedSwap);
+    return guestOnly && pair.send === 'lightning' && pair.receive === 'onchain';
+  }
 
   function isArkRoute() {
     return isArkOnchainPair(pair);
@@ -339,7 +345,8 @@ export function mountQuote(prepare?: (stillVisible: () => boolean, amountSats: n
       }
       expiry = window.setTimeout(() => {
         invalidate();
-        status('Quote expired · press Swap');
+        status('Quote expired · press Swap to refresh');
+        if (visible && aligned) action.disabled = principal() === undefined || preparing;
       }, Math.min(Math.max(0, result.expiresAt - Date.now()), 2_147_483_647));
       return result;
     }).catch(error => {
@@ -357,6 +364,8 @@ export function mountQuote(prepare?: (stillVisible: () => boolean, amountSats: n
 
   function schedule(delay: number) {
     if (!visible) return;
+    text('amount-label', !isArkRoute() && (controlled === true || (guestRoute() && guestAvailable))
+      ? 'Amount to send in sats' : 'Quote principal in sats');
     const value = principal();
     if (value === undefined) amount.setAttribute('aria-invalid', 'true'); else amount.removeAttribute('aria-invalid');
     if (!aligned || !canQuote(pair)) {
@@ -388,11 +397,22 @@ export function mountQuote(prepare?: (stillVisible: () => boolean, amountSats: n
       return;
     }
     if (controlled !== false) {
-      action.disabled = preparing || controlled !== true || !aligned || !canQuote(pair) || (canPrepare && (!value || !quote || quote.invoiceSats !== value));
-      if (controlled === true && canPrepare && aligned && canQuote(pair) && value !== undefined && !quote && !preparing) {
+      if (controlled !== true) {
+        action.disabled = true;
+        status(controlled === 'unavailable' ? 'Quote service unavailable.' : 'Checking quote availability…');
+        return;
+      }
+      if (!canPrepare) {
+        action.disabled = !hasPreparedSwap;
+        status(hasPreparedSwap ? 'Review a prepared swap.' : 'No prepared swaps available.');
+        return;
+      }
+      action.disabled = preparing || value === undefined;
+      if (preparing) status('Preparing your regtest swap for review…');
+      else if (value === undefined) status('Enter 11,000–50,000 sats');
+      else if (!quote) {
         status('Updating quote…'); debounce = window.setTimeout(() => void load(value), delay);
-      } else status(controlled === true ? preparing ? 'Preparing your regtest swap for review…' : value === undefined ? 'Enter 11,000–50,000 sats' : canPrepare ? 'Quote ready · review before swapping' : 'Review a prepared swap.'
-        : controlled === 'unavailable' ? 'Quote service unavailable.' : 'Checking quote availability…');
+      } else status('Quote ready · review before swapping');
       return;
     }
     action.disabled = !aligned || !canQuote(pair) || value === undefined;
@@ -439,13 +459,29 @@ export function mountQuote(prepare?: (stillVisible: () => boolean, amountSats: n
       if (canPrepare && prepare && !preparing && aligned && canQuote(pair)) {
         const version = revision; const active = () => visible && version === revision && controlled === true;
         let failure: string | undefined;
-        preparing = true; schedule(0);
-        try { const value = principal(); if (!value || !quote || quote.invoiceSats !== value) throw new Error('Refresh the quote before continuing.'); await prepare(active, value); }
+        const value = principal();
+        if (value === undefined) return;
+        preparing = true;
+        action.disabled = true;
+        window.clearTimeout(debounce);
+        window.clearTimeout(expiry);
+        try {
+          const current = quote && quote.expiresAt > Date.now() ? quote : await load(value);
+          if (!active()) return;
+          if (!current || current.invoiceSats !== value || current.expiresAt <= Date.now()) throw new Error('A current quote for this amount is required. Press Swap to retry.');
+          window.clearTimeout(expiry);
+          status('Preparing your regtest swap for review…');
+          await prepare(active, value);
+        }
         catch (error) { failure = error instanceof Error ? error.message : 'Preparation uncertain. Check existing status.'; }
-        finally { preparing = false; if (visible) { schedule(0); if (active() && failure) status(failure); } }
+        finally {
+          preparing = false;
+          if (active() && failure) { action.disabled = false; status(failure); }
+          else if (visible) schedule(0);
+        }
         return;
       }
-      if (aligned && canQuote(pair)) location.hash = 'track';
+      if (aligned && canQuote(pair) && hasPreparedSwap) location.hash = 'track';
       return;
     }
     const value = principal();
@@ -462,6 +498,7 @@ export function mountQuote(prepare?: (stillVisible: () => boolean, amountSats: n
       return;
     }
     const totals = quoteTotals(current, value, now, true);
+    if (csrf) recordQuote?.(pair, current);
     if (route) {
       const boarding = route === 'onchain-to-ark';
       details(get('review-details'), [
@@ -501,6 +538,7 @@ export function mountQuote(prepare?: (stillVisible: () => boolean, amountSats: n
   });
 
   return {
+    noticeCompletion() { successNotice = true; },
     setVisible(next: boolean) {
       if (visible === next) return;
       visible = next;
@@ -509,12 +547,6 @@ export function mountQuote(prepare?: (stillVisible: () => boolean, amountSats: n
         if (!quote) invalidate();
         return;
       }
-      try {
-        if (sessionStorage.getItem('swap-engine.success-notice')) {
-          sessionStorage.removeItem('swap-engine.success-notice');
-          successNotice = true;
-        }
-      } catch { /* The completed swap remains available in transaction history. */ }
       if (quote && quote.expiresAt > Date.now()) { if (successNotice) status(''); return; }
       invalidate();
       schedule(0);
@@ -529,12 +561,14 @@ export function mountQuote(prepare?: (stillVisible: () => boolean, amountSats: n
       if (visible && aligned && isArkRoute() && quote) showArkQuoteStatus();
       updateArkExecutionState();
     },
-    setContext(configured: boolean | 'unavailable' | null, csrfToken?: string, preparationAvailable = false) {
-      if (controlled === configured && csrf === csrfToken && canPrepare === preparationAvailable) return;
+    setContext(configured: boolean | 'unavailable' | null, csrfToken?: string, preparationAvailable = false, preparedSwapAvailable = false) {
+      if (controlled === configured && csrf === csrfToken && canPrepare === preparationAvailable && hasPreparedSwap === preparedSwapAvailable) return;
       const sessionChanged = csrf !== csrfToken;
+      if (sessionChanged) successNotice = false;
       controlled = configured;
       csrf = csrfToken;
       canPrepare = preparationAvailable;
+      hasPreparedSwap = preparedSwapAvailable;
       amount.readOnly = false;
       if (!sessionChanged && isArkRoute()) return;
       invalidate();

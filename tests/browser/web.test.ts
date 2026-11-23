@@ -632,7 +632,8 @@ test('prepared swaps use verified terms, durable idempotency and separate reconc
   await dialog.getByText(destination, { exact: true }).waitFor();
   await dialog.getByText('Prepared quote expiry', { exact: true }).waitFor();
   await dialog.getByText('Execution approval deadline', { exact: true }).waitFor();
-  await dialog.getByText('50,750 sats', { exact: true }).waitFor();
+  await dialog.getByText('Lightning invoice amount', { exact: true }).waitFor();
+  assert.match(await dialog.textContent() ?? '', /Amount to send\s*50,750 sats/);
   await page.screenshot({ path: evidence + '/prepared-swap-review.png' });
   assert.equal(captured.length, 0);
   revision++;
@@ -1008,11 +1009,11 @@ test('Ark regtest UI gates execution, separates pending from confirmed, and upda
 
   await dialog.getByRole('button', { name: 'Close review', exact: true }).click();
   await page.getByRole('link', { name: 'Account', exact: true }).click();
-  await page.getByText(new RegExp('^1 Ark .* owned by ' + adminAccount.username + '\\.$')).waitFor();
+  await page.locator('#account-history-list').getByText('Pending', { exact: true }).waitFor();
   assert.equal(await page.locator('#account-active-swaps').textContent(), '1');
   assert.equal(await page.locator('#account-completed-swaps').textContent(), '0');
   assert.equal(await page.locator('#account-failed-swaps').textContent(), '0');
-  assert.equal(await page.locator('#account-history-list .tag').textContent(), 'Boarding · pending confirmation');
+  assert.equal(await page.locator('#account-history-list .tag').textContent(), 'Pending');
 
   // 2. Sign in as ADMIN: verify Operations shows pending=1, completed=0, settled=0 sats, and live->unavailable telemetry
   await page.getByRole('button', { name: 'Sign out', exact: true }).click();
@@ -1134,7 +1135,7 @@ test('Ark regtest UI gates execution, separates pending from confirmed, and upda
   }));
 
   await page.getByRole('link', { name: 'Account', exact: true }).click();
-  await page.getByText(`1 Ark ↔ On-chain swap owned by ${adminAccount.username}.`, { exact: true }).waitFor();
+  await page.locator('#account-history-list').getByText('Confirmed', { exact: true }).waitFor();
   assert.equal(await page.locator('#account-active-swaps').textContent(), '0');
   assert.equal(await page.locator('#account-completed-swaps').textContent(), '1');
 
@@ -1148,4 +1149,73 @@ test('Ark regtest UI gates execution, separates pending from confirmed, and upda
   assert.equal(await page.locator('#fee-net-revenue').textContent(), '750 sats');
 
   assert.deepEqual(errors, []);
+});
+
+test('private history filters rails and terminal states and deduplicates linked attempts without exposing other records', async context => {
+  const f = await setup(); context.after(f.cleanup);
+  const account = await testAccount(f.directory, 'USER');
+  const server = createApi(f.manager, async () => { throw new Error('Offline test port'); }, undefined, 'regtest', {
+    auth: { storePath: account.storePath },
+  });
+  server.listen(0, '127.0.0.1'); await once(server, 'listening');
+  context.after(() => new Promise<void>(resolve => server.close(() => resolve())));
+  const browser = await launchChromium(); context.after(() => browser.close());
+  const page = await browser.newPage({ viewport: { width: 390, height: 844 }, reducedMotion: 'reduce' });
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const id = (digit: string) => `${digit.repeat(8)}-${digit.repeat(4)}-4222-8222-${digit.repeat(12)}`;
+  const claimDestination = payments.p2wpkh({ hash: Buffer.alloc(20, 0x44), network: networks.regtest }).address!;
+  const swap = { id: id('1'), network: 'regtest', revision: 4, state: 'REFUNDED', quote: f.quote, claimDestination,
+    payment: { status: 'FAILED', valueSats: f.quote.invoiceSats, feeSats: null },
+    funding: { txid: '11'.repeat(32), feeSats: 100 },
+    claim: { txid: null, feeSats: f.quote.claimFeeSats, netSats: f.quote.amountSats - f.quote.claimFeeSats },
+    execution: { status: 'RECONCILIATION_REQUIRED', approvedUntil: null }, allowedActions: [], invoice: 'must-not-display-invoice' };
+  const attempt = (digit: string, status: string, swapId: string | null = null) => ({ id: digit.repeat(64), status, swapId, statusUrl: '/unused' });
+  await page.route('**/v1/reverse/availability', route => route.fulfill({ json: {
+    network: 'regtest', liveSwapsEnabled: false, controlledReverseConfigured: true, executionAvailable: false,
+    recoveryAvailable: true, preparedSwapIds: [swap.id],
+    preparations: [attempt('b', 'READY', swap.id), attempt('c', 'EXPIRED'), attempt('d', 'REJECTED')],
+  } }));
+  await page.route('**/v1/swaps', route => route.fulfill({ json: {
+    network: 'regtest', swaps: [{ ...swap, state: 'INVOICE_CREATED', revision: 1 }, swap, { ...swap, id: id('9') }],
+  } }));
+  await page.route('**/v1/ark/swaps', route => route.fulfill({ json: { network: 'regtest', swaps: [] } }));
+  const guestReads: string[] = [];
+  page.on('request', request => { if (request.url().includes('/v1/guest/quotes')) guestReads.push(request.url()); });
+
+  await page.goto(base + '/#account');
+  await page.getByLabel('Username', { exact: true }).fill(account.username);
+  await page.getByLabel('Password', { exact: true }).fill(account.password);
+  await page.getByRole('button', { name: 'Sign in', exact: true }).click();
+  const list = page.locator('#account-history-list');
+  await list.getByText('Refunded', { exact: true }).waitFor();
+  assert.equal(await list.locator('li').count(), 3);
+  assert.equal(await page.locator('#account-expired-swaps').textContent(), '1');
+  assert.equal(await page.locator('#account-failed-swaps').textContent(), '1');
+  assert.equal(await page.locator('#account-refunded-swaps').textContent(), '1');
+  assert.doesNotMatch(await list.textContent() ?? '', new RegExp(`${id('9')}|${'b'.repeat(64)}|must-not-display-invoice`));
+  await page.getByLabel('History status').selectOption('Expired');
+  assert.equal(await list.locator('li').count(), 1);
+  await page.getByLabel('History route').selectOption('On-chain → Ark');
+  await page.getByText('No matching records.', { exact: true }).waitFor();
+
+  await page.getByRole('link', { name: 'Swap', exact: true }).click();
+  await page.getByLabel('Send network').selectOption('onchain');
+  await waitForRails(page, 'onchain', 'lightning');
+  await page.getByLabel('Receive network').selectOption('ark');
+  await waitForRails(page, 'onchain', 'ark');
+  const swapButton = page.getByRole('button', { name: 'SWAP', exact: true });
+  const review = page.getByRole('dialog', { name: 'Review quote' });
+  for (const _ of [1, 2]) {
+    await swapButton.click();
+    await review.getByRole('button', { name: 'Close review', exact: true }).click();
+  }
+  await page.getByRole('link', { name: 'Account', exact: true }).click();
+  await page.getByLabel('History status').selectOption('Quoted');
+  await list.getByText('Reviewed in this session', { exact: true }).waitFor();
+  assert.equal(await list.locator('li').count(), 1);
+  await audit(page);
+  await page.getByRole('button', { name: 'Sign out', exact: true }).click();
+  await page.locator('#signin').waitFor();
+  assert.equal(await list.locator('li').count(), 0);
+  assert.deepEqual(guestReads, []);
 });

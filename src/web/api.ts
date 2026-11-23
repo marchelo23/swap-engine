@@ -264,24 +264,24 @@ export const api = {
   arkSwapStatus: (id: string, signal: AbortSignal) => request(`/v1/ark/swaps/${encodeURIComponent(id)}`, arkSwapStatus, { signal }),
   arkAdminReport: (signal: AbortSignal) => request('/v1/admin/ark/swaps', arkAdminReport, { signal }),
   arkTelemetry: (signal: AbortSignal) => request('/v1/ark/telemetry', arkTelemetry, { signal }, true),
-  guestAvailability: (signal?: AbortSignal) => request('/v1/guest/availability', guestAvailability, { signal }),
+  guestAvailability: (signal?: AbortSignal) => request('/v1/guest/availability', guestAvailability, { signal, credentials: 'omit' }),
   guestQuote(identity: { capabilityToken: string; paymentHash: string; claimPublicKey: string },
     destination: string, amountSats: number, key: string) {
-    return request('/v1/guest/quotes', guestQuote, { method: 'POST', headers: { 'Content-Type': 'application/json',
+    return request('/v1/guest/quotes', guestQuote, { method: 'POST', credentials: 'omit', headers: { 'Content-Type': 'application/json',
       Authorization: `Bearer ${identity.capabilityToken}`, 'Idempotency-Key': key },
       body: JSON.stringify({ destination, amountSats, paymentHash: identity.paymentHash, claimPublicKey: identity.claimPublicKey }) });
   },
   guestPrepare(id: string, capabilityToken: string, recoveryCommitment: string, key: string) {
-    return request('/v1/guest/quotes/' + encodeURIComponent(id) + '/prepare', guestStatus, { method: 'POST',
+    return request('/v1/guest/quotes/' + encodeURIComponent(id) + '/prepare', guestStatus, { method: 'POST', credentials: 'omit',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${capabilityToken}`,
         'Idempotency-Key': key }, body: JSON.stringify({ recoveryCommitment }) });
   },
   guestStatus(id: string, capabilityToken: string, signal?: AbortSignal) {
     return request('/v1/guest/quotes/' + encodeURIComponent(id), guestStatus,
-      { headers: { Authorization: `Bearer ${capabilityToken}` }, signal });
+      { headers: { Authorization: `Bearer ${capabilityToken}` }, signal, credentials: 'omit' });
   },
   guestClaim(id: string, capabilityToken: string, signedClaimHex: string, expectedRevision: number, key: string) {
-    return request('/v1/guest/quotes/' + encodeURIComponent(id) + '/claim', guestClaimResponse, { method: 'POST',
+    return request('/v1/guest/quotes/' + encodeURIComponent(id) + '/claim', guestClaimResponse, { method: 'POST', credentials: 'omit',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${capabilityToken}`,
         'Idempotency-Key': key }, body: JSON.stringify({ signedClaimHex, expectedRevision }) });
   },
