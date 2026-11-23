@@ -65,9 +65,10 @@ export function verifyArkIdentity(info: unknown, expectedSignerPubkey: string) {
   return parsed;
 }
 
-/** Elements getsidechaininfo: fee_asset is the policy asset. Never compare the
- * configured policy asset to pegged_asset, which is a different field. Older
- * responses without fee_asset fail closed. */
+/** Strict reported fee-asset identity. Never substitute pegged_asset.
+ * Stock responses without fee_asset fail this stronger verification; startup
+ * can separately collect limited regtest wallet/coinbase evidence without
+ * marking the fee-policy rail verified. */
 export function verifyLiquidIdentity(blockchain: unknown, sidechain: unknown,
   expected: { chainName: string; policyAsset: string; parentGenesisHash: string }) {
   const block = liquidBlockchain.parse(blockchain);

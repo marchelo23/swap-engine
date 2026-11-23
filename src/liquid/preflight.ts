@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { Config } from '../config.js';
 import { verifyBitcoinIdentity, verifyLiquidIdentity } from '../environment/Identity.js';
+import { confirmedAssetEvidence, type ConfirmedAssetEvidence } from './ConfirmedAssetEvidence.js';
 
 type Reader = { readonly origin: string; call<T>(method: string, params?: unknown[], wallet?: boolean): Promise<T> };
 const hash = z.string().regex(/^[a-f0-9]{64}$/);
@@ -18,7 +19,7 @@ export async function liquidPreflight(c: Config, clients: { elements?: Reader; b
     throw new Error('LIQUID_PREFLIGHT_READ_ONLY_PROFILE_REQUIRED');
   const elements: { configured: boolean; verified: boolean; reason: string | null;
     version: number | null; genesisHash: string | null; feeAssetReported: boolean | null;
-    peggedAsset: string | null } = { configured: c.rails.liquid.enabled, verified: false,
+    peggedAsset: string | null; assetEvidence?: ConfirmedAssetEvidence } = { configured: c.rails.liquid.enabled, verified: false,
     reason: 'NOT_CONFIGURED', version: null, genesisHash: null, feeAssetReported: null, peggedAsset: null };
   const bitcoin = { configured: c.rails.onchain.enabled, verified: false, reason: 'NOT_CONFIGURED' as string | null };
   if (c.rails.liquid.enabled) {
@@ -38,7 +39,14 @@ export async function liquidPreflight(c: Config, clients: { elements?: Reader; b
         elements.peggedAsset = sidechain.pegged_asset ?? null;
         const wallet = walletSchema.parse(await reader.call('getwalletinfo', [], true));
         // Record the compatibility failure without guessing that pegged_asset is fee_asset.
-        if (!sidechain.fee_asset) elements.reason = 'LIQUID_FEE_ASSET_UNAVAILABLE';
+        if (!sidechain.fee_asset) {
+          elements.reason = 'LIQUID_FEE_ASSET_UNAVAILABLE';
+          try {
+            elements.assetEvidence = await confirmedAssetEvidence(c, reader,
+              { blockchain, sidechain, genesis: elements.genesisHash, wallet });
+            elements.reason = 'LIQUID_FEE_POLICY_UNVERIFIED';
+          } catch { /* No fallback to pegged_asset or configuration-only evidence. */ }
+        }
         else if (elements.genesisHash !== rail.genesisHash) elements.reason = 'LIQUID_GENESIS_MISMATCH';
         else if (wallet.walletname !== rail.wallet) elements.reason = 'LIQUID_WALLET_IDENTITY_MISMATCH';
         else if (rail.parentGenesisHash !== c.bitcoinGenesisHash) elements.reason = 'LIQUID_PARENT_NOT_BITCOIN_REGTEST';
