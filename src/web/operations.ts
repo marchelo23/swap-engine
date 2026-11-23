@@ -1,12 +1,23 @@
 import { api, type OperationsBalances } from './api.js';
 import type { RailBalanceEntry } from '../core/RailContract.js';
-import { get, sats, text } from './ui.js';
+import { get, integer, sats, text } from './ui.js';
 
 const onchain = ['core', 'alice'] as const;
+const owners = ['provider', 'alice'] as const;
 const maxFreshAge = 60_000;
 const date = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'medium' });
 const format = (value: number | null | undefined, entry?: RailBalanceEntry) =>
   value == null ? entry?.status === 'unknown' ? 'Unknown' : 'Unavailable' : sats(value);
+
+function verifiedBalance<T extends RailBalanceEntry>(entries: T[], owner: string): T['balances'] | null {
+  const [entry, ...duplicates] = entries.filter(row => row.account === owner);
+  return duplicates.length === 0 && entry?.status === 'available' && entry.reason === null ? entry.balances : null;
+}
+
+const relativeFill = (value: number | null | undefined, maximum: number) =>
+  value == null ? null : maximum > 0 ? 100 * (value / maximum) : 0;
+
+const assetAmount = (value: number | null | undefined) => value == null ? 'Unavailable' : `${integer(value)} base units`;
 
 function renderPile(id: string, fill: number | null, loading: boolean, occupied: number | null = null) {
   const pile = get(id);
@@ -48,12 +59,12 @@ export function mountOperationsBalances() {
     const maxConfirmed = Math.max(0, ...wallets.map(({ wallet }) => wallet?.confirmedSats ?? 0));
     for (const { account, entry, wallet } of wallets) {
       const confirmed = wallet?.confirmedSats;
-      renderPile(account + '-pile', confirmed == null ? null : maxConfirmed > 0 ? 100 * (confirmed / maxConfirmed) : 0, loading);
+      renderPile(account + '-pile', relativeFill(confirmed, maxConfirmed), loading);
       text(account + '-confirmed', format(confirmed, entry));
       text(account + '-unconfirmed', format(wallet?.unconfirmedSats, entry));
     }
     const lightningEntries = snapshot?.rails.filter(entry => entry.rail === 'lightning') ?? [];
-    for (const account of ['provider', 'alice'] as const) {
+    for (const account of owners) {
       const entry = lightningEntries.find(item => item.account === account);
       const { localSats, remoteSats, capacitySats } = (entry?.status === 'unavailable' ? null : entry?.balances) ?? {};
       let fill: number | null = null;
@@ -66,6 +77,26 @@ export function mountOperationsBalances() {
       text(account + '-local', format(localSats, entry));
       text(account + '-remote', format(remoteSats, entry));
       text(account + '-capacity', format(capacitySats, entry));
+    }
+    const arkEntries = snapshot?.rails.filter(entry => entry.rail === 'ark') ?? [];
+    const arkWallets = owners.map(owner => ({ owner, balance: verifiedBalance(arkEntries, owner) }));
+    const maxArkSpendable = Math.max(0, ...arkWallets.map(({ balance }) => balance?.spendableSats ?? 0));
+    for (const { owner, balance } of arkWallets) {
+      renderPile(`${owner}-ark-pile`, relativeFill(balance?.spendableSats, maxArkSpendable), loading);
+      text(`${owner}-ark-spendable`, format(balance?.spendableSats));
+      text(`${owner}-ark-pending`, format(balance?.pendingSats));
+      text(`${owner}-ark-recoverable`, format(balance?.recoverableSats));
+    }
+    const liquidEntries = snapshot?.rails.filter(entry => entry.rail === 'liquid') ?? [];
+    const liquidWallets = owners.map(owner => ({ owner, balance: verifiedBalance(liquidEntries, owner) }));
+    for (const { owner, balance } of liquidWallets) {
+      const maxConfirmedForAsset = Math.max(0, ...liquidWallets.map(wallet =>
+        wallet.balance?.assetId === balance?.assetId ? wallet.balance?.confirmedSats ?? 0 : 0));
+      renderPile(`${owner}-liquid-pile`, relativeFill(balance?.confirmedSats, maxConfirmedForAsset), loading);
+      text(`${owner}-liquid-confirmed`, assetAmount(balance?.confirmedSats));
+      text(`${owner}-liquid-unconfirmed`, assetAmount(balance?.unconfirmedSats));
+      const hasAmount = balance?.confirmedSats != null || balance?.unconfirmedSats != null;
+      text(`${owner}-liquid-asset`, hasAmount ? balance.assetId : 'Unavailable');
     }
     snapshotTime.hidden = !snapshot;
     snapshotTime.dateTime = snapshot?.capturedAt ?? '';

@@ -95,15 +95,17 @@ h2 { font-size: 1.15rem; font-weight: 720; letter-spacing: -.035em; }
 .balance-group h3 { margin: 0 0 8px; font-size: .88rem; font-weight: 740; }
 .balance-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
 .balance-node { min-width: 0; padding: 11px; border: 1px solid var(--stroke); border-radius: 4px; background: var(--inset); }
-.balance-node h4 { margin: 0 0 8px; font-size: .8rem; font-weight: 720; }
+.balance-owner { min-width: 0; display: grid; align-content: start; gap: 8px; }
+.balance-owner h4 { margin: 5px 0 0; font-size: .83rem; font-weight: 740; }
+.balance-node h5 { margin: 0 0 8px; font-size: .8rem; font-weight: 720; }
 .balance-node dl { display: grid; gap: 4px; }
 .balance-node dl div { display: flex; justify-content: space-between; align-items: baseline; gap: 6px; }
 .balance-node dt { color: var(--muted); font-size: .73rem; }
 .balance-node dd { min-width: 0; font: 400 .73rem/1.45 var(--mono); text-align: right; overflow-wrap: anywhere; }
 .balance-scale { margin: -2px 0 9px; color: var(--muted); font-size: .73rem; }
 .balance-wallet { display: grid; grid-template-columns: 35px minmax(0, 1fr); column-gap: 11px; align-items: center; }
-.balance-wallet h4 { grid-column: 1 / -1; display: flex; align-items: baseline; justify-content: space-between; gap: 9px; }
-.balance-wallet h4 span { color: var(--muted); font: 400 .7rem var(--mono); }
+.balance-wallet h5 { grid-column: 1 / -1; display: flex; align-items: baseline; justify-content: space-between; gap: 9px; }
+.balance-wallet h5 span { color: var(--muted); font: 400 .7rem var(--mono); }
 .wallet-pile {
   position: relative; width: 31px; height: 52px; margin: 6px auto 2px; border: 1px solid #717171;
   border-radius: 3px; background: #fff; box-shadow: 1px 2px 0 #dedede;

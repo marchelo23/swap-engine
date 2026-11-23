@@ -20,6 +20,8 @@ const sats = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).nullabl
 const status = z.enum(['available', 'unavailable', 'unknown']);
 const onchainBalance = z.object({ confirmedSats: sats, unconfirmedSats: sats }).strict();
 const lightningBalance = z.object({ localSats: sats, remoteSats: sats, capacitySats: sats }).strict();
+const arkBalance = z.object({ spendableSats: sats, pendingSats: sats, recoverableSats: sats }).strict();
+const liquidBalance = z.object({ assetId: z.string().regex(/^[a-f0-9]{64}$/), confirmedSats: sats, unconfirmedSats: sats }).strict();
 
 export const railBalanceEntrySchema = z.discriminatedUnion('rail', [
   z.object({ rail: z.literal('onchain'), account: z.enum(['core', 'provider', 'alice']), status,
@@ -27,9 +29,9 @@ export const railBalanceEntrySchema = z.discriminatedUnion('rail', [
   z.object({ rail: z.literal('lightning'), account: z.enum(['provider', 'alice']), status,
     reason: railReasonSchema.nullable(), balances: lightningBalance.nullable() }).strict(),
   z.object({ rail: z.literal('ark'), account: z.string().min(1).max(40), status,
-    reason: railReasonSchema.nullable(), balances: z.null() }).strict(),
+    reason: railReasonSchema.nullable(), balances: arkBalance.nullable() }).strict(),
   z.object({ rail: z.literal('liquid'), account: z.string().min(1).max(40), status,
-    reason: railReasonSchema.nullable(), balances: z.null() }).strict(),
+    reason: railReasonSchema.nullable(), balances: liquidBalance.nullable() }).strict(),
 ]);
 export type RailBalanceEntry = z.infer<typeof railBalanceEntrySchema>;
 
