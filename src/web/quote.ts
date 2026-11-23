@@ -28,7 +28,8 @@ export function mountQuote(prepare?: (stillVisible: () => boolean, quote: Quote,
   const arkDestinationAddress = get<HTMLInputElement>('ark-destination-address');
   let successNotice = false;
   const status = (message: string) => text('quote-status', successNotice ? '¡Swap exitoso!' : message);
-  const numbers = ['service', 'claim', 'cost', 'received-preview'];
+  const numbers = ['service', 'claim', 'cost', 'received-preview', 'quote-debit', 'quote-payout', 'quote-reserve'];
+  const reserveRow = get('quote-reserve-row');
   const motion = matchMedia('(prefers-reduced-motion: reduce)');
   for (const type of ['copy', 'cut']) form.addEventListener(type, event => event.preventDefault());
   let pair = defaultPair;
@@ -292,6 +293,7 @@ export function mountQuote(prepare?: (stillVisible: () => boolean, quote: Quote,
     delete form.dataset.loading;
     if (dialog.open) dialog.close();
     for (const id of numbers) text(id, '—');
+    reserveRow.hidden = true;
   }
 
   function guestRoute() {
@@ -330,28 +332,34 @@ export function mountQuote(prepare?: (stillVisible: () => boolean, quote: Quote,
     const active = new AbortController();
     const version = revision;
     const route = arkRoute(pair);
+    const guestEstimate = guestRoute() && guestAvailable;
     form.dataset.loading = 'true';
     status('Quoting route…');
     const request = route
       ? api.arkQuote(route, value, active.signal, csrf)
-      : api.quote(value, active.signal, csrf);
+      : guestEstimate ? api.guestEstimate(value, active.signal) : api.quote(value, active.signal, csrf);
     const work = request.then(result => {
       if (version !== revision) return;
       if (route && (!('route' in result) || result.route !== route)) throw new Error('Backend returned a different Ark route.');
       const totals = quoteTotals(result, value);
       quote = result;
-      animateValues([sats(result.serviceFeeSats), sats(result.claimFeeSats), sats(totals.lost), integer(totals.received)]);
+      reserveRow.hidden = result.fundingReserveSats === 0;
+      animateValues([sats(result.serviceFeeSats), sats(result.claimFeeSats), sats(totals.lost),
+        integer(totals.received), sats(result.invoiceSats), sats(totals.received), sats(result.fundingReserveSats)]);
       if (route) {
         action.disabled = !aligned || !canQuote(pair);
         showArkQuoteStatus();
+      } else if (guestEstimate) {
+        status('Guest recovery required before the invoice is shown.');
+      } else if (admin && controlled !== true) {
+        status('Authenticated swap service unavailable for this account.');
       } else {
         if (controlled === true) action.disabled = preparing || !aligned || !canQuote(pair) || !canPrepare;
         status(controlled === true ? (admin ? 'Quote ready · SWAP starts execution' : 'Quote ready · review before swapping') : 'Quote ready · execution off');
       }
       expiry = window.setTimeout(() => {
         invalidate();
-        status('Quote expired · press Swap to refresh');
-        if (visible && aligned) action.disabled = principal() === undefined || preparing;
+        if (visible) schedule(0);
       }, Math.min(Math.max(0, result.expiresAt - Date.now()), 2_147_483_647));
       return result;
     }).catch(error => {
@@ -394,6 +402,7 @@ export function mountQuote(prepare?: (stillVisible: () => boolean, quote: Quote,
     if (admin && pair.send === 'lightning' && pair.receive === 'onchain' && controlled !== null && controlled !== true) {
       action.disabled = true;
       status('Authenticated swap service unavailable for this account.');
+      if (value !== undefined && !quote) debounce = window.setTimeout(() => void load(value), delay);
       return;
     }
     if (guestRoute() && guestConfigured && !guestAvailable) {
@@ -406,6 +415,7 @@ export function mountQuote(prepare?: (stillVisible: () => boolean, quote: Quote,
       if (value === undefined) amount.setAttribute('aria-invalid', 'true'); else amount.removeAttribute('aria-invalid');
       if (value === undefined) { status('Enter 11,000–50,000 sats'); return; }
       status(preparing ? 'Opening guest recovery…' : 'Guest recovery required before the invoice is shown.');
+      if (!quote && !preparing) debounce = window.setTimeout(() => void load(value), delay);
       return;
     }
     if (controlled !== false) {

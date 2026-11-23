@@ -267,6 +267,8 @@ export const api = {
   arkAdminReport: (signal: AbortSignal) => request('/v1/admin/ark/swaps', arkAdminReport, { signal }),
   arkTelemetry: (signal: AbortSignal) => request('/v1/ark/telemetry', arkTelemetry, { signal }, true),
   guestAvailability: (signal?: AbortSignal) => request('/v1/guest/availability', guestAvailability, { signal, credentials: 'omit' }),
+  guestEstimate: (amountSats: number, signal: AbortSignal) => request('/v1/guest/estimate?amountSats=' + amountSats, quote,
+    { signal, credentials: 'omit' }),
   guestQuote(identity: { capabilityToken: string; paymentHash: string; claimPublicKey: string },
     destination: string, amountSats: number, key: string) {
     return request('/v1/guest/quotes', guestQuote, { method: 'POST', credentials: 'omit', headers: { 'Content-Type': 'application/json',

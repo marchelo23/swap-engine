@@ -192,7 +192,10 @@ export async function startApplication(env: NodeJS.ProcessEnv = process.env, arg
       }
     }
     const server = createApi(new SwapManager(store, c.economics), liquidity, diagnostics, c.mode,
-      { operations, ark, guestReverse: guestRuntime?.guestReverse, auth: { storePath: c.auth.storePath ?? undefined, origin: c.auth.origin ?? undefined }, capabilities: () => c.capabilities({ ...identity?.verified, ark: arkVerified }), environment: c.environment });
+      { operations, ark, guestReverse: guestRuntime?.guestReverse, auth: { storePath: c.auth.storePath ?? undefined, origin: c.auth.origin ?? undefined },
+        capabilities: () => ({ ...c.capabilities({ ...identity?.verified, ark: arkVerified }),
+          ...(identity?.liquidAssetEvidence ? { liquidStatus: 'CHAIN_AND_WALLET_VERIFIED' as const } : {}) }),
+        environment: c.environment });
     if (ownedArgs) {
       let factory: Awaited<ReturnType<typeof createOwnedRuntimeFactory>> | undefined;
       try {

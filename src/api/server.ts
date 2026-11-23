@@ -1,6 +1,8 @@
 import { createServer, type IncomingMessage } from 'node:http';
+import { randomUUID } from 'node:crypto';
 import { available, assertLiquidity, type Balances } from '../liquidity/LiquidityManager.js';
-import type { SwapManager } from '../core/SwapManager.js';
+import { invoiceBudget, type SwapManager } from '../core/SwapManager.js';
+import { LEGACY_ECONOMICS } from '../core/Economics.js';
 import { Sessions, roleDenial, sessionResponse, type AuthOptions } from '../auth/session.js';
 import type { OperationsBalances } from '../operations/Balances.js';
 import type { Capabilities, Environment, RailId } from '../core/RailContract.js';
@@ -80,6 +82,16 @@ export function createApi(
         if (url.search) return send(403, { error: 'FORBIDDEN' });
         return send(200, { network: 'regtest' as const, configured: guestReverse !== undefined,
           watching: guestReverse?.watching === true });
+      }
+      if (req.method === 'GET' && path === '/v1/guest/estimate') {
+        if (!guestReverse?.watching) return send(503, { error: 'GUEST_SERVICE_UNAVAILABLE' });
+        const amounts = url.searchParams.getAll('amountSats');
+        if (url.searchParams.size !== 1 || !/^\d{5}$/.test(amounts[0] ?? ''))
+          return send(400, { error: 'INVALID_REQUEST' });
+        const amount = Number(amounts[0]);
+        const policy = LEGACY_ECONOMICS.invoice;
+        if (amount < policy.minSats || amount > policy.maxSats) return send(400, { error: 'INVALID_REQUEST' });
+        return send(200, QuoteResponse.parse({ id: randomUUID(), ...invoiceBudget(amount), expiresAt: Date.now() + policy.ttlMs }));
       }
       if (path === '/v1/guest/quotes' || path.startsWith('/v1/guest/quotes/')) {
         if (!guests && !guestReverse) return send(503, { error: 'GUEST_QUOTES_NOT_CONFIGURED' });
