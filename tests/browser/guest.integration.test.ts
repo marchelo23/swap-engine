@@ -10,6 +10,8 @@ import { GuestAdmission } from '../../src/guest/GuestAdmission.js';
 import { GuestReverseError } from '../../src/guest/GuestReverse.js';
 import { verifyHtlcSpend } from '../../src/bitcoin/SpendEvidence.js';
 import { buildHtlc } from '../../src/bitcoin/HtlcBuilder.js';
+import { createGuestRecoveryBundle, createGuestRecoverySecrets, encryptGuestRecovery,
+  generateGuestRecoveryIdentity, serializeEncryptedRecovery } from '../../src/client/GuestRecovery.js';
 import { setup } from '../helpers.js';
 
 const evidence = 'dist/web-verification';
@@ -143,4 +145,88 @@ test('guest startup fails closed when the watcher is unavailable', async context
   await page.getByText('Guest watcher unavailable · no invoice will be created.').waitFor();
   assert.equal(await page.getByRole('button', { name: 'SWAP', exact: true }).isDisabled(), true);
   assert.equal(guestQuotes, 0);
+});
+
+test('a new browser restores a funded 20,000-sat Guest file and only claims after explicit review', async context => {
+  const backend = await guestBackend(true); const app = await serve(backend);
+  const browser = await chromium.launch({ channel: process.env.WEB_TEST_BROWSER_CHANNEL });
+  context.after(() => browser.close());
+  context.after(() => new Promise<void>(resolve => app.server.close(() => resolve())));
+  context.after(backend.f.cleanup);
+  const identity = await generateGuestRecoveryIdentity();
+  const authorization = `Bearer ${identity.capabilityToken}`;
+  const quote = await backend.admission.reserve(authorization, randomUUID(), {
+    destination: backend.f.destination, amountSats: 20_000,
+    paymentHash: identity.paymentHash, claimPublicKey: identity.claimPublicKey,
+  });
+  const prepared = await backend.service.prepare(quote.id, authorization, randomUUID(), { recoveryCommitment: 'a'.repeat(64) });
+  const secrets = await createGuestRecoverySecrets(identity, quote);
+  const bundle = await createGuestRecoveryBundle(secrets, { swapId: prepared.swapId, refundPublicKey: prepared.refundPublicKey,
+    timeoutHeight: prepared.timeoutHeight, htlcAddress: prepared.htlcAddress, witnessScript: prepared.witnessScript });
+  const passphrase = 'fixture backup passphrase';
+  const file = { name: 'guest-recovery.json', mimeType: 'application/json', buffer: Buffer.from(
+    serializeEncryptedRecovery(await encryptGuestRecovery(bundle, passphrase))) };
+  const page = await pageFor(app.base, browser);
+  page.setDefaultTimeout(10_000);
+  const writes: string[] = [];
+  let authenticatedReads = 0;
+  let change: 'amount' | 'funding' | 'unconfirmed' | 'none' = 'amount';
+  await page.route('**/v1/guest/quotes**', async route => {
+    const request = route.request();
+    const requestPath = new URL(request.url()).pathname;
+    assert.equal((await request.allHeaders()).authorization === authorization, true);
+    if (request.method() === 'POST') {
+      writes.push(requestPath);
+      assert.deepEqual(Object.keys(request.postDataJSON()).sort(), ['expectedRevision', 'signedClaimHex']);
+      return route.continue();
+    }
+    authenticatedReads++;
+    if (change === 'none') return route.continue();
+    const response = await route.fetch();
+    const status = await response.json();
+    const patch = change === 'amount' ? { invoiceSats: status.invoiceSats + 1 }
+      : change === 'funding' ? { lockupHex: prepared.witnessScript } : { fundingConfirmations: 0 };
+    return route.fulfill({ response, json: { ...status, ...patch } });
+  });
+
+  await page.getByRole('button', { name: 'Restore Guest swap' }).click();
+  const dialog = page.getByRole('dialog', { name: 'Guest swap recovery' });
+  const chosenFile = dialog.getByLabel('Encrypted recovery file');
+  const password = dialog.getByLabel('Passphrase for this file');
+  const submit = dialog.getByRole('button', { name: 'Check swap' });
+  await chosenFile.setInputFiles(file);
+  await password.fill('incorrect-passphrase');
+  await submit.click();
+  await dialog.getByText('Could not open the recovery file or check its status. Check the file and passphrase.').waitFor();
+  assert.equal(authenticatedReads, 0);
+  assert.equal(await password.inputValue(), '');
+
+  await password.fill(passphrase); await submit.click();
+  await dialog.getByText('The server record does not match this recovery file.').waitFor();
+  change = 'funding';
+  await password.fill(passphrase); await submit.click();
+  await dialog.getByText('Confirmed funding does not match this recovery file.').waitFor();
+  assert.deepEqual(writes, []);
+
+  change = 'unconfirmed';
+  await password.fill(passphrase); await submit.click();
+  const claim = dialog.getByRole('button', { name: 'Claim funds' });
+  await dialog.getByText('Waiting for verified funding evidence for the original swap.').waitFor();
+  assert.equal(await claim.isVisible(), false);
+  assert.deepEqual(writes, []);
+  change = 'none';
+  await claim.waitFor();
+  assert.equal(await claim.isEnabled(), true);
+  assert.match(await dialog.locator('#guest-details').textContent() ?? '', /Original Lightning invoice amount\s*20,000 sats/);
+  assert.equal(await page.locator('#guest-invoice-content').isVisible(), false);
+  assert.equal(await page.locator('#guest-invoice').inputValue(), '');
+  assert.equal(await chosenFile.inputValue(), '');
+  assert.equal(await password.inputValue(), '');
+  assert.deepEqual(writes, []);
+  assert.deepEqual(await page.evaluate(() => [localStorage.length, sessionStorage.length]), [0, 0]);
+
+  await claim.click();
+  await dialog.getByText('Guest swap completed. The resulting claim is confirmed and the invoice is settled.').waitFor();
+  assert.deepEqual(writes, [`/v1/guest/quotes/${quote.id}/claim`]);
+  assert.equal(await claim.isVisible(), false);
 });

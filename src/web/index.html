@@ -96,7 +96,10 @@
         </div>
       </article>
       </form>
-      <a id="prepared-swap-link" class="text-link prepared-link" href="#track" hidden>Review prepared swaps</a>
+      <div class="swap-links">
+        <a id="prepared-swap-link" class="text-link" href="#track" hidden>Review prepared swaps</a>
+        <button class="secondary" id="guest-open-import" type="button">Restore Guest swap</button>
+      </div>
     </div>
   </section>
 
@@ -295,6 +298,13 @@
 <dialog id="guest-dialog" aria-labelledby="guest-title">
   <h2 id="guest-title">Guest swap recovery</h2>
   <dl id="guest-details" class="details"></dl>
+  <form id="guest-import-form" class="stack-form" method="dialog" hidden>
+    <p class="status">Open your encrypted recovery file to check the original regtest swap.</p>
+    <div><label for="guest-import-file">Encrypted recovery file</label><input id="guest-import-file" type="file" accept=".json,application/json" required></div>
+    <div><label for="guest-import-passphrase">Passphrase for this file</label><input id="guest-import-passphrase" type="password" minlength="8" maxlength="4096" autocomplete="off" required></div>
+    <p id="guest-import-status" class="status" role="status"></p>
+    <div class="dialog-actions"><button id="guest-import-close" type="button" class="secondary">Close</button><button id="guest-import-submit" type="submit" class="primary">Check swap</button></div>
+  </form>
   <form id="guest-recovery-form" class="stack-form">
     <div id="guest-destination-field" hidden>
       <label for="guest-destination">Bitcoin regtest payout address</label>
@@ -308,7 +318,7 @@
     <div class="dialog-actions"><button id="guest-cancel" type="button" class="secondary">Close</button><button id="guest-prepare" type="submit" class="primary">Create invoice</button></div>
   </form>
   <section id="guest-export" hidden>
-    <p id="guest-export-status" class="status" role="status">Download or copy this encrypted recovery file. The server never receives its passphrase, keys or preimage.</p>
+    <p id="guest-export-status" class="status" role="status">Download or copy this encrypted recovery file. Its passphrase and private key stay in your browser.</p>
     <label for="guest-export-text">Encrypted recovery export</label>
     <textarea id="guest-export-text" rows="6" readonly></textarea>
     <div><label for="guest-restore-passphrase">Re-enter passphrase to verify restore</label><input id="guest-restore-passphrase" type="password" minlength="8" maxlength="4096" autocomplete="off"></div>
