@@ -2,6 +2,7 @@ import { z } from 'zod';
 import type { Config } from '../config.js';
 import { verifyBitcoinIdentity, verifyLiquidIdentity } from '../environment/Identity.js';
 import { confirmedAssetEvidence, type ConfirmedAssetEvidence } from './ConfirmedAssetEvidence.js';
+import { liquidLightningUnavailable } from './LightningAdmission.js';
 
 type Reader = { readonly origin: string; call<T>(method: string, params?: unknown[], wallet?: boolean): Promise<T> };
 const hash = z.string().regex(/^[a-f0-9]{64}$/);
@@ -80,7 +81,8 @@ export async function liquidPreflight(c: Config, clients: { elements?: Reader; b
   return { schemaVersion: 1 as const, evidence: 'read-only-rpc' as const,
     environment: c.environment, deploymentId: c.deploymentId, elements, bitcoin,
     route: { preferred: 'liquid-to-bitcoin-chain' as const, available: false as const,
-      provider: { candidate: 'boltz-client', installed: false, attested: false,
+      provider: { candidate: null, installed: false, attested: false,
         reason: 'PROVIDER_ADAPTER_NOT_INSTALLED' }, lightningFallback: 'disabled' as const },
+    liquidToLightning: liquidLightningUnavailable(),
     execution: { enabled: false as const, reason: 'LIQUID_EXECUTION_FORBIDDEN' as const } };
 }

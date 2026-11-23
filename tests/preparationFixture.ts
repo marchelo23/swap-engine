@@ -10,20 +10,22 @@ import { createReversePreparation, preparationDigest, type PreparationSpec, type
 import { controlledRunDigest, createControlledReverseBackend } from '../src/core/ControlledReverseBackend.js';
 import type { Invoice } from '../src/lightning/LndClient.js';
 
-export async function preparationFixture(sourceAmountSats?: number) {
+export async function preparationFixture(sourceAmountSats?: number, claimDestination?: string) {
   const f = contractFixture();
   const directory = await privateTestDirectory('preparation');
   let store = await Store.open(directory); let clock = Date.now(); let exists = false; let calls = 0; let posts = 0; let inspections = 0;
   const spec: PreparationSpec = { id: randomUUID(), isolationId: randomUUID(), tipHeight: 100, wallet: 'lqwd-lab',
     providerNode: f.contract.claimPublicKey, payerNode: f.contract.refundPublicKey, routing: routingFixture(),
     client: { paymentHash: f.contract.paymentHash, claimPublicKey: f.contract.claimPublicKey }, refundPublicKey: f.contract.refundPublicKey,
-    claimDestination: f.destination, refundDestination: f.destination, input: { txid: 'ab'.repeat(32), vout: 0, valueSats: 100000 },
+    claimDestination: claimDestination ?? f.destination, refundDestination: f.destination,
+    input: { txid: 'ab'.repeat(32), vout: 0, valueSats: Math.max(100000, (sourceAmountSats ?? 0) + 10000) },
     ...(sourceAmountSats === undefined ? {} : { sourceAmountSats }) };
   const approval: PreparationApproval = { id: spec.id, scope: 'isolated-regtest-invoice-only', specDigest: preparationDigest(spec), expiresAt: clock + 120000 };
   const info = (identity: string) => ({ identity_pubkey: identity, synced_to_chain: true, wallet_synced: true, chains: [{ chain: 'bitcoin', network: 'regtest' }] });
   const pInfo = info(spec.providerNode); const aInfo = info(spec.payerNode);
   const channel = (peer: string) => ({ chan_id: spec.routing.channelId, channel_point: spec.routing.channelPoint, active: true, remote_pubkey: peer, zero_conf: false,
-    local_balance: '1000000', remote_balance: '1000000', commit_fee: '100', unsettled_balance: '0', pending_htlcs: [],
+    local_balance: String(Math.max(1000000, (sourceAmountSats ?? 0) + 20000)),
+    remote_balance: String(Math.max(1000000, (sourceAmountSats ?? 0) + 20000)), commit_fee: '100', unsettled_balance: '0', pending_htlcs: [],
     local_constraints: { chan_reserve_sat: '10000' }, remote_constraints: { chan_reserve_sat: '10000' } });
   const pChannels = { channels: [channel(spec.payerNode)] }; const aChannels = { channels: [channel(spec.providerNode)] };
   const chain = { chain: 'regtest', blocks: 100, initialblockdownload: false };

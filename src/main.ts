@@ -202,7 +202,8 @@ export async function startApplication(env: NodeJS.ProcessEnv = process.env, arg
         if (policy.authStorePath !== (c.auth.storePath ?? undefined) || policy.origin !== (c.auth.origin ?? undefined) || policy.port !== (dependencies.port ?? c.port)) throw new Error('OWNED_STARTUP_REJECTED');
         factory = await createOwnedRuntimeFactory(policy, server.controlled.operatorIO.sessions);
         server.controlled.installPreparation(await createOwnedPreparation(store, server.controlled.operatorIO.sessions, factory,
-          { mode: 'regtest', ownerId: policy.ownerId, ownerUsername: policy.ownerUsername, origin: policy.origin, profileDigest: ownedArgs.hash }));
+          { mode: 'regtest', ownerId: policy.ownerId, ownerUsername: policy.ownerUsername, origin: policy.origin, profileDigest: ownedArgs.hash,
+            maxSourceAmountSats: policy.maxSourceAmountSats, claimDestination: policy.claimDestination }));
       } catch {
         await factory?.close?.();
         console.error('OWNED_PREPARATION_STOPPED: preserve runs; no automatic invoice or payment retry');

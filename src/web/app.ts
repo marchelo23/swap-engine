@@ -15,18 +15,32 @@ import { details, get, integer, sats, text } from './ui.js';
 
 const guest = mountGuest(createGuestPresentation());
 const accountHistory = mountAccountHistory();
-const quotes = mountQuote(async (stillVisible, amountSats) => {
+const quotes = mountQuote(async (stillVisible, quote, destination) => {
   const owner = session;
   if (!owner) throw new Error('Sign in to prepare a regtest swap.');
   const availability = await api.reverseAvailability(new AbortController().signal);
-  const id = await prepareForReview(owner, availability, amountSats);
+  if (owner.user.role === 'ADMIN' && destination !== availability.claimDestination)
+    throw new Error('The configured payout address changed. Refresh the quote before swapping.');
+  const active = () => session === owner && stillVisible();
+  const id = await prepareForReview(owner, availability, quote.invoiceSats, active);
+  if (!id) return;
   if (session !== owner || !stillVisible()) return;
+  if (owner.user.role === 'ADMIN') {
+    const notice = await reverse.executePrepared(owner, id, quote, destination, active);
+    if (session === owner && stillVisible()) {
+      location.hash = 'track';
+      await reverse.showPrepared(id, notice);
+    }
+    return;
+  }
   location.hash = 'track'; await reverse.reviewPrepared(id);
 }, guest, accountHistory.record);
 let session: Session | null = null;
 const reverse = mountOwnedReverse((configured, availability) => {
   get('prepared-swap-link').hidden = configured !== true;
-  quotes.setContext(configured, session?.csrfToken, availability?.preparationAvailable === true, Boolean(availability?.preparedSwapIds.length));
+  quotes.setContext(configured, session?.csrfToken, availability?.preparationAvailable === true,
+    Boolean(availability?.preparedSwapIds.length), session?.user.role === 'ADMIN',
+    availability?.maxSourceAmountSats, availability?.claimDestination);
 }, quotes.noticeCompletion);
 const setBalancesActive = mountOperationsBalances();
 void fonts;
@@ -278,7 +292,7 @@ mountAuth(next => {
     if (next) void api.arkAvailability().then(result => {
       if (session === next) quotes.setArkExecutionAllowed(result.executionAvailable);
     }).catch(() => { if (session === next) quotes.setArkExecutionAllowed('unavailable'); });
-    quotes.setContext(next ? null : false, next?.csrfToken);
+    quotes.setContext(next ? null : false, next?.csrfToken, false, false, next?.user.role === 'ADMIN');
   } else if (!next) quotes.setContext(false);
   reverse.setSession(next);
   admin = next?.user.role === 'ADMIN';

@@ -51,13 +51,13 @@ function httpFixture() {
 const request = () => ({ hash: paymentHash, sats: 50750 as const, expirySeconds: 3600 as const, cltvDelta: 80 as const });
 
 test('guarded invoice transport sends the selected bounded Lightning debit exactly', async () => {
-  for (const sats of [11000, 25000, 50000]) {
+  for (const sats of [11000, 25000, 50000, 50750, 1000000]) {
     const x = httpFixture(); x.respond(() => ({ json: { payment_request: paymentRequest } }));
     await x.transport().create({ ...request(), sats }, async () => {});
     assert.equal(JSON.parse(x.wires[0]!.body!).value, String(sats));
   }
   const x = httpFixture();
-  for (const sats of [10999, 50001, 50749, 50751]) await assert.rejects(x.transport().create({ ...request(), sats }, async () => {}));
+  for (const sats of [10999, 1000001]) await assert.rejects(x.transport().create({ ...request(), sats }, async () => {}));
   assert.equal(x.wires.length, 0);
 });
 

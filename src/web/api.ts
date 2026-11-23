@@ -122,6 +122,8 @@ const reverseAvailability = z.object({
   controlledReverseConfigured: z.boolean(), executionAvailable: z.boolean(),
   recoveryAvailable: z.boolean(), preparedSwapIds: z.array(z.uuid()),
   preparationAvailable: z.optional(z.boolean()), preparations: z.optional(z.array(preparation)),
+  maxSourceAmountSats: z.optional(z.int().check(z.minimum(11000), z.maximum(1_000_000))),
+  claimDestination: z.optional(z.string().check(z.regex(/^bcrt1[0-9a-z]{8,90}$/))),
 });
 const ownedState = z.enum(states);
 const ownedSwap = z.object({

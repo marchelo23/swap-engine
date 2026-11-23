@@ -108,12 +108,12 @@ fallback proves the running node's current fee policy.
 
 ## Provider and route decision
 
-Prefer a direct L-BTC to BTC Chain Swap when an attested local provider exists.
-[Boltz documents Chain Swaps](https://api.docs.boltz.exchange/lifecycle.html)
-and recommends [Boltz Client for server integrations](https://api.docs.boltz.exchange/libraries.html).
-Use its supported client/SDK lifecycle and recovery implementation for a future
-adapter. Merely adding `boltz-core` primitives to this TypeScript project does
-not implement lifecycle persistence, restart recovery or authorization.
+The current user instruction excludes Boltz, superseding the earlier SDK
+evaluation. The preflight no longer nominates a provider (`candidate=null`).
+The separate [own-HTLC Liquid-to-Lightning assessment](liquid-lightning-blocker.md)
+documents the missing Elements transaction and recovery adapters; its blocked
+status is also reported as `liquidToLightning`. No provider choice or chain
+identity alone installs lifecycle persistence, restart recovery or authorization.
 
 This change installs no SDK and contacts no public swap provider. The report
 says `PROVIDER_ADAPTER_NOT_INSTALLED`, `attested=false`, and `available=false`

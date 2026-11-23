@@ -13,8 +13,8 @@ import { provisionAccount } from '../../scripts/provision-auth.js';
 import { readAccounts } from '../../src/auth/store.js';
 import { preparationFixture } from '../preparationFixture.js';
 
-test('SWAP prepares/reviews once, pays only after Start, then a second explicit SWAP creates a fresh attempt without Hacer otro', async () => {
-  const f = await preparationFixture(50000); const catalog = await Store.open(join(f.directory, 'catalog'));
+test('Admin SWAP executes the exact 1,000,000 sat debit once and allows another explicit swap', async () => {
+  const f = await preparationFixture(1000000); const catalog = await Store.open(join(f.directory, 'catalog'));
   const accountPath = join(f.directory, 'accounts.json'); const password = 'synthetic-browser-admin-password';
   await provisionAccount(accountPath, 'reviewer', 'ADMIN', password); const owner = (await readAccounts(accountPath))[0]!;
   const server = createApi(new SwapManager(catalog), async () => { throw Error('No real node adapters'); }, undefined, 'regtest', { auth: { storePath: accountPath } });
@@ -23,7 +23,7 @@ test('SWAP prepares/reviews once, pays only after Start, then a second explicit 
   const extra: Awaited<ReturnType<typeof preparationFixture>>[] = [];
   const service = await createOwnedPreparation(catalog, server.controlled.operatorIO.sessions, {
     async prepare() {
-      creates++; const run = creates === 1 ? f : await preparationFixture(50000); if (run !== f) extra.push(run);
+      creates++; const run = creates === 1 ? f : await preparationFixture(1000000, f.spec.claimDestination); if (run !== f) extra.push(run);
       const result = await run.harness().prepare(); const id = result.request.swapId;
       const api = createOwnedReverseApi(run.store, sessionOwnerAuthenticator(server.controlled.operatorIO.sessions), { origin }); await api.bind(owner.id, id, run.spec.claimDestination);
       api.approve({ ownerId: owner.id, swapId: id, expectedRevision: result.request.expectedRevision, termsDigest: 'ab'.repeat(32), expiresAt: Date.now() + 60000,
@@ -33,7 +33,7 @@ test('SWAP prepares/reviews once, pays only after Start, then a second explicit 
           const s = run.store.read().swaps[id]!; return { id, revision: s.revision, state: s.state }; } });
       return { api, swapId: id, authorize: async () => { reviews++; }, terminal: async () => run.store.read().swaps[id]!.state === 'COMPLETED' ? 'COMPLETED' : undefined, close: () => api.drain() };
     }, restore: async () => undefined,
-  }, { mode: 'regtest', ownerId: owner.id, ownerUsername: 'reviewer', origin, profileDigest: 'cd'.repeat(32) });
+  }, { mode: 'regtest', ownerId: owner.id, ownerUsername: 'reviewer', origin, profileDigest: 'cd'.repeat(32), maxSourceAmountSats: 1000000, claimDestination: f.spec.claimDestination });
   server.controlled.installPreparation(service);
   const browser = await chromium.launch({
     ...(process.env.WEB_TEST_BROWSER_CHANNEL ? { channel: process.env.WEB_TEST_BROWSER_CHANNEL } : {}),
@@ -44,7 +44,7 @@ test('SWAP prepares/reviews once, pays only after Start, then a second explicit 
   try {
     const page = await browser.newPage({ reducedMotion: 'reduce' }); const errors: string[] = []; page.on('pageerror', e => errors.push(e.message));
     await page.route('**/v1/reverse/preparations', async route => {
-      const r = route.request(); assert.equal(r.method(), 'POST'); assert.deepEqual(r.postDataJSON(), { amountSats: 50000 });
+      const r = route.request(); assert.equal(r.method(), 'POST'); assert.deepEqual(r.postDataJSON(), { amountSats: 1000000 });
       const headers = r.headers(); assert.equal(headers.origin, origin); assert.match(headers['x-csrf-token']!, /^[a-f0-9]{64}$/);
       assert.match(headers['idempotency-key']!, /^[A-Za-z0-9_-]{8,128}$/); assert.equal(headers.authorization, undefined);
       const durable = await page.evaluate(() => Object.entries(localStorage).filter(([k]) => k.startsWith('swap-engine.preparation.')).map(([, v]) => JSON.parse(v)));
@@ -52,7 +52,7 @@ test('SWAP prepares/reviews once, pays only after Start, then a second explicit 
     });
     await page.route('**/v1/swaps/reverse', async route => {
       await route.fetch(); executionObserved();
-      await new Promise<void>(r => { releaseExecution = r; });
+      if (executes === 1) await new Promise<void>(r => { releaseExecution = r; });
       await route.abort('failed').catch(() => {});
     });
     await page.goto(origin + '/#account'); await page.getByLabel('Username', { exact: true }).fill('reviewer');
@@ -62,35 +62,21 @@ test('SWAP prepares/reviews once, pays only after Start, then a second explicit 
     await page.waitForFunction(() => document.getElementById('quote-status')?.textContent?.includes('Quote ready'));
     const amount = page.locator('#amount'); await amount.fill('25000');
     await page.waitForFunction(() => document.getElementById('received-preview')?.textContent?.includes('23,875'));
-    await amount.fill('50000');
-    await page.waitForFunction(() => document.getElementById('received-preview')?.textContent?.includes('48,750'));
+    await amount.fill('1000000');
+    await page.waitForFunction(() => document.getElementById('received-preview')?.textContent?.includes('994,000'));
     assert.equal(creates, 0); assert.equal(executes, 0);
-    await page.getByRole('button', { name: 'SWAP', exact: true }).click();
-    const review = page.getByRole('dialog', { name: 'Confirm prepared swap' });
-    try { await review.waitFor({ state: 'visible', timeout: 10000 }); }
-    catch { throw new Error(`Review did not open: ${await page.locator('#quote-status').textContent()} / ${await page.locator('#owned-status').textContent()}`); }
-    const text = await review.textContent(); for (const value of ['48,750', f.spec.claimDestination]) assert.ok(text?.includes(value));
-    assert.match(text ?? '', /Amount to send\s*50,000 sats/);
-    assert.match(text ?? '', /Lightning invoice amount\s*50,000 sats/);
-    assert.match(text ?? '', /Service fee\s*750 sats/);
-    assert.match(text ?? '', /Estimated claim fee\s*500 sats/);
-    assert.doesNotMatch(text ?? '', /Maximum funding fee/);
-    assert.equal(creates, 1); assert.equal(f.posts(), 1); assert.equal(executes, 0);
-    await page.reload(); await page.locator('#owned-controls').waitFor({ state: 'visible' });
-    await page.getByRole('link', { name: 'Swap', exact: true }).click();
-    await page.waitForFunction(() => document.getElementById('quote-status')?.textContent?.includes('Quote ready'));
-    await page.getByRole('button', { name: 'SWAP', exact: true }).click(); await review.waitFor({ state: 'visible' });
-    assert.equal(creates, 1); assert.equal(executes, 0);
+    assert.ok((await page.locator('#owned-quote-destination').textContent())?.includes(f.spec.claimDestination));
     await page.evaluate(() => localStorage.setItem('swap-engine.prepared.unrelated-owner.unrelated-swap.execute.once', 'retain-this-other-request'));
-    await review.getByRole('button', { name: 'Start prepared swap', exact: true }).click();
+    await page.getByRole('button', { name: 'SWAP', exact: true }).click();
     await executionObservedOnServer;
-    assert.equal(page.url(), origin + '/#track');
+    assert.equal(creates, 1); assert.equal(f.posts(), 1); assert.equal(executes, 1);
+    assert.equal(f.record().plan?.quote.invoiceSats, 1000000);
+    assert.equal(f.record().plan?.routingFeeLimitSats, 0);
+    assert.equal(await page.getByRole('dialog', { name: 'Confirm prepared swap' }).isVisible(), false);
     assert.ok(await page.evaluate(key => localStorage.getItem(key), `swap-engine.prepared.${owner.id}.${f.record().swapId}.execute.once`));
-    const reloading = page.reload(); releaseExecution?.(); await reloading;
-    await page.waitForFunction(() => document.getElementById('owned-evidence')?.textContent?.includes('COMPLETED'));
-    assert.equal(executes, 1); assert.equal(creates, 1); assert.equal(reviews, 0); assert.deepEqual(errors, []);
+    releaseExecution?.();
     await page.waitForURL('**/#swap'); await page.waitForFunction(() => document.activeElement?.id === 'swap-title');
-    await page.getByText('¡Swap exitoso!', { exact: true }).waitFor();
+    assert.equal(executes, 1); assert.equal(creates, 1); assert.equal(reviews, 0); assert.deepEqual(errors, []);
     const retained = await page.evaluate(() => Object.fromEntries(Object.entries(localStorage)));
     assert.equal(retained[`swap-engine.preparation.${owner.id}`], undefined);
     assert.equal(retained[`swap-engine.prepared.${owner.id}.${f.record().swapId}.execute.once`], undefined);
@@ -99,8 +85,10 @@ test('SWAP prepares/reviews once, pays only after Start, then a second explicit 
     assert.equal(evidence.funding.txid, '11'.repeat(32)); assert.equal(evidence.claim.txid, '22'.repeat(32));
     await page.reload(); await page.waitForFunction(() => !document.getElementById('swap')?.hidden); assert.equal(executes, 1);
     await page.waitForFunction(() => document.getElementById('quote-status')?.textContent?.includes('Quote ready'));
-    await page.getByRole('button', { name: 'SWAP', exact: true }).click(); await review.waitFor({ state: 'visible' });
-    assert.equal(creates, 2); assert.equal(executes, 1); assert.equal(extra.length, 1);
+    await amount.fill('1000000');
+    await page.getByRole('button', { name: 'SWAP', exact: true }).click();
+    await page.waitForFunction(() => Object.keys(localStorage).filter(key => key.startsWith('swap-engine.completed.')).length === 2);
+    assert.equal(creates, 2); assert.equal(executes, 2); assert.equal(extra.length, 1);
     assert.notEqual(extra[0]!.record().swapId, f.record().swapId); assert.notEqual(extra[0]!.spec.client.paymentHash, f.spec.client.paymentHash);
     assert.equal(f.store.read().swaps[f.record().swapId!]!.state, 'COMPLETED');
   } finally { releaseExecution?.(); await browser.close(); await server.controlled.close(); await new Promise<void>(r => server.close(() => r())); await catalog.close(); for (const run of extra) await run.cleanup(); await f.cleanup(); }
@@ -155,11 +143,11 @@ for (const mode of ['lost-before-server', 'lost-after-server', 'left-during-revi
       await page.waitForFunction(() => !(document.getElementById('swap-action') as HTMLButtonElement).disabled);
       const first = await page.evaluate(name => JSON.parse(localStorage.getItem(name)!), `swap-engine.preparation.${owner.id}`);
       await page.reload(); await page.waitForFunction(() => document.getElementById('quote-status')?.textContent?.includes('Quote ready'));
-      await page.getByRole('button', { name: 'SWAP', exact: true }).click(); await page.getByRole('dialog', { name: 'Confirm prepared swap' }).waitFor();
+      await page.getByRole('button', { name: 'SWAP', exact: true }).click(); await page.waitForURL('**/#track');
       assert.equal(keys[0], first.reviewKey); if (mode === 'lost-before-server') assert.equal(keys[1], keys[0]); else assert.equal(keys.length, 1);
       const saved = await page.evaluate(name => JSON.parse(localStorage.getItem(name)!), `swap-engine.preparation.${owner.id}`);
       assert.equal(saved.reviewKey, first.reviewKey); assert.equal(saved.reviewState, 'CONFIRMED');
     }
-    assert.equal(creates, 1); assert.equal(reviews, 1); assert.equal(executes, 0);
+    assert.equal(creates, 1); assert.equal(reviews, 1); assert.equal(executes, mode === 'left-during-review' ? 0 : 1);
   } finally { release?.(); await browser.close(); await server.controlled.close(); await new Promise<void>(r => server.close(() => r())); await catalog.close(); await f.cleanup(); }
 });
