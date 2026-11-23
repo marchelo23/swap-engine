@@ -53,26 +53,31 @@ export function validateGuestClaimBundle(bundle: GuestRecoveryBundle): { output:
   return built;
 }
 
-/** Signs the claim locally from the confirmed funding transaction returned by
- * GET /v1/guest/quotes/:id. Private keys and the preimage never leave the browser. */
-export async function signGuestClaim(bundle: GuestRecoveryBundle, lockupHex: string,
-  fundingTxid: string, fundingVout: number): Promise<GuestClaimEvidence> {
+export function validateGuestFunding(bundle: GuestRecoveryBundle, lockupHex: string, fundingTxid: string, fundingVout: number) {
   const built = validateGuestClaimBundle(bundle);
   if (!hex32.test(fundingTxid) || !Number.isSafeInteger(fundingVout) || fundingVout < 0) throw new Error('Invalid funding evidence');
-  if (await sha256Hex(bytesFromHex(bundle.preimage)) !== bundle.paymentHash) throw new Error('Preimage does not match payment hash');
   const funding = Transaction.fromHex(lockupHex);
   if (funding.getId() !== fundingTxid) throw new Error('Funding transaction identity mismatch');
   const prevout = funding.outs[fundingVout];
   if (!prevout || prevout.value !== BigInt(bundle.amountSats) || !same(prevout.script, built.output))
     throw new Error('Funding outpoint or contract mismatch');
+  return { funding, prevout, witnessScript: built.witnessScript };
+}
+
+/** Signs locally. The private key stays in the browser. The signed Bitcoin
+ * transaction includes the preimage in its witness when explicitly submitted. */
+export async function signGuestClaim(bundle: GuestRecoveryBundle, lockupHex: string,
+  fundingTxid: string, fundingVout: number): Promise<GuestClaimEvidence> {
+  const { funding, prevout, witnessScript } = validateGuestFunding(bundle, lockupHex, fundingTxid, fundingVout);
+  if (await sha256Hex(bytesFromHex(bundle.preimage)) !== bundle.paymentHash) throw new Error('Preimage does not match payment hash');
   const privateKey = bytesFromHex(bundle.claimPrivateKey);
   if (hex(secp.getPublicKey(privateKey, true)) !== bundle.claimPublicKey) throw new Error('Claim key does not match recovery');
   const tx = new Transaction(); tx.version = 2; tx.locktime = 0;
   tx.addInput(funding.getHash(), fundingVout, 0xfffffffe);
   tx.addOutput(address.toOutputScript(bundle.destination, networks.regtest), BigInt(bundle.amountSats - bundle.claimFeeSats));
-  const digest = tx.hashForWitnessV0(0, built.witnessScript, prevout.value, Transaction.SIGHASH_ALL);
+  const digest = tx.hashForWitnessV0(0, witnessScript, prevout.value, Transaction.SIGHASH_ALL);
   const compact = await secp.signAsync(digest, privateKey, { prehash: false, format: 'compact' });
   const signature = script.signature.encode(compact, Transaction.SIGHASH_ALL);
-  tx.setWitness(0, [signature, bytesFromHex(bundle.preimage), new Uint8Array([1]), built.witnessScript]);
+  tx.setWitness(0, [signature, bytesFromHex(bundle.preimage), new Uint8Array([1]), witnessScript]);
   return { hex: tx.toHex(), txid: tx.getId(), fundingTxid, fundingVout, outputSats: bundle.amountSats - bundle.claimFeeSats };
 }

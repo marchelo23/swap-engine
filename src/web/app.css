@@ -140,7 +140,7 @@ h2 { font-size: 1.15rem; font-weight: 720; letter-spacing: -.035em; }
 .tx-time { color: var(--muted); font: 400 .72rem/1.4 var(--mono); }
 .tx-card .details { padding-block: 4px 0; }
 .tx-card .details div:last-child { border-bottom: 0; padding-bottom: 0; }
-.prepared-link { position: relative; justify-self: center; margin-top: 20px; }
+.swap-links { display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 12px; margin-top: 20px; }
 #track { width: 100%; }
 .owned-toolbar, .owned-actions { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px; margin-top: 14px; }
 .owned-header-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }

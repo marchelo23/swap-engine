@@ -163,6 +163,10 @@ The Guest implementation merged in PR #71 includes this browser flow:
 6. Observe invoice state and verified Bitcoin funding, and sign a claim locally when allowed.
 7. Reconcile settlement and confirmations; recover the guest swap using its saved material if necessary.
 
+In a new browser session, choose **Restore Guest swap** on the Swap page. Open the complete encrypted JSON export and enter its passphrase. The browser checks the original swap and offers **Claim funds** only after its confirmed funding matches the backup. Restoring checks status without showing a payable invoice.
+
+The recovery file, passphrase and private key stay in the browser. The existing Guest API uses the capability in its authorization header. The explicit claim submits the signed Bitcoin transaction, whose HTLC witness contains the preimage.
+
 The backend stores the guest capability **hash** and public proof material, not the private claim key or preimage. Recovery encryption uses AES-GCM with a passphrase-based key derivation scheme. Keep both the recovery export and passphrase safe; losing them may make a claim unrecoverable.
 
 Guest is **not activated by enabling its feature flag alone**. It requires the regtest spending policy, attested Core/LND identities, a reviewed private Guest policy and the dedicated watcher. After preparing and verifying the environment (see the detailed [configuration runbook](docs/environment-configuration.md)):
