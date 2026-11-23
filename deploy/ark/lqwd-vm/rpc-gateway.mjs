@@ -139,7 +139,7 @@ const server = http.createServer((req, res) => {
     return;
   }
   const contentType = (req.headers['content-type'] ?? '').split(';')[0].trim().toLowerCase();
-  if (req.headers.origin !== undefined || !['application/json', 'application/json-rpc', 'text/plain'].includes(contentType)) {
+  if (req.headers.origin !== undefined || (contentType && !['application/json', 'application/json-rpc', 'text/plain'].includes(contentType))) {
     reject(res, 415, 'JSON-RPC content type required', -32600);
     return;
   }
@@ -230,9 +230,8 @@ const server = http.createServer((req, res) => {
         clearTimeout(timer);
         if (res.headersSent || res.writableEnded) return;
         const buffer = Buffer.concat(chunks);
-        const headers = { ...up.headers };
-        delete headers['transfer-encoding'];
-        headers['content-length'] = String(buffer.length);
+        const headers = { 'content-type': up.headers['content-type'] ?? 'application/json',
+          'content-length': String(buffer.length) };
         log(`method=${canonical.methods.join(',')} status=${up.statusCode ?? 0} bytes=${buffer.length}`);
         res.writeHead(up.statusCode ?? 502, headers);
         res.end(buffer);

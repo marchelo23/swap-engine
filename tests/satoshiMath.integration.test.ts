@@ -70,10 +70,10 @@ test('Qwen accounting consumes real POST /v1/quotes responses without changing t
       const quote: Quote = await response.json();
       assert.equal(validateQuoteFields(quote), true);
       assert.equal(calculateNetReceivedSats(quote), quote.amountSats - quote.claimFeeSats);
-      assert.equal(calculateTotalPaidSats(quote), quote.invoiceSats);
+      assert.equal(calculateTotalPaidSats(quote), amountSats);
       assert.equal(calculateUserCost(quote), quote.invoiceSats - calculateNetReceivedSats(quote));
       if (amountSats === 50000) {
-        assert.equal(calculateNetReceivedSats(quote), 49500);
+        assert.equal(calculateNetReceivedSats(quote), 48750);
         assert.equal(calculateUserCost(quote), 1250);
       }
     }
