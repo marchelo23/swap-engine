@@ -23,7 +23,9 @@ function reverseEntry(swap: OwnedSwap): Entry {
   const status = reverseStates[swap.state]
     ?? (swap.execution.status === 'RECONCILIATION_REQUIRED' ? 'Needs review' : 'Pending');
   return { id: swap.id, quoteId: swap.quote.id, route: reverseRoute, status, fields: [
-    ['Swap ID', swap.id], ['Backend state', describeSwapState(swap.state).label], ...financials(swap.quote, swap.claim.netSats),
+    ['Swap ID', swap.id], ['Backend state', describeSwapState(swap.state).label],
+    ['Lightning sent', swap.payment.status === 'SUCCEEDED' ? sats(swap.payment.valueSats) : 'Unconfirmed'],
+    ...financials(swap.quote, swap.claim.netSats),
     ['Actual routing fee', swap.payment.feeSats === null ? 'Unknown' : sats(swap.payment.feeSats)],
   ] };
 }

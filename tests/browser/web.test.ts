@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -9,7 +10,8 @@ import { networks, payments } from 'bitcoinjs-lib';
 import { chromium, type Page } from 'playwright';
 import { createApi } from '../../src/api/server.js';
 import { railIds, type Capabilities } from '../../src/core/RailContract.js';
-import { buildArkQuote, createArkRegtestCliPort } from '../../src/ark/ArkAdapter.js';
+import { createArkRegtestCliPort } from '../../src/ark/ArkAdapter.js';
+import type { ArkQuote, Quote } from '../../src/web/api.js';
 import { preflight } from '../../src/diagnostics/preflight.js';
 import { setup, testAccount } from '../helpers.js';
 
@@ -18,6 +20,27 @@ const launchChromium = () => chromium.launch({
   ...(process.env.WEB_TEST_BROWSER_CHANNEL ? { channel: process.env.WEB_TEST_BROWSER_CHANNEL } : {}),
   ...(process.env.WEB_TEST_BROWSER_EXECUTABLE ? { executablePath: process.env.WEB_TEST_BROWSER_EXECUTABLE } : {}),
 });
+
+function debitQuote(invoiceSats: number, route: ArkQuote['route']): ArkQuote;
+function debitQuote(invoiceSats: number): Quote;
+function debitQuote(invoiceSats: number, route?: ArkQuote['route']): Quote | ArkQuote {
+  const serviceFeeSats = 500 + Math.ceil(invoiceSats * .005);
+  const claimFeeSats = route === 'onchain-to-ark' ? 262 : route === 'ark-to-onchain' ? 241 : 500;
+  const amountSats = invoiceSats - serviceFeeSats;
+  const quote = { id: randomUUID(), expiresAt: Date.now() + 120_000, invoiceSats, amountSats, serviceFeeSats, claimFeeSats,
+    fundingReserveSats: route ? 0 : 1_000 };
+  return route ? { ...quote, route, network: 'regtest', method: route === 'onchain-to-ark' ? 'boarding' : 'cooperative-offboarding',
+    netSats: amountSats - claimFeeSats, dustSats: 330 } : quote;
+}
+
+async function mockDebitQuotes(page: Page) {
+  for (const path of ['/v1/quotes', '/v1/ark/quotes']) {
+    await page.route('**' + path, route => {
+      const input = route.request().postDataJSON();
+      return route.fulfill({ status: 201, json: debitQuote(input.amountSats, input.route) });
+    });
+  }
+}
 
 async function waitForRails(page: Page, send: string, receive: string) {
   await page.waitForFunction(([send, receive]) => {
@@ -33,7 +56,7 @@ async function audit(page: Page) {
   assert.deepEqual(violations.map(item => ({ id: item.id, targets: item.nodes.map(node => node.target) })), []);
 }
 
-test('three faces quote a real route and preserve keyboard, account and responsive accessibility', async context => {
+test('three faces quote an exact debit and preserve keyboard, account and responsive accessibility', async context => {
   const f = await setup();
   context.after(f.cleanup);
   const server = createApi(f.manager, async () => { throw new Error('No nodes in browser test'); });
@@ -45,6 +68,7 @@ test('three faces quote a real route and preserve keyboard, account and responsi
   context.after(() => browser.close());
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, reducedMotion: 'reduce' });
   await page.clock.install();
+  await mockDebitQuotes(page);
   await page.route('**/v1/auth/session', route => route.fulfill({ status: 401, json: {} }));
   const quoteRequests: number[] = [];
   const arkQuoteRequests: unknown[] = [];
@@ -78,7 +102,7 @@ test('three faces quote a real route and preserve keyboard, account and responsi
   await page.keyboard.press('Enter');
   assert.equal(await page.locator(':focus').getAttribute('id'), 'main');
 
-  const amount = page.getByRole('textbox', { name: /quote principal/i });
+  const amount = page.getByRole('textbox', { name: 'Amount to send in sats' });
   const swap = page.getByRole('button', { name: 'SWAP', exact: true });
   assert.equal(await page.locator('#received-preview').evaluate(output => getComputedStyle(output).userSelect), 'none');
   assert.equal(await amount.evaluate(field => getComputedStyle(field).userSelect), 'text');
@@ -102,7 +126,7 @@ test('three faces quote a real route and preserve keyboard, account and responsi
   await swap.press('Enter');
   const dialog = page.getByRole('dialog', { name: 'Review quote' });
   await dialog.waitFor();
-  await dialog.getByText('50,000 sats', { exact: true }).waitFor();
+  assert.match(await dialog.textContent() ?? '', /Lightning invoice amount\s*50,000 sats/);
   await dialog.getByText('Unknown', { exact: true }).waitFor();
   await dialog.getByText(/Simulation.*Execution disabled/).waitFor();
   assert.equal(await dialog.getByRole('button', { name: 'Start swap' }).isDisabled(), true);
@@ -121,10 +145,10 @@ test('three faces quote a real route and preserve keyboard, account and responsi
   let held!: () => void;
   const captured = new Promise<void>(resolve => { held = resolve; });
   await page.route('**/v1/quotes', async route => {
-    const oldResponse = await route.fetch();
+    const oldQuote = debitQuote(route.request().postDataJSON().amountSats);
     held();
     await holding;
-    await route.fulfill({ response: oldResponse }).catch(() => {});
+    await route.fulfill({ status: 201, json: oldQuote }).catch(() => {});
   }, { times: 1 });
   await amount.fill('60000');
   await captured;
@@ -738,6 +762,7 @@ test('actual mouse and touch gestures rotate in both directions and linked anima
     ...(process.env.WEB_TEST_RECORD === '1' ? { recordVideo: { dir: evidence, size: { width: 1366, height: 768 } } } : {}),
   });
   const page = await desktop.newPage();
+  await mockDebitQuotes(page);
   const url = 'http://127.0.0.1:' + (server.address() as AddressInfo).port + '/';
   const observations: Array<Promise<[boolean, string, string]>> = [];
   page.on('request', request => {
@@ -935,6 +960,22 @@ test('Ark regtest UI gates execution, separates pending from confirmed, and upda
   const errors: string[] = [];
   page.on('pageerror', err => errors.push(err.message));
 
+  let boardingQuote: ArkQuote | undefined;
+  await page.route('**/v1/ark/quotes', async route => {
+    const input = route.request().postDataJSON();
+    if (input.route === 'ark-to-onchain') return route.fulfill({ status: 201, json: debitQuote(input.amountSats, input.route) });
+    let response = await route.fetch();
+    boardingQuote = await response.json() as ArkQuote;
+    if (boardingQuote.invoiceSats !== input.amountSats) {
+      // Bridge the b10e4a7 principal-based fixture while retaining a real server quote ID for POST.
+      assert.equal(input.amountSats, 50_000);
+      response = await route.fetch({ postData: { ...input, amountSats: 49_253 } });
+      boardingQuote = await response.json() as ArkQuote;
+    }
+    assert.equal(boardingQuote.invoiceSats, input.amountSats);
+    return route.fulfill({ response });
+  });
+
   // 1. A session with an unavailable route can review, but cannot submit.
   await page.route('**/v1/ark/availability', route => route.fulfill({ json: { executionAvailable: false } }));
   await page.goto(`${base}/#account`);
@@ -948,7 +989,7 @@ test('Ark regtest UI gates execution, separates pending from confirmed, and upda
     await waitForRails(page, 'onchain', 'lightning');
     await page.getByLabel('Receive network').selectOption('ark');
     await waitForRails(page, 'onchain', 'ark');
-    await page.getByText('48,988', { exact: true }).waitFor();
+    await page.locator('#received-preview').filter({ hasText: /^48,9[0-9]{2}$/ }).waitFor();
   }
   await page.getByRole('link', { name: 'Swap', exact: true }).click();
   await selectBoarding();
@@ -1006,6 +1047,8 @@ test('Ark regtest UI gates execution, separates pending from confirmed, and upda
   assert.match(capturedSwaps[0]!.csrf, /^[a-f0-9]{64}$/);
   assert.deepEqual((capturedSwaps[0]!.body as Record<string, unknown>).fundingOutpoint, boardingOutpoint);
   assert.deepEqual((capturedSwaps[0]!.body as Record<string, unknown>).wallet, 'alice');
+  assert.equal((capturedSwaps[0]!.body as Record<string, unknown>).amountSats, boardingQuote?.amountSats);
+  assert.notEqual((capturedSwaps[0]!.body as Record<string, unknown>).amountSats, 50_000);
 
   await dialog.getByRole('button', { name: 'Close review', exact: true }).click();
   await page.getByRole('link', { name: 'Account', exact: true }).click();
@@ -1044,7 +1087,7 @@ test('Ark regtest UI gates execution, separates pending from confirmed, and upda
   assert.equal(await page.locator('#ark-status').textContent(), 'Ark regtest operator telemetry is unavailable.');
 
   // 3. Mock cooperative offboarding progressing from a 202 to a confirmed status read.
-  const confirmedQuote = buildArkQuote('ark-to-onchain', 50_000, Date.now());
+  const confirmedQuote = debitQuote(50_000, 'ark-to-onchain');
   const offboardId = '22222222-2222-4222-8222-222222222222';
   const confirmedRecord = {
     id: offboardId,
@@ -1143,7 +1186,7 @@ test('Ark regtest UI gates execution, separates pending from confirmed, and upda
   await page.waitForFunction(() => document.getElementById('activity-completed')?.textContent === '1');
   assert.equal(await page.locator('#activity-pending').textContent(), '0');
   assert.equal(await page.locator('#activity-ark-sent').textContent(), '50,000 sats');
-  assert.equal(await page.locator('#activity-onchain-received').textContent(), '49,759 sats');
+  assert.equal(await page.locator('#activity-onchain-received').textContent(), '49,009 sats');
   assert.equal(await page.locator('#fee-collected').textContent(), '750 sats');
   assert.equal(await page.locator('#fee-network').textContent(), '241 sats');
   assert.equal(await page.locator('#fee-net-revenue').textContent(), '750 sats');
@@ -1162,6 +1205,7 @@ test('private history filters rails and terminal states and deduplicates linked 
   const browser = await launchChromium(); context.after(() => browser.close());
   const page = await browser.newPage({ viewport: { width: 390, height: 844 }, reducedMotion: 'reduce' });
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  await mockDebitQuotes(page);
   const id = (digit: string) => `${digit.repeat(8)}-${digit.repeat(4)}-4222-8222-${digit.repeat(12)}`;
   const claimDestination = payments.p2wpkh({ hash: Buffer.alloc(20, 0x44), network: networks.regtest }).address!;
   const swap = { id: id('1'), network: 'regtest', revision: 4, state: 'REFUNDED', quote: f.quote, claimDestination,

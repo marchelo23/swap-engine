@@ -196,7 +196,7 @@ export function mountGuest(presentation: GuestPresentation = {}) {
         if (quote.destination !== destination || quote.paymentHash !== current.identity.paymentHash ||
           quote.claimPublicKey !== current.identity.claimPublicKey)
           throw new Error('Guest quote changed identity, destination or amount.');
-        const amounts = quoteTotals(quote, current.amountSats, Date.now(), true);
+        const amounts = quoteTotals(quote, current.amountSats);
         current.quote = quote;
         details(get('guest-details'), [
           ['Network', 'Bitcoin Regtest'], ['Destination', quote.destination],

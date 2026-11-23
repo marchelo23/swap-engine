@@ -185,7 +185,7 @@ export function mountQuote(prepare?: (stillVisible: () => boolean, amountSats: n
       ['Method', result.method === 'boarding' ? 'Boarding (On-chain → Ark VTXO)' : 'Cooperative offboarding (Ark VTXO → On-chain)'],
       ['Status', label],
       ['Swap ID', result.id],
-      ['Quote principal', sats(result.quote.amountSats)],
+      ['Quoted debit', sats(result.quote.invoiceSats)],
       ['Service fee', sats(result.quote.serviceFeeSats)],
       ['Estimated batch commitment fee', sats(result.quote.claimFeeSats)],
       ['Input outpoint', result.inputOutpoint],
@@ -333,7 +333,7 @@ export function mountQuote(prepare?: (stillVisible: () => boolean, amountSats: n
     const work = request.then(result => {
       if (version !== revision) return;
       if (route && (!('route' in result) || result.route !== route)) throw new Error('Backend returned a different Ark route.');
-      const totals = quoteTotals(result, value, Date.now(), true);
+      const totals = quoteTotals(result, value);
       quote = result;
       animateValues([sats(result.serviceFeeSats), sats(result.claimFeeSats), sats(totals.lost), integer(totals.received)]);
       if (route) {
@@ -364,8 +364,6 @@ export function mountQuote(prepare?: (stillVisible: () => boolean, amountSats: n
 
   function schedule(delay: number) {
     if (!visible) return;
-    text('amount-label', !isArkRoute() && (controlled === true || (guestRoute() && guestAvailable))
-      ? 'Amount to send in sats' : 'Quote principal in sats');
     const value = principal();
     if (value === undefined) amount.setAttribute('aria-invalid', 'true'); else amount.removeAttribute('aria-invalid');
     if (!aligned || !canQuote(pair)) {
@@ -497,7 +495,7 @@ export function mountQuote(prepare?: (stillVisible: () => boolean, amountSats: n
       status('Quote expired · press Swap');
       return;
     }
-    const totals = quoteTotals(current, value, now, true);
+    const totals = quoteTotals(current, value, now);
     if (csrf) recordQuote?.(pair, current);
     if (route) {
       const boarding = route === 'onchain-to-ark';
@@ -505,10 +503,9 @@ export function mountQuote(prepare?: (stillVisible: () => boolean, amountSats: n
         ['Route', railLabel[pair.send] + ' → ' + railLabel[pair.receive]],
         ['Method', boarding ? 'Boarding (On-chain → Ark VTXO)' : 'Cooperative offboarding (Ark VTXO → On-chain)'],
         ['Network', 'Bitcoin regtest'],
-        ['Quote principal', sats(current.amountSats)],
+        ['Amount to send', sats(current.invoiceSats)],
         ['Operator fee', sats(current.serviceFeeSats)],
         ['Estimated batch commitment fee', sats(current.claimFeeSats)],
-        [boarding ? 'Total on-chain funding' : 'Total Ark VTXO debit', sats(current.invoiceSats)],
         [boarding ? 'Estimated Ark VTXO credit' : 'Estimated on-chain payout', sats(totals.received)],
         ['Estimated cost', sats(totals.lost)],
       ]);
@@ -522,11 +519,11 @@ export function mountQuote(prepare?: (stillVisible: () => boolean, amountSats: n
     startButton.disabled = true;
     details(get('review-details'), [
       ['Route', railLabel[pair.send] + ' → ' + railLabel[pair.receive]],
-      ['Quote principal', sats(current.amountSats)],
+      ['Amount to send', sats(value)],
       ['Service fee', sats(current.serviceFeeSats)],
       ['Estimated network claim fee', sats(current.claimFeeSats)],
       ['Lightning routing fee', 'Unknown'],
-      ['Total Lightning payment', sats(current.invoiceSats)],
+      ['Lightning invoice amount', sats(current.invoiceSats)],
       ['Estimated on-chain receipt', sats(totals.received)],
       ['Estimated cost', sats(totals.lost)],
     ]);

@@ -331,12 +331,13 @@ export const api = {
   },
 };
 
-export function quoteTotals(quote: Quote, amount: number, now = Date.now(), sourceAmount = false) {
+export function quoteTotals(quote: Quote | ArkQuote, amount: number, now = Date.now()) {
   const amounts = [quote.amountSats, quote.invoiceSats, quote.serviceFeeSats, quote.claimFeeSats];
+  const received = quote.amountSats - quote.claimFeeSats;
   if (!amounts.every(n => Number.isSafeInteger(n) && n >= 0)
-    || (sourceAmount ? quote.invoiceSats !== amount : quote.amountSats !== amount) || quote.invoiceSats !== quote.amountSats + quote.serviceFeeSats
-    || quote.claimFeeSats > quote.amountSats || quote.expiresAt <= now) {
+    || quote.invoiceSats !== amount || quote.invoiceSats !== quote.amountSats + quote.serviceFeeSats
+    || received < 0 || ('netSats' in quote && quote.netSats !== received) || quote.expiresAt <= now) {
     throw new Error('The backend returned an invalid or expired estimate.');
   }
-  return { received: quote.amountSats - quote.claimFeeSats, lost: quote.serviceFeeSats + quote.claimFeeSats };
+  return { received, lost: quote.serviceFeeSats + quote.claimFeeSats };
 }

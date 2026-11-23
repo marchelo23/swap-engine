@@ -61,11 +61,12 @@ test('Ark routes distinguish submission evidence, confirmation and ambiguous bac
 test('quote totals use integer API fees and exclude the provider funding reserve', async () => {
   const f = await setup();
   try {
-    const quote = f.quote;
-    assert.deepEqual(quoteTotals(quote, 50_000), { received: 49_500, lost: 1_250 });
-    assert.deepEqual(quoteTotals({ ...quote, claimFeeSats: 789 }, 50_000), { received: 49_211, lost: 1_539 });
+    const quote = { ...f.quote, amountSats: 49_250, invoiceSats: 50_000, serviceFeeSats: 750 };
+    assert.deepEqual(quoteTotals(quote, 50_000), { received: 48_750, lost: 1_250 });
+    assert.deepEqual(quoteTotals({ ...quote, claimFeeSats: 789 }, 50_000), { received: 48_461, lost: 1_539 });
     for (const invalid of [{ ...quote, expiresAt: 0 }, { ...quote, amountSats: 60_000 },
-      { ...quote, claimFeeSats: -1 }, { ...quote, invoiceSats: 1 }, { ...quote, claimFeeSats: 50_001 }]) {
+      { ...quote, claimFeeSats: -1 }, { ...quote, invoiceSats: 1 }, { ...quote, claimFeeSats: 50_001 },
+      { ...quote, amountSats: 50_000, invoiceSats: 50_750 }, { ...quote, netSats: 49_250 }]) {
       assert.throws(() => quoteTotals(invalid, 50_000));
     }
   } finally {
@@ -97,7 +98,7 @@ test('same-origin frontend serves only allowlisted assets and uses the real quot
     assert.equal(response.status, 201);
     const quote = await response.json();
     assert.equal(quote.invoiceSats, 50_000);
-    assert.deepEqual(quoteTotals(quote, 50_000, Date.now(), true), { received: 48_750, lost: 1_250 });
+    assert.deepEqual(quoteTotals(quote, 50_000), { received: 48_750, lost: 1_250 });
 
     const boarding = await fetch(base + '/v1/ark/quotes', {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: '{"route":"onchain-to-ark","amountSats":50000}',
@@ -106,7 +107,7 @@ test('same-origin frontend serves only allowlisted assets and uses the real quot
     const boardingQuote = await boarding.json();
     assert.equal(boardingQuote.method, 'boarding');
     assert.equal(boardingQuote.serviceFeeSats, 750);
-    assert.deepEqual(quoteTotals(boardingQuote, 50_000, Date.now(), true), { received: 48_988, lost: 1_012 });
+    assert.deepEqual(quoteTotals(boardingQuote, 50_000), { received: 48_988, lost: 1_012 });
 
     const offboarding = await fetch(base + '/v1/ark/quotes', {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: '{"route":"ark-to-onchain","amountSats":80000}',
@@ -115,7 +116,7 @@ test('same-origin frontend serves only allowlisted assets and uses the real quot
     const offboardQuote = await offboarding.json();
     assert.equal(offboardQuote.method, 'cooperative-offboarding');
     assert.equal(offboardQuote.serviceFeeSats, 900);
-    assert.deepEqual(quoteTotals(offboardQuote, 80_000, Date.now(), true), { received: 78_859, lost: 1_141 });
+    assert.deepEqual(quoteTotals(offboardQuote, 80_000), { received: 78_859, lost: 1_141 });
 
     const invalidArkRoute = await fetch(base + '/v1/ark/quotes', {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: '{"route":"ark-to-lightning","amountSats":50000}',
