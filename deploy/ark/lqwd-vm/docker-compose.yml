@@ -1,0 +1,235 @@
+name: ${ARK_LQWD_PROJECT_NAME:-swap-engine-ark-lqwd-vm}
+
+x-owner: &owner
+  io.swap-engine.ark.lab: "${ARK_LQWD_LABEL:-lqwd-vm}"
+  io.swap-engine.ark.worktree: "${ARK_LQWD_LABEL:-lqwd-vm}"
+
+services:
+  tunnel:
+    build:
+      context: .
+      dockerfile: Dockerfile.tunnel
+    image: ${ARK_LQWD_TUNNEL_IMAGE:-swap-engine-ark-lqwd-vm-tunnel:local}
+    container_name: ${ARK_LQWD_TUNNEL_CONTAINER:-ark_lqwd_tunnel}
+    labels: *owner
+    restart: unless-stopped
+    user: "${ARK_LQWD_TUNNEL_USER:-1000:1000}"
+    command:
+      - sh
+      - -ec
+      - |
+        cp /run/secrets/ark_lqwd_vm_key /tmp/ark_lqwd_vm_key
+        chmod 600 /tmp/ark_lqwd_vm_key
+        exec ssh -N \
+          -i /tmp/ark_lqwd_vm_key \
+          -o BatchMode=yes \
+          -o StrictHostKeyChecking=yes \
+          -o UserKnownHostsFile=/run/secrets/ark_lqwd_vm_known_hosts \
+          -o ExitOnForwardFailure=yes \
+          -o ServerAliveInterval=${ARK_LQWD_SSH_ALIVE_INTERVAL:-15} \
+          -o ServerAliveCountMax=${ARK_LQWD_SSH_ALIVE_COUNT:-3} \
+          -L ${ARK_LQWD_TUNNEL_LISTEN_HOST:-0.0.0.0}:${ARK_LQWD_TUNNEL_RPC_PORT:-18443}:${ARK_LQWD_VM_GATEWAY_HOST:-127.0.0.1}:${ARK_LQWD_VM_GATEWAY_PORT:-18446} \
+          -L ${ARK_LQWD_TUNNEL_LISTEN_HOST:-0.0.0.0}:${ARK_LQWD_TUNNEL_P2P_PORT:-18444}:${ARK_LQWD_VM_P2P_HOST:-127.0.0.1}:${ARK_LQWD_VM_P2P_PORT:-18444} \
+          ${ARK_LQWD_VM_SSH_TARGET:?set ARK_LQWD_VM_SSH_TARGET}
+    volumes:
+      - ${ARK_LQWD_VM_KEY_PATH:?set ARK_LQWD_VM_KEY_PATH}:/run/secrets/ark_lqwd_vm_key:ro
+      - ${ARK_LQWD_VM_KNOWN_HOSTS_PATH:?set ARK_LQWD_VM_KNOWN_HOSTS_PATH}:/run/secrets/ark_lqwd_vm_known_hosts:ro
+    networks: [default, host_access]
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z ${ARK_LQWD_TUNNEL_HEALTHCHECK_HOST:-127.0.0.1} ${ARK_LQWD_TUNNEL_RPC_PORT:-18443} && nc -z ${ARK_LQWD_TUNNEL_HEALTHCHECK_HOST:-127.0.0.1} ${ARK_LQWD_TUNNEL_P2P_PORT:-18444}"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+
+  postgres:
+    image: ${ARK_LQWD_POSTGRES_IMAGE:-docker.io/library/postgres:16}
+    container_name: ${ARK_LQWD_POSTGRES_CONTAINER:-ark_lqwd_postgres}
+    labels: *owner
+    command: ["postgres", "-p", "${ARK_LQWD_POSTGRES_PORT:-5432}"]
+    environment:
+      POSTGRES_HOST_AUTH_METHOD: ${ARK_LQWD_POSTGRES_AUTH_METHOD:-trust}
+      POSTGRES_USER: ${ARK_LQWD_POSTGRES_USER:-postgres}
+      POSTGRES_DB: ${ARK_LQWD_POSTGRES_DB:-postgres}
+    volumes: [postgres_data:/var/lib/postgresql/data]
+    networks: [default]
+
+  redis:
+    image: ${ARK_LQWD_REDIS_IMAGE:-docker.io/library/redis:7-alpine}
+    container_name: ${ARK_LQWD_REDIS_CONTAINER:-ark_lqwd_redis}
+    labels: *owner
+    command: ["redis-server", "--port", "${ARK_LQWD_REDIS_PORT:-6379}"]
+    networks: [default]
+
+  nbxplorer:
+    image: ${ARK_LQWD_NBXPLORER_IMAGE:-docker.io/nicolasdorier/nbxplorer:2.6.7}
+    container_name: ${ARK_LQWD_NBXPLORER_CONTAINER:-ark_lqwd_nbxplorer}
+    labels: *owner
+    restart: on-failure
+    depends_on:
+      tunnel:
+        condition: service_healthy
+      postgres:
+        condition: service_started
+    environment:
+      NBXPLORER_NETWORK: ${ARK_LQWD_BITCOIN_NETWORK:-regtest}
+      NBXPLORER_CHAINS: ${ARK_LQWD_NBXPLORER_CHAINS:-btc}
+      NBXPLORER_BTCRPCURL: http://${ARK_LQWD_TUNNEL_HOST:-tunnel}:${ARK_LQWD_TUNNEL_RPC_PORT:-18443}/
+      NBXPLORER_BTCNODEENDPOINT: ${ARK_LQWD_TUNNEL_HOST:-tunnel}:${ARK_LQWD_TUNNEL_P2P_PORT:-18444}
+      NBXPLORER_BTCRPCUSER: ${ARK_LQWD_GATEWAY_USER:?set ARK_LQWD_GATEWAY_USER}
+      NBXPLORER_BTCRPCPASSWORD: ${ARK_LQWD_GATEWAY_PASSWORD:?set ARK_LQWD_GATEWAY_PASSWORD}
+      NBXPLORER_BIND: 0.0.0.0:${ARK_LQWD_NBXPLORER_INTERNAL_PORT:-32838}
+      NBXPLORER_SIGNALFILESDIR: ${ARK_LQWD_NBXPLORER_DATADIR:-/datadir}
+      NBXPLORER_POSTGRES: "User ID=${ARK_LQWD_POSTGRES_USER:-postgres};Host=${ARK_LQWD_POSTGRES_HOST:-postgres};Port=${ARK_LQWD_POSTGRES_PORT:-5432};Database=${ARK_LQWD_NBXPLORER_DB:-nbxplorer}"
+      NBXPLORER_NOAUTH: "${ARK_LQWD_NBXPLORER_NOAUTH:-1}"
+    ports: ["${ARK_LQWD_HOST_BIND:-127.0.0.1}:${ARK_LQWD_NBXPLORER_PORT:-32938}:${ARK_LQWD_NBXPLORER_INTERNAL_PORT:-32838}"]
+    networks: [default, host_access]
+    volumes: [nbxplorer_data:/datadir]
+
+  fulcrum:
+    image: ${ARK_LQWD_FULCRUM_IMAGE:-docker.io/cculianu/fulcrum:v2.1.1}
+    container_name: ${ARK_LQWD_FULCRUM_CONTAINER:-ark_lqwd_fulcrum}
+    labels: *owner
+    restart: on-failure
+    depends_on:
+      tunnel:
+        condition: service_healthy
+    command:
+      - Fulcrum
+      - --bitcoind
+      - ${ARK_LQWD_TUNNEL_HOST:-tunnel}:${ARK_LQWD_TUNNEL_RPC_PORT:-18443}
+      - --rpcuser
+      - ${ARK_LQWD_GATEWAY_USER:?set ARK_LQWD_GATEWAY_USER}
+      - --rpcpassword
+      - ${ARK_LQWD_GATEWAY_PASSWORD:?set ARK_LQWD_GATEWAY_PASSWORD}
+      - --tcp
+      - 0.0.0.0:${ARK_LQWD_FULCRUM_PORT:-50001}
+    volumes: [fulcrum_data:/data]
+    networks: [default]
+
+  mempool_api:
+    image: ${ARK_LQWD_MEMPOOL_IMAGE:-docker.io/mempool/backend:v3.3.1}
+    container_name: ${ARK_LQWD_MEMPOOL_CONTAINER:-ark_lqwd_mempool_api}
+    labels: *owner
+    user: "${ARK_LQWD_MEMPOOL_USER:-1000:1000}"
+    init: true
+    restart: on-failure
+    depends_on:
+      tunnel:
+        condition: service_healthy
+      fulcrum:
+        condition: service_started
+    command: "./wait-for-it.sh ${ARK_LQWD_FULCRUM_HOST:-fulcrum}:${ARK_LQWD_FULCRUM_PORT:-50001} --timeout=${ARK_LQWD_MEMPOOL_WAIT_TIMEOUT:-180} --strict -- ./start.sh"
+    environment:
+      CORE_RPC_HOST: ${ARK_LQWD_TUNNEL_HOST:-tunnel}
+      CORE_RPC_PORT: "${ARK_LQWD_TUNNEL_RPC_PORT:-18443}"
+      CORE_RPC_USERNAME: ${ARK_LQWD_GATEWAY_USER:?set ARK_LQWD_GATEWAY_USER}
+      CORE_RPC_PASSWORD: ${ARK_LQWD_GATEWAY_PASSWORD:?set ARK_LQWD_GATEWAY_PASSWORD}
+      MEMPOOL_BACKEND: ${ARK_LQWD_MEMPOOL_BACKEND:-electrum}
+      ELECTRUM_HOST: ${ARK_LQWD_FULCRUM_HOST:-fulcrum}
+      ELECTRUM_PORT: "${ARK_LQWD_FULCRUM_PORT:-50001}"
+      ELECTRUM_TLS_ENABLED: "${ARK_LQWD_ELECTRUM_TLS:-false}"
+      DATABASE_ENABLED: "${ARK_LQWD_MEMPOOL_DATABASE_ENABLED:-false}"
+      MEMPOOL_NETWORK: ${ARK_LQWD_MEMPOOL_NETWORK:-regtest}
+      MEMPOOL_HTTP_PORT: "${ARK_LQWD_MEMPOOL_INTERNAL_PORT:-8999}"
+      MEMPOOL_API_URL_PREFIX: "${ARK_LQWD_MEMPOOL_API_PREFIX:-/api/}"
+      MEMPOOL_CACHE_DIR: ${ARK_LQWD_MEMPOOL_CACHE_DIR:-/backend/cache}
+      MEMPOOL_POLL_RATE_MS: "${ARK_LQWD_MEMPOOL_POLL_RATE_MS:-2000}"
+      MEMPOOL_EXTERNAL_MAX_RETRY: "${ARK_LQWD_MEMPOOL_EXTERNAL_MAX_RETRY:-0}"
+      STATISTICS_ENABLED: "${ARK_LQWD_MEMPOOL_STATISTICS:-false}"
+      LIGHTNING_ENABLED: "${ARK_LQWD_MEMPOOL_LIGHTNING:-false}"
+    volumes: [mempool_cache:/backend/cache]
+    ports: ["${ARK_LQWD_HOST_BIND:-127.0.0.1}:${ARK_LQWD_MEMPOOL_PORT:-33100}:${ARK_LQWD_MEMPOOL_INTERNAL_PORT:-8999}"]
+    networks: [default, host_access]
+
+  arkd-wallet:
+    image: ${ARK_LQWD_ARKD_WALLET_IMAGE:-ghcr.io/arkade-os/arkd-wallet:v0.9.25}
+    container_name: ${ARK_LQWD_ARKD_WALLET_CONTAINER:-ark_lqwd_arkd_wallet}
+    labels: *owner
+    restart: on-failure
+    depends_on:
+      nbxplorer:
+        condition: service_started
+    environment:
+      ARKD_WALLET_NETWORK: ${ARK_LQWD_BITCOIN_NETWORK:-regtest}
+      ARKD_WALLET_NBXPLORER_URL: http://${ARK_LQWD_NBXPLORER_HOST:-nbxplorer}:${ARK_LQWD_NBXPLORER_INTERNAL_PORT:-32838}
+    volumes: [wallet_data:/app/data]
+    networks: [default]
+
+  arkd-signer:
+    image: ${ARK_LQWD_ARKD_SIGNER_IMAGE:-ghcr.io/arkade-os/arkd-signer:v0.9.25}
+    container_name: ${ARK_LQWD_ARKD_SIGNER_CONTAINER:-ark_lqwd_arkd_signer}
+    labels: *owner
+    expose: ["${ARK_LQWD_ARKD_SIGNER_PORT:-6061}"]
+    environment:
+      ARKD_SIGNER_PORT: "${ARK_LQWD_ARKD_SIGNER_PORT:-6061}"
+      ARKD_SIGNER_SECRET_KEY: ${ARK_LQWD_SIGNER_KEY:?set ARK_LQWD_SIGNER_KEY}
+    networks: [default]
+
+  arkd:
+    image: ${ARK_LQWD_ARKD_IMAGE:-ghcr.io/arkade-os/arkd:v0.9.25}
+    container_name: ${ARK_LQWD_ARKD_CONTAINER:-ark_lqwd_arkd}
+    labels: *owner
+    restart: on-failure
+    depends_on:
+      tunnel:
+        condition: service_healthy
+      postgres:
+        condition: service_started
+      redis:
+        condition: service_started
+      nbxplorer:
+        condition: service_started
+      mempool_api:
+        condition: service_started
+      arkd-wallet:
+        condition: service_started
+      arkd-signer:
+        condition: service_started
+    environment:
+      ARKD_NO_TLS: "${ARK_LQWD_ARKD_NO_TLS:-true}"
+      ARKD_NO_MACAROONS: "${ARK_LQWD_ARKD_NO_MACAROONS:-true}"
+      ARKD_WALLET_ADDR: ${ARK_LQWD_ARKD_WALLET_HOST:-arkd-wallet}:${ARK_LQWD_ARKD_WALLET_PORT:-6060}
+      ARKD_SIGNER_ADDR: ${ARK_LQWD_ARKD_SIGNER_HOST:-arkd-signer}:${ARK_LQWD_ARKD_SIGNER_PORT:-6061}
+      ARKD_ESPLORA_URL: http://${ARK_LQWD_MEMPOOL_HOST:-mempool_api}:${ARK_LQWD_MEMPOOL_INTERNAL_PORT:-8999}${ARK_LQWD_ARKD_ESPLORA_PATH:-/api}
+      ARKD_DB_TYPE: ${ARK_LQWD_ARKD_DB_TYPE:-postgres}
+      ARKD_EVENT_DB_TYPE: ${ARK_LQWD_ARKD_EVENT_DB_TYPE:-postgres}
+      ARKD_PG_DB_URL: "postgresql://${ARK_LQWD_POSTGRES_USER:-postgres}@${ARK_LQWD_POSTGRES_HOST:-postgres}:${ARK_LQWD_POSTGRES_PORT:-5432}/${ARK_LQWD_POSTGRES_PROJECTION_DB:-projection}?sslmode=${ARK_LQWD_POSTGRES_SSLMODE:-disable}"
+      ARKD_PG_EVENT_DB_URL: "postgresql://${ARK_LQWD_POSTGRES_USER:-postgres}@${ARK_LQWD_POSTGRES_HOST:-postgres}:${ARK_LQWD_POSTGRES_PORT:-5432}/${ARK_LQWD_POSTGRES_EVENT_DB:-event}?sslmode=${ARK_LQWD_POSTGRES_SSLMODE:-disable}"
+      ARKD_PG_DB_AUTOCREATE: "${ARK_LQWD_POSTGRES_AUTOCREATE:-true}"
+      ARKD_LIVE_STORE_TYPE: ${ARK_LQWD_ARKD_LIVE_STORE_TYPE:-redis}
+      ARKD_REDIS_URL: redis://${ARK_LQWD_REDIS_HOST:-redis}:${ARK_LQWD_REDIS_PORT:-6379}/${ARK_LQWD_REDIS_DB:-0}
+      ARKD_UNLOCKER_TYPE: ${ARK_LQWD_ARKD_UNLOCKER_TYPE:-env}
+      ARKD_UNLOCKER_PASSWORD: ${ARK_LQWD_WALLET_PASSWORD:?set ARK_LQWD_WALLET_PASSWORD}
+      ARKD_SCHEDULER_TYPE: ${ARK_LQWD_ARKD_SCHEDULER_TYPE:-block}
+      ARKD_VTXO_MIN_AMOUNT: "${ARK_LQWD_ARKD_VTXO_MIN_AMOUNT:-1}"
+      ARKD_ROUND_MIN_PARTICIPANTS_COUNT: "${ARK_LQWD_ARKD_ROUND_MIN_PARTICIPANTS_COUNT:-1}"
+      ARKD_SESSION_DURATION: "${ARK_LQWD_ARKD_SESSION_DURATION:-10}"
+      ARKD_UNILATERAL_EXIT_DELAY: "${ARK_LQWD_ARKD_UNILATERAL_EXIT_DELAY:-20}"
+      ARKD_PUBLIC_UNILATERAL_EXIT_DELAY: "${ARK_LQWD_ARKD_PUBLIC_UNILATERAL_EXIT_DELAY:-20}"
+      ARKD_BOARDING_EXIT_DELAY: "${ARK_LQWD_ARKD_BOARDING_EXIT_DELAY:-30}"
+      ARKD_CHECKPOINT_EXIT_DELAY: "${ARK_LQWD_ARKD_CHECKPOINT_EXIT_DELAY:-10}"
+      ARKD_VTXO_TREE_EXPIRY: "${ARK_LQWD_ARKD_VTXO_TREE_EXPIRY:-40}"
+      ARKD_UNROLLED_VTXO_MIN_EXPIRY_MARGIN: "${ARK_LQWD_ARKD_UNROLLED_VTXO_MIN_EXPIRY_MARGIN:-10}"
+    ports:
+      - "${ARK_LQWD_HOST_BIND:-127.0.0.1}:${ARK_LQWD_ARKD_PORT:-37170}:7070"
+      - "${ARK_LQWD_HOST_BIND:-127.0.0.1}:${ARK_LQWD_ARKD_ADMIN_PORT:-37171}:7071"
+    networks: [default, host_access]
+    volumes: [arkd_data:/app/data]
+
+networks:
+  default:
+    name: ${ARK_LQWD_NETWORK:-swap_engine_ark_lqwd_net}
+    internal: true
+    labels: *owner
+  host_access:
+    name: ${ARK_LQWD_HOST_NETWORK:-swap_engine_ark_lqwd_host_net}
+    driver: bridge
+    labels: *owner
+
+volumes:
+  postgres_data: {name: "${ARK_LQWD_POSTGRES_VOLUME:-swap_engine_ark_lqwd_postgres_data}", labels: *owner}
+  nbxplorer_data: {name: "${ARK_LQWD_NBXPLORER_VOLUME:-swap_engine_ark_lqwd_nbxplorer_data}", labels: *owner}
+  fulcrum_data: {name: "${ARK_LQWD_FULCRUM_VOLUME:-swap_engine_ark_lqwd_fulcrum_data}", labels: *owner}
+  mempool_cache: {name: "${ARK_LQWD_MEMPOOL_VOLUME:-swap_engine_ark_lqwd_mempool_cache}", labels: *owner}
+  wallet_data: {name: "${ARK_LQWD_WALLET_VOLUME:-swap_engine_ark_lqwd_wallet_data}", labels: *owner}
+  arkd_data: {name: "${ARK_LQWD_ARKD_VOLUME:-swap_engine_ark_lqwd_arkd_data}", labels: *owner}

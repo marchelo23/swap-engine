@@ -1,4 +1,6 @@
 import { api, type ArkSwapStatus, type Session } from './api.js';
+import { arkStatusLabel } from './arkStatus.js';
+import { mountAccountHistory } from './accountHistory.js';
 import { railIds, type RailReason } from '../core/RailContract.js';
 import { prepareForReview } from './preparation.js';
 import { mountAuth } from './auth.js';
@@ -12,6 +14,7 @@ import { mountQuote } from './quote.js';
 import { details, get, integer, sats, text } from './ui.js';
 
 const guest = mountGuest(createGuestPresentation());
+const accountHistory = mountAccountHistory();
 const quotes = mountQuote(async (stillVisible, amountSats) => {
   const owner = session;
   if (!owner) throw new Error('Sign in to prepare a regtest swap.');
@@ -19,12 +22,12 @@ const quotes = mountQuote(async (stillVisible, amountSats) => {
   const id = await prepareForReview(owner, availability, amountSats);
   if (session !== owner || !stillVisible()) return;
   location.hash = 'track'; await reverse.reviewPrepared(id);
-}, guest);
+}, guest, accountHistory.record);
 let session: Session | null = null;
 const reverse = mountOwnedReverse((configured, availability) => {
   get('prepared-swap-link').hidden = configured !== true;
-  quotes.setContext(configured, session?.csrfToken, availability?.preparationAvailable === true);
-});
+  quotes.setContext(configured, session?.csrfToken, availability?.preparationAvailable === true, Boolean(availability?.preparedSwapIds.length));
+}, quotes.noticeCompletion);
 const setBalancesActive = mountOperationsBalances();
 void fonts;
 void api.guestAvailability().then(availability => {
@@ -43,6 +46,7 @@ const environment = api.capabilities().then(capabilities => {
   if (railIds.some(id => capabilities.rails[id].id !== id)) throw new Error('Mismatched rail identifiers.');
   const { environment, chain, rails } = capabilities;
   get('mode').dataset.mode = environment;
+  quotes.setArkEnvironment(environment);
   const networkName = `${chainLabel[chain.kind]} ${chain.name}`;
   get('network').title = networkName;
   text('network', environment.toUpperCase());
@@ -54,6 +58,7 @@ const environment = api.capabilities().then(capabilities => {
   }
   return environment;
 }).catch(() => {
+  quotes.setArkEnvironment(undefined);
   get('network').title = 'Network capabilities unavailable';
   text('capabilities-status', 'Network capabilities unavailable.');
   return undefined;
@@ -67,7 +72,6 @@ let refreshing = false;
 let admin = false;
 let adminReportController: AbortController | undefined;
 let arkTelemetryController: AbortController | undefined;
-let accountHistoryController: AbortController | undefined;
 
 function renderArkSwapList(list: HTMLElement, swaps: ArkSwapStatus[]) {
   list.replaceChildren(...swaps.map(swap => {
@@ -82,7 +86,7 @@ function renderArkSwapList(list: HTMLElement, swaps: ArkSwapStatus[]) {
       : 'Ark → On-chain (Cooperative offboarding)';
     const badge = document.createElement('span');
     badge.className = 'tag';
-    badge.textContent = swap.status;
+    badge.textContent = arkStatusLabel(swap);
     const when = document.createElement('time');
     when.className = 'tx-time';
     when.dateTime = new Date(swap.createdAt).toISOString();
@@ -95,7 +99,7 @@ function renderArkSwapList(list: HTMLElement, swaps: ArkSwapStatus[]) {
       ['Principal', sats(swap.quote.amountSats)],
       ['Service fee', sats(swap.quote.serviceFeeSats)],
       ['Estimated network fee', sats(swap.quote.claimFeeSats)],
-      ['Net receipt', sats(swap.quote.netSats)],
+      ['Estimated net receipt', sats(swap.quote.netSats)],
       ['Destination', swap.destination],
       ['Commitment txid', swap.commitmentTxid ?? 'Pending batch round'],
     ]);
@@ -163,44 +167,6 @@ async function loadArkAdminReport() {
     if (adminReportController === controller) resetArkAdminReport();
   } finally {
     if (adminReportController === controller) adminReportController = undefined;
-  }
-}
-
-function resetAccountHistory() {
-  accountHistoryController?.abort();
-  accountHistoryController = undefined;
-  text('account-history-tag', 'UNAVAILABLE');
-  text('account-history-status', 'Private history requires swaps with verified owner IDs.');
-  for (const id of ['account-active-swaps', 'account-completed-swaps', 'account-failed-swaps']) text(id, '—');
-  const list = get('account-history-list');
-  list.replaceChildren();
-  list.hidden = true;
-}
-
-async function loadAccountHistory() {
-  const owner = session;
-  if (!owner) { resetAccountHistory(); return; }
-  accountHistoryController?.abort();
-  const controller = new AbortController();
-  accountHistoryController = controller;
-  try {
-    const { swaps } = await api.arkSwaps(controller.signal);
-    if (accountHistoryController !== controller || session !== owner) return;
-    const completed = swaps.filter(s => s.status === 'CONFIRMED').length;
-    const failed = swaps.filter(s => s.status === 'REJECTED').length;
-    const active = swaps.length - completed - failed;
-    text('account-history-tag', 'REGTEST · ARK');
-    text('account-history-status', swaps.length > 0
-      ? `${integer(swaps.length)} Ark ↔ On-chain ${swaps.length === 1 ? 'swap' : 'swaps'} owned by ${owner.user.username}.`
-      : 'No Ark ↔ On-chain swaps recorded for this account yet.');
-    text('account-active-swaps', integer(active));
-    text('account-completed-swaps', integer(completed));
-    text('account-failed-swaps', integer(failed));
-    renderArkSwapList(get('account-history-list'), swaps);
-  } catch {
-    if (accountHistoryController === controller) resetAccountHistory();
-  } finally {
-    if (accountHistoryController === controller) accountHistoryController = undefined;
   }
 }
 
@@ -295,7 +261,7 @@ function navigate(focus: boolean) {
     else link.removeAttribute('aria-current');
   }
   if (current.id === 'operations' && admin) void loadDiagnostics();
-  if (current.id === 'account' && session) void loadAccountHistory();
+  if (current.id === 'account' && session) void accountHistory.refresh();
   if (focus) {
     window.scrollTo(0, 0);
     current.querySelector('h1')?.focus({ preventScroll: true });
@@ -308,10 +274,10 @@ if (!get('swap').hidden) playOpening();
 mountAuth(next => {
   if (session !== next) {
     session = next;
-    quotes.setArkExecutionAllowed(false);
+    quotes.setArkExecutionAllowed(next ? null : false);
     if (next) void api.arkAvailability().then(result => {
       if (session === next) quotes.setArkExecutionAllowed(result.executionAvailable);
-    }).catch(() => {});
+    }).catch(() => { if (session === next) quotes.setArkExecutionAllowed('unavailable'); });
     quotes.setContext(next ? null : false, next?.csrfToken);
   } else if (!next) quotes.setContext(false);
   reverse.setSession(next);
@@ -322,6 +288,6 @@ mountAuth(next => {
     resetArkTelemetry();
   }
   if (admin && !get('operations').hidden) void loadDiagnostics();
-  if (!next) resetAccountHistory();
-  else if (!get('account').hidden) void loadAccountHistory();
+  accountHistory.setSession(next);
+  if (next && !get('account').hidden) void accountHistory.refresh();
 });

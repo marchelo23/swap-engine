@@ -1,6 +1,7 @@
 import type { Config } from '../config.js';
 import type { RailId } from '../core/RailContract.js';
 import { verifyBitcoinIdentity, verifyLiquidIdentity, verifyLndIdentity } from './Identity.js';
+import { confirmedAssetEvidence, type ConfirmedAssetEvidence } from '../liquid/ConfirmedAssetEvidence.js';
 
 type BitcoinReader = { origin?: string; call<T>(method: string, params?: unknown[], wallet?: boolean): Promise<T> };
 type LndReader = { origin?: string; call<T>(path: string, body?: unknown): Promise<T> };
@@ -11,6 +12,7 @@ export type StartupScope = { environment: Config['environment']; deploymentId: s
   providerOrigin?: string | null; payerOrigin?: string | null; providerNode?: string | null; payerNode?: string | null;
   liquidOrigin?: string | null; liquidWallet?: string | null; liquidGenesisHash?: string | null;
   liquidChainName?: string | null; liquidPolicyAsset?: string | null; liquidParentGenesisHash?: string | null;
+  liquidAssetEvidence?: ConfirmedAssetEvidence;
   verified: Partial<Record<RailId, boolean>> };
 
 /** Read-only startup attestation. It runs before the journal/lock is opened and
@@ -25,6 +27,7 @@ export async function attestStartup(config: Config, clients: {
   let providerNode: string | null = null; let payerNode: string | null = null;
   let liquidOrigin: string | null = null; let liquidWallet: string | null = null; let liquidGenesisHash: string | null = null;
   let liquidChainName: string | null = null; let liquidPolicyAsset: string | null = null; let liquidParentGenesisHash: string | null = null;
+  let liquidAssetEvidence: ConfirmedAssetEvidence | undefined;
   if (config.rails.onchain.enabled) {
     if (!clients.bitcoin) throw new Error('ONCHAIN_ATTESTATION_UNAVAILABLE');
     if (!config.bitcoinNetwork || !config.bitcoinGenesisHash) throw new Error('BITCOIN_ATTESTATION_UNAVAILABLE');
@@ -65,16 +68,30 @@ export async function attestStartup(config: Config, clients: {
     const genesis = await clients.liquid.call<string>('getblockhash', [0]);
     const sidechain = await clients.liquid.call('getsidechaininfo');
     const wallet = await clients.liquid.call<{ walletname?: string }>('getwalletinfo', [], true);
-    const checked = verifyLiquidIdentity(blockchain, sidechain, { chainName: config.rails.liquid.chainName,
-      policyAsset: config.rails.liquid.policyAsset, parentGenesisHash: config.rails.liquid.parentGenesisHash });
+    let checked: { chainName: string; policyAsset: string; parentGenesisHash: string };
+    try {
+      checked = verifyLiquidIdentity(blockchain, sidechain, config.rails.liquid);
+    } catch (error) {
+      // Never use this path for a conflicting/malformed fee_asset or another profile.
+      if (!(error instanceof Error) || error.message !== 'LIQUID_FEE_ASSET_UNAVAILABLE' ||
+        config.environment !== 'liquid-regtest') throw error;
+      try {
+        liquidAssetEvidence = await confirmedAssetEvidence(config, clients.liquid,
+          { blockchain, sidechain, genesis, wallet });
+      } catch { throw new Error('LIQUID_FEE_ASSET_UNAVAILABLE: confirmed wallet asset evidence failed'); }
+      checked = { chainName: config.rails.liquid.chainName, policyAsset: liquidAssetEvidence.asset,
+        parentGenesisHash: config.rails.liquid.parentGenesisHash };
+    }
     if (config.rails.liquid.genesisHash && config.rails.liquid.genesisHash !== genesis) throw new Error('LIQUID_GENESIS_MISMATCH');
     if (wallet.walletname !== config.rails.liquid.wallet) throw new Error('LIQUID_WALLET_IDENTITY_MISMATCH');
     liquidOrigin = clients.liquid.origin ?? null; liquidWallet = config.rails.liquid.wallet; liquidGenesisHash = genesis;
     liquidChainName = checked.chainName; liquidPolicyAsset = checked.policyAsset; liquidParentGenesisHash = checked.parentGenesisHash;
-    verified.liquid = true;
+    // Aggregate rail verification retains its stronger fee-policy contract.
+    verified.liquid = liquidAssetEvidence === undefined;
   }
   if (config.deploymentId === null) throw new Error('DEPLOYMENT_ID_REQUIRED');
   return { environment: config.environment, deploymentId: config.deploymentId, genesisHash, wallet,
     bitcoinOrigin, providerOrigin, payerOrigin, providerNode, payerNode, liquidOrigin, liquidWallet,
-    liquidGenesisHash, liquidChainName, liquidPolicyAsset, liquidParentGenesisHash, verified };
+    liquidGenesisHash, liquidChainName, liquidPolicyAsset, liquidParentGenesisHash,
+    ...(liquidAssetEvidence ? { liquidAssetEvidence } : {}), verified };
 }

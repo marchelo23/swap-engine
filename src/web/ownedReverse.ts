@@ -50,7 +50,7 @@ function errorStatus(error: unknown) {
   return 'The server did not confirm the request. Check the swap status.';
 }
 
-export function mountOwnedReverse(onConfigured: (configured: Preparation, availability?: ReverseAvailability) => void) {
+export function mountOwnedReverse(onConfigured: (configured: Preparation, availability?: ReverseAvailability) => void, onCompleted: () => void) {
   const picker = get<HTMLSelectElement>('prepared-swap');
   const refreshButton = get<HTMLButtonElement>('owned-refresh');
   const reviewButton = get<HTMLButtonElement>('owned-review');
@@ -88,7 +88,7 @@ export function mountOwnedReverse(onConfigured: (configured: Preparation, availa
       localStorage.setItem(evidenceKey, evidence);
       if (localStorage.getItem(evidenceKey) !== evidence) return;
       localStorage.removeItem(executionKey); if (matchesPreparation) localStorage.removeItem(preparationKey);
-      try { sessionStorage.setItem('swap-engine.success-notice', swap.id); } catch { /* Storage is optional. */ }
+      onCompleted();
       location.hash = 'swap';
     } catch { /* Keep the verified history visible when browser storage cannot preserve it. */ }
   }
@@ -117,12 +117,15 @@ export function mountOwnedReverse(onConfigured: (configured: Preparation, availa
       ['Status', describeSwapState(swap.state).label],
       ['Execution', swap.execution.status.replaceAll('_', ' ')],
       ['Payment status', swap.payment.status.replaceAll('_', ' ')],
+      ['Lightning invoice amount', sats(swap.payment.valueSats)],
+      ['Service fee', sats(swap.quote.serviceFeeSats)],
+      ['Estimated claim fee', sats(swap.claim.feeSats)],
       ['Funding transaction', swap.funding.txid ?? 'Unavailable'],
       ['Funding fee', fee(swap.funding.feeSats)],
       ['Claim transaction', swap.claim.txid ?? 'Unavailable'],
       ['Actual routing fee', fee(swap.payment.feeSats)],
       ['Destination', swap.claimDestination],
-      ['Expected receipt', sats(swap.claim.netSats)],
+      ['Estimated net receipt', sats(swap.claim.netSats)],
     ] : []);
     actions();
   }
@@ -188,7 +191,7 @@ export function mountOwnedReverse(onConfigured: (configured: Preparation, availa
       if (latest.execution.status === 'RUNNING') poll = window.setTimeout(() => void refresh(latest.id), 3000);
     } catch (error) {
       if (requests !== controller) return;
-      if (!configured) onConfigured(error instanceof ApiResponseError && error.status === 404 ? false : 'unavailable');
+      if (!configured) onConfigured(error instanceof ApiResponseError && [403, 404].includes(error.status) ? false : 'unavailable');
       if (!visible) return;
       get('owned-controls').hidden = true;
       text('owned-tag', 'UNAVAILABLE');
@@ -274,16 +277,13 @@ export function mountOwnedReverse(onConfigured: (configured: Preparation, availa
       ['Route', 'Lightning → On-chain'],
       ['Prepared swap', swap.id],
       ['Destination', swap.claimDestination],
-      ['Principal', sats(q.amountSats)],
+      ['Amount to send', sats(swap.payment.valueSats)],
+      ['Lightning invoice amount', sats(q.invoiceSats)],
       ['Service fee', sats(q.serviceFeeSats)],
       ['Estimated claim fee', sats(swap.claim.feeSats)],
-      ['Maximum funding fee', sats(q.fundingReserveSats)],
-      ['Maximum routing fee', sats(q.invoiceSats === 50750 ? 100 : 0)],
-      ['Maximum Lightning debit', sats(q.invoiceSats + (q.invoiceSats === 50750 ? 100 : 0))],
       ['Regtest confirmations', 'Up to 2 blocks'],
-      ['Routing fee', fee(swap.payment.feeSats)],
-      ['Lightning payment', sats(swap.payment.valueSats)],
-      ['Expected receipt', sats(swap.claim.netSats)],
+      ['Actual routing fee', fee(swap.payment.feeSats)],
+      ['Estimated net receipt', sats(swap.claim.netSats)],
       ['Prepared quote expiry', deadline(q.expiresAt)],
       ['Execution approval deadline', deadline(swap.execution.approvedUntil)],
     ]);

@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -9,7 +10,8 @@ import { networks, payments } from 'bitcoinjs-lib';
 import { chromium, type Page } from 'playwright';
 import { createApi } from '../../src/api/server.js';
 import { railIds, type Capabilities } from '../../src/core/RailContract.js';
-import { buildArkQuote, createArkRegtestCliPort } from '../../src/ark/ArkAdapter.js';
+import { createArkRegtestCliPort } from '../../src/ark/ArkAdapter.js';
+import type { ArkQuote, Quote } from '../../src/web/api.js';
 import { preflight } from '../../src/diagnostics/preflight.js';
 import { setup, testAccount } from '../helpers.js';
 
@@ -18,6 +20,27 @@ const launchChromium = () => chromium.launch({
   ...(process.env.WEB_TEST_BROWSER_CHANNEL ? { channel: process.env.WEB_TEST_BROWSER_CHANNEL } : {}),
   ...(process.env.WEB_TEST_BROWSER_EXECUTABLE ? { executablePath: process.env.WEB_TEST_BROWSER_EXECUTABLE } : {}),
 });
+
+function debitQuote(invoiceSats: number, route: ArkQuote['route']): ArkQuote;
+function debitQuote(invoiceSats: number): Quote;
+function debitQuote(invoiceSats: number, route?: ArkQuote['route']): Quote | ArkQuote {
+  const serviceFeeSats = 500 + Math.ceil(invoiceSats * .005);
+  const claimFeeSats = route === 'onchain-to-ark' ? 262 : route === 'ark-to-onchain' ? 241 : 500;
+  const amountSats = invoiceSats - serviceFeeSats;
+  const quote = { id: randomUUID(), expiresAt: Date.now() + 120_000, invoiceSats, amountSats, serviceFeeSats, claimFeeSats,
+    fundingReserveSats: route ? 0 : 1_000 };
+  return route ? { ...quote, route, network: 'regtest', method: route === 'onchain-to-ark' ? 'boarding' : 'cooperative-offboarding',
+    netSats: amountSats - claimFeeSats, dustSats: 330 } : quote;
+}
+
+async function mockDebitQuotes(page: Page) {
+  for (const path of ['/v1/quotes', '/v1/ark/quotes']) {
+    await page.route('**' + path, route => {
+      const input = route.request().postDataJSON();
+      return route.fulfill({ status: 201, json: debitQuote(input.amountSats, input.route) });
+    });
+  }
+}
 
 async function waitForRails(page: Page, send: string, receive: string) {
   await page.waitForFunction(([send, receive]) => {
@@ -33,7 +56,7 @@ async function audit(page: Page) {
   assert.deepEqual(violations.map(item => ({ id: item.id, targets: item.nodes.map(node => node.target) })), []);
 }
 
-test('three faces quote a real route and preserve keyboard, account and responsive accessibility', async context => {
+test('three faces quote an exact debit and preserve keyboard, account and responsive accessibility', async context => {
   const f = await setup();
   context.after(f.cleanup);
   const server = createApi(f.manager, async () => { throw new Error('No nodes in browser test'); });
@@ -45,14 +68,17 @@ test('three faces quote a real route and preserve keyboard, account and responsi
   context.after(() => browser.close());
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, reducedMotion: 'reduce' });
   await page.clock.install();
+  await mockDebitQuotes(page);
   await page.route('**/v1/auth/session', route => route.fulfill({ status: 401, json: {} }));
   const quoteRequests: number[] = [];
+  const arkQuoteRequests: unknown[] = [];
   const swapRequests: string[] = [];
   const errors: string[] = [];
   page.on('pageerror', error => errors.push(error.message));
   page.on('request', request => {
     const path = new URL(request.url()).pathname;
     if (path === '/v1/quotes') quoteRequests.push(request.postDataJSON().amountSats);
+    if (path === '/v1/ark/quotes') arkQuoteRequests.push(request.postDataJSON());
     if (path.startsWith('/v1/swaps')) swapRequests.push(path);
   });
 
@@ -64,7 +90,7 @@ test('three faces quote a real route and preserve keyboard, account and responsi
   await page.waitForFunction(() => document.getElementById('mode')?.dataset.mode === 'simulation');
   assert.equal(await page.locator('header.top').innerText(), 'SWAP\nACCOUNT\nOPERATIONS');
   assert.equal(await page.locator('.footer-squares i').count(), 3);
-  await page.getByText('49,500', { exact: true }).waitFor();
+  await page.getByText('48,750', { exact: true }).waitFor();
   assert.deepEqual(quoteRequests, [50_000]);
   assert.equal(await page.locator('#quote-form .cube-unit').count(), 3);
   assert.equal(await page.locator('#swap .cube-send .plane-front #amount').count(), 1);
@@ -76,7 +102,7 @@ test('three faces quote a real route and preserve keyboard, account and responsi
   await page.keyboard.press('Enter');
   assert.equal(await page.locator(':focus').getAttribute('id'), 'main');
 
-  const amount = page.getByRole('textbox', { name: /quote principal/i });
+  const amount = page.getByRole('textbox', { name: 'Amount to send in sats' });
   const swap = page.getByRole('button', { name: 'SWAP', exact: true });
   assert.equal(await page.locator('#received-preview').evaluate(output => getComputedStyle(output).userSelect), 'none');
   assert.equal(await amount.evaluate(field => getComputedStyle(field).userSelect), 'text');
@@ -90,7 +116,7 @@ test('three faces quote a real route and preserve keyboard, account and responsi
   await page.getByText(/Enter 10,000/).waitFor();
   assert.deepEqual(quoteRequests, [50_000]);
   await amount.fill('50000');
-  await page.getByText('49,500', { exact: true }).waitFor();
+  await page.getByText('48,750', { exact: true }).waitFor();
   assert.equal(await page.locator('#service').textContent(), '750 sats');
   assert.equal(await page.locator('#claim').textContent(), '500 sats');
   assert.equal(await page.locator('#cost').textContent(), '1,250 sats');
@@ -100,7 +126,7 @@ test('three faces quote a real route and preserve keyboard, account and responsi
   await swap.press('Enter');
   const dialog = page.getByRole('dialog', { name: 'Review quote' });
   await dialog.waitFor();
-  await dialog.getByText('50,750 sats', { exact: true }).waitFor();
+  assert.match(await dialog.textContent() ?? '', /Lightning invoice amount\s*50,000 sats/);
   await dialog.getByText('Unknown', { exact: true }).waitFor();
   await dialog.getByText(/Simulation.*Execution disabled/).waitFor();
   assert.equal(await dialog.getByRole('button', { name: 'Start swap' }).isDisabled(), true);
@@ -119,18 +145,18 @@ test('three faces quote a real route and preserve keyboard, account and responsi
   let held!: () => void;
   const captured = new Promise<void>(resolve => { held = resolve; });
   await page.route('**/v1/quotes', async route => {
-    const oldResponse = await route.fetch();
+    const oldQuote = debitQuote(route.request().postDataJSON().amountSats);
     held();
     await holding;
-    await route.fulfill({ response: oldResponse }).catch(() => {});
+    await route.fulfill({ status: 201, json: oldQuote }).catch(() => {});
   }, { times: 1 });
   await amount.fill('60000');
   await captured;
   await amount.fill('70000');
-  await page.getByText('69,500', { exact: true }).waitFor();
+  await page.getByText('68,650', { exact: true }).waitFor();
   release();
   assert.deepEqual(quoteRequests, [50_000, 50_000, 60_000, 70_000]);
-  assert.equal(await page.locator('#received-preview').textContent(), '69,500');
+  assert.equal(await page.locator('#received-preview').textContent(), '68,650');
 
   await page.getByLabel('Send network').selectOption('onchain');
   await waitForRails(page, 'onchain', 'lightning');
@@ -141,7 +167,7 @@ test('three faces quote a real route and preserve keyboard, account and responsi
   await waitForRails(page, 'lightning', 'liquid');
   await page.getByLabel('Receive network').selectOption('onchain');
   await waitForRails(page, 'lightning', 'onchain');
-  await page.getByText('69,500', { exact: true }).waitFor();
+  await page.getByText('68,650', { exact: true }).waitFor();
   assert.deepEqual(quoteRequests, [50_000, 50_000, 60_000, 70_000, 70_000]);
 
   await audit(page);
@@ -169,18 +195,18 @@ test('three faces quote a real route and preserve keyboard, account and responsi
   assert.equal(await page.locator('#icon-ark image').getAttribute('href'), '/arkade-mark.svg');
   assert.deepEqual(await page.locator('.cube-send .rail-icon').evaluate(icon =>
     [getComputedStyle(icon).width, getComputedStyle(icon).height]), ['19px', '19px']);
-  await page.getByText('69,759', { exact: true }).waitFor();
+  await page.getByText('68,909', { exact: true }).waitFor();
   assert.equal(await page.locator('#service').textContent(), '850 sats');
   assert.equal(await page.locator('#claim').textContent(), '241 sats');
   assert.equal(await page.locator('#cost').textContent(), '1,091 sats');
-  await page.getByText('Ark cooperative offboard quote ready · regtest only', { exact: true }).waitFor();
+  await page.getByText('Simulation · execution disabled', { exact: true }).waitFor();
   assert.equal(await swap.isDisabled(), false);
 
   await page.getByLabel('Receive network').selectOption('ark');
   await waitForRails(page, 'onchain', 'ark');
   await amount.fill('80000');
-  await page.getByText('79,738', { exact: true }).waitFor();
-  await page.getByText('Ark boarding quote ready · regtest only', { exact: true }).waitFor();
+  await page.getByText('78,838', { exact: true }).waitFor();
+  await page.getByText('Simulation · execution disabled', { exact: true }).waitFor();
   assert.equal(await swap.isDisabled(), false);
   assert.equal(await page.locator('#service').textContent(), '900 sats');
   assert.equal(await page.locator('#claim').textContent(), '262 sats');
@@ -188,13 +214,20 @@ test('three faces quote a real route and preserve keyboard, account and responsi
   assert.equal(await page.locator('#receive-icon').getAttribute('href'), '#icon-ark');
   assert.equal(quoteRequests.length, beforeArk);
 
+  const beforeUnsupported = arkQuoteRequests.length;
   await page.getByLabel('Send network').selectOption('lightning');
   await waitForRails(page, 'lightning', 'ark');
-  const arkNotice = page.getByText('Solo regtest · swaps no disponibles', { exact: true });
-  await arkNotice.waitFor();
+  await page.getByText('Lightning → Ark unsupported', { exact: true }).waitFor();
+  assert.equal(await swap.isDisabled(), true);
+  await page.getByLabel('Receive network').selectOption('lightning');
+  await waitForRails(page, 'liquid', 'lightning');
+  await page.getByLabel('Send network').selectOption('ark');
+  await waitForRails(page, 'ark', 'lightning');
+  await page.getByText('Ark → Lightning unsupported', { exact: true }).waitFor();
   assert.equal(await swap.isDisabled(), true);
   assert.equal(await page.locator('#received-preview').textContent(), '—');
   assert.equal(quoteRequests.length, beforeArk);
+  assert.equal(arkQuoteRequests.length, beforeUnsupported);
   for (const [width, height] of [[320, 700], [390, 844], [701, 844], [768, 844], [1024, 600], [1366, 768], [1440, 900]] as const) {
     await page.setViewportSize({ width, height });
     const bounds = await page.evaluate(() => ({
@@ -623,7 +656,8 @@ test('prepared swaps use verified terms, durable idempotency and separate reconc
   await dialog.getByText(destination, { exact: true }).waitFor();
   await dialog.getByText('Prepared quote expiry', { exact: true }).waitFor();
   await dialog.getByText('Execution approval deadline', { exact: true }).waitFor();
-  await dialog.getByText('50,750 sats', { exact: true }).waitFor();
+  await dialog.getByText('Lightning invoice amount', { exact: true }).waitFor();
+  assert.match(await dialog.textContent() ?? '', /Amount to send\s*50,750 sats/);
   await page.screenshot({ path: evidence + '/prepared-swap-review.png' });
   assert.equal(captured.length, 0);
   revision++;
@@ -728,6 +762,7 @@ test('actual mouse and touch gestures rotate in both directions and linked anima
     ...(process.env.WEB_TEST_RECORD === '1' ? { recordVideo: { dir: evidence, size: { width: 1366, height: 768 } } } : {}),
   });
   const page = await desktop.newPage();
+  await mockDebitQuotes(page);
   const url = 'http://127.0.0.1:' + (server.address() as AddressInfo).port + '/';
   const observations: Array<Promise<[boolean, string, string]>> = [];
   page.on('request', request => {
@@ -741,7 +776,7 @@ test('actual mouse and touch gestures rotate in both directions and linked anima
   await page.goto(url);
   await page.locator('#opening-overlay').waitFor({ state: 'hidden' });
   await page.locator('.cube-swap').evaluate(cube => Promise.all(cube.getAnimations().map(animation => animation.finished)));
-  await page.getByText('49,500', { exact: true }).waitFor();
+  await page.getByText('48,750', { exact: true }).waitFor();
 
   const send = page.getByLabel('Send network');
   const receive = page.getByLabel('Receive network');
@@ -792,7 +827,7 @@ test('actual mouse and touch gestures rotate in both directions and linked anima
   await waitForRails(page, 'onchain', 'liquid');
   await receive.selectOption('onchain');
   await waitForRails(page, 'lightning', 'onchain');
-  await page.getByText('49,500', { exact: true }).waitFor();
+  await page.getByText('48,750', { exact: true }).waitFor();
   assert.equal(observations.length, 2);
   assert.deepEqual(await Promise.all(observations), [[false, 'lightning', 'onchain'], [false, 'lightning', 'onchain']]);
 
@@ -801,23 +836,23 @@ test('actual mouse and touch gestures rotate in both directions and linked anima
   await sendGrip.press('ArrowDown');
   await page.getByRole('button', { name: 'Rotate receive cube' }).press('ArrowUp');
   await waitForRails(page, 'liquid', 'ark');
-  await page.getByText('Solo regtest · swaps no disponibles', { exact: true }).waitFor();
+  await page.getByText('Route unavailable', { exact: true }).waitFor();
   assert.equal(await page.getByRole('button', { name: 'SWAP', exact: true }).isDisabled(), true);
   assert.equal(await page.locator('#received-preview').textContent(), '\u2014');
   assert.equal(observations.length, 2);
   const receiveGrip = page.getByRole('button', { name: 'Rotate receive cube' });
   await send.selectOption('onchain');
   await waitForRails(page, 'onchain', 'ark');
-  await page.getByText('49,738', { exact: true }).waitFor();
+  await page.getByText('48,988', { exact: true }).waitFor();
   await receiveGrip.hover();
   await page.mouse.wheel(0, 80);
   await page.mouse.wheel(0, 80);
   await waitForRails(page, 'lightning', 'onchain');
-  await page.getByText('49,500', { exact: true }).waitFor();
+  await page.getByText('48,750', { exact: true }).waitFor();
   await receiveGrip.hover();
   await page.mouse.wheel(0, -80);
   await waitForRails(page, 'lightning', 'ark');
-  await page.getByText('Solo regtest · swaps no disponibles', { exact: true }).waitFor();
+  await page.getByText('Lightning → Ark unsupported', { exact: true }).waitFor();
   assert.equal(observations.length, 3);
   const video = page.video();
   await desktop.close();
@@ -867,7 +902,7 @@ test('actual mouse and touch gestures rotate in both directions and linked anima
   await mobile.close();
 });
 
-test('Ark regtest UI requires explicit inputs, keeps SUBMITTED pending without ¡Swap exitoso!, and updates UNAVAILABLE telemetry', async context => {
+test('Ark regtest UI gates execution, separates pending from confirmed, and updates unavailable telemetry', async context => {
   const f = await setup();
   context.after(f.cleanup);
   const adminAccount = await testAccount(f.directory, 'ADMIN');
@@ -925,19 +960,57 @@ test('Ark regtest UI requires explicit inputs, keeps SUBMITTED pending without �
   const errors: string[] = [];
   page.on('pageerror', err => errors.push(err.message));
 
-  // 1. Sign in as the authorized operator and submit an explicit boarding swap (202 SUBMITTED)
+  let boardingQuote: ArkQuote | undefined;
+  await page.route('**/v1/ark/quotes', async route => {
+    const input = route.request().postDataJSON();
+    if (input.route === 'ark-to-onchain') return route.fulfill({ status: 201, json: debitQuote(input.amountSats, input.route) });
+    let response = await route.fetch();
+    boardingQuote = await response.json() as ArkQuote;
+    if (boardingQuote.invoiceSats !== input.amountSats) {
+      // Bridge the b10e4a7 principal-based fixture while retaining a real server quote ID for POST.
+      assert.equal(input.amountSats, 50_000);
+      response = await route.fetch({ postData: { ...input, amountSats: 49_253 } });
+      boardingQuote = await response.json() as ArkQuote;
+    }
+    assert.equal(boardingQuote.invoiceSats, input.amountSats);
+    return route.fulfill({ response });
+  });
+
+  // 1. A session with an unavailable route can review, but cannot submit.
+  await page.route('**/v1/ark/availability', route => route.fulfill({ json: { executionAvailable: false } }));
   await page.goto(`${base}/#account`);
   await page.getByLabel('Username', { exact: true }).fill(adminAccount.username);
   await page.getByLabel('Password', { exact: true }).fill(adminAccount.password);
   await page.getByRole('button', { name: 'Sign in', exact: true }).click();
   await page.locator('#account-dashboard').waitFor({ state: 'visible' });
 
+  async function selectBoarding() {
+    await page.getByLabel('Send network').selectOption('onchain');
+    await waitForRails(page, 'onchain', 'lightning');
+    await page.getByLabel('Receive network').selectOption('ark');
+    await waitForRails(page, 'onchain', 'ark');
+    await page.locator('#received-preview').filter({ hasText: /^48,9[0-9]{2}$/ }).waitFor();
+  }
   await page.getByRole('link', { name: 'Swap', exact: true }).click();
-  await page.getByLabel('Send network').selectOption('onchain');
-  await waitForRails(page, 'onchain', 'lightning');
-  await page.getByLabel('Receive network').selectOption('ark');
-  await waitForRails(page, 'onchain', 'ark');
-  await page.getByText('49,738', { exact: true }).waitFor();
+  await selectBoarding();
+  await page.getByText('Ark execution unavailable for this account', { exact: true }).waitFor();
+  for (const [width, height] of [[320, 700], [701, 640], [1440, 900]] as const) {
+    await page.setViewportSize({ width, height });
+    assert.equal(await page.locator('.cube-swap .plane-front').evaluate(face => face.scrollHeight <= face.clientHeight), true,
+      `Route readiness overflows the face at ${width}×${height}`);
+  }
+  await page.getByRole('button', { name: 'SWAP', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'Review quote' });
+  const startSwap = dialog.getByRole('button', { name: 'Start swap', exact: true });
+  await dialog.getByText('Ark execution unavailable for this account', { exact: true }).waitFor();
+  assert.equal(await startSwap.isDisabled(), true);
+  assert.equal(await page.locator('#ark-execution-fields').isVisible(), false);
+
+  // Restore the baseline contract and submit boarding via the fake adapter.
+  await page.unroute('**/v1/ark/availability');
+  await page.reload();
+  await selectBoarding();
+  await page.getByText('Regtest execution available', { exact: true }).waitFor();
 
   const capturedSwaps: Array<{ key: string; csrf: string; body: unknown }> = [];
   page.on('request', req => {
@@ -948,12 +1021,10 @@ test('Ark regtest UI requires explicit inputs, keeps SUBMITTED pending without �
   });
 
   await page.getByRole('button', { name: 'SWAP', exact: true }).click();
-  const dialog = page.getByRole('dialog', { name: 'Review quote' });
   await dialog.waitFor({ state: 'visible' });
   assert.equal(await page.locator('#ark-execution-fields').isVisible(), true);
   assert.equal(await page.locator('#ark-boarding-fields').isVisible(), true);
   assert.equal(await page.locator('#ark-offboard-fields').isVisible(), false);
-  const startSwap = dialog.getByRole('button', { name: 'Start swap', exact: true });
   assert.equal(await startSwap.isDisabled(), true);
   assert.equal(await page.getByLabel('Funding outpoint (txid:vout)').inputValue(), '');
 
@@ -966,21 +1037,26 @@ test('Ark regtest UI requires explicit inputs, keeps SUBMITTED pending without �
   assert.equal(await startSwap.isDisabled(), false);
 
   await startSwap.click();
-  await dialog.getByText('Ark regtest swap submitted (pending settlement confirmation).', { exact: true }).waitFor();
-  assert.equal(await page.locator('#quote-status').textContent(), 'Ark regtest swap submitted · pending confirmation');
+  await dialog.locator('#execution-status').filter({ hasText: /^Boarding · pending confirmation$/ }).waitFor();
+  await mkdir(evidence, { recursive: true });
+  await page.screenshot({ path: evidence + '/mock-ark-boarding-pending.png' });
+  assert.equal(await page.locator('#quote-status').textContent(), 'Boarding · pending confirmation');
   assert.equal(await page.getByText('¡Swap exitoso!').count(), 0);
   assert.equal(capturedSwaps.length, 1);
   assert.match(capturedSwaps[0]!.key, /^[A-Za-z0-9_-]{8,128}$/);
   assert.match(capturedSwaps[0]!.csrf, /^[a-f0-9]{64}$/);
   assert.deepEqual((capturedSwaps[0]!.body as Record<string, unknown>).fundingOutpoint, boardingOutpoint);
   assert.deepEqual((capturedSwaps[0]!.body as Record<string, unknown>).wallet, 'alice');
+  assert.equal((capturedSwaps[0]!.body as Record<string, unknown>).amountSats, boardingQuote?.amountSats);
+  assert.notEqual((capturedSwaps[0]!.body as Record<string, unknown>).amountSats, 50_000);
 
   await dialog.getByRole('button', { name: 'Close review', exact: true }).click();
   await page.getByRole('link', { name: 'Account', exact: true }).click();
-  await page.getByText(new RegExp('^1 Ark .* owned by ' + adminAccount.username + '\\.$')).waitFor();
+  await page.locator('#account-history-list').getByText('Pending', { exact: true }).waitFor();
   assert.equal(await page.locator('#account-active-swaps').textContent(), '1');
   assert.equal(await page.locator('#account-completed-swaps').textContent(), '0');
   assert.equal(await page.locator('#account-failed-swaps').textContent(), '0');
+  assert.equal(await page.locator('#account-history-list .tag').textContent(), 'Pending');
 
   // 2. Sign in as ADMIN: verify Operations shows pending=1, completed=0, settled=0 sats, and live->unavailable telemetry
   await page.getByRole('button', { name: 'Sign out', exact: true }).click();
@@ -1010,37 +1086,46 @@ test('Ark regtest UI requires explicit inputs, keeps SUBMITTED pending without �
   await page.waitForFunction(() => document.getElementById('ark-tag')?.textContent === 'UNAVAILABLE');
   assert.equal(await page.locator('#ark-status').textContent(), 'Ark regtest operator telemetry is unavailable.');
 
-  // 3. Test 201 CONFIRMED cooperative offboarding flow + idempotency key reuse on retry + confirmed accounting
-  const confirmedQuote = buildArkQuote('ark-to-onchain', 50_000, Date.now());
+  // 3. Mock cooperative offboarding progressing from a 202 to a confirmed status read.
+  const confirmedQuote = debitQuote(50_000, 'ark-to-onchain');
+  const offboardId = '22222222-2222-4222-8222-222222222222';
+  const confirmedRecord = {
+    id: offboardId,
+    network: 'regtest',
+    route: 'ark-to-onchain',
+    method: 'cooperative-offboarding',
+    status: 'CONFIRMED',
+    quote: confirmedQuote,
+    inputOutpoint: offboardVtxo,
+    destination: offboardDestination,
+    commitmentTxid: offboardCommitment,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+  };
   let postAttempt = 0;
+  let statusReads = 0;
   const offboardKeys: string[] = [];
+  await page.route(`**/v1/ark/swaps/${offboardId}`, route => {
+    statusReads++;
+    assert.equal(route.request().method(), 'GET');
+    return route.fulfill({ json: { ...confirmedRecord, updatedAt: Date.now() } });
+  });
   await page.route('**/v1/ark/swaps', async route => {
     if (route.request().method() !== 'POST') return route.continue();
     postAttempt++;
     offboardKeys.push(route.request().headers()['idempotency-key']!);
     if (postAttempt === 1) return route.abort('failed');
+    confirmedRecord.quote.id = route.request().postDataJSON().quoteId;
     return route.fulfill({
-      status: 201,
-      json: {
-        id: '22222222-2222-4222-8222-222222222222',
-        network: 'regtest',
-        route: 'ark-to-onchain',
-        method: 'cooperative-offboarding',
-        status: 'CONFIRMED',
-        quote: confirmedQuote,
-        inputOutpoint: offboardVtxo,
-        destination: offboardDestination,
-        commitmentTxid: offboardCommitment,
-        createdAt: Date.now(),
-        updatedAt: Date.now(),
-      },
+      status: 202,
+      json: { ...confirmedRecord, status: 'SUBMITTED', updatedAt: Date.now() },
     });
   });
 
   await page.getByRole('link', { name: 'Swap', exact: true }).click();
   await page.getByLabel('Send network').selectOption('ark');
   await waitForRails(page, 'ark', 'onchain');
-  await page.getByText('49,759', { exact: true }).waitFor();
+  await page.getByText('49,009', { exact: true }).waitFor();
   await page.getByRole('button', { name: 'SWAP', exact: true }).click();
   await dialog.waitFor({ state: 'visible' });
   assert.equal(await page.locator('#ark-offboard-fields').isVisible(), true);
@@ -1058,26 +1143,17 @@ test('Ark regtest UI requires explicit inputs, keeps SUBMITTED pending without �
   assert.equal(await startSwap.isDisabled(), false);
 
   await startSwap.click();
-  await dialog.getByText('Ark regtest swap confirmed.', { exact: true }).waitFor();
-  assert.equal(await page.locator('#quote-status').textContent(), '¡Swap exitoso!');
+  await dialog.locator('#execution-status').filter({ hasText: /^Offboarding · pending confirmation$/ }).waitFor();
+  assert.equal(await page.locator('#quote-status').textContent(), 'Offboarding · pending confirmation');
+  await dialog.locator('#execution-status').filter({ hasText: /^Offboarding · confirmed$/ }).waitFor();
+  await page.screenshot({ path: evidence + '/mock-ark-offboarding-confirmed.png' });
+  assert.equal(await page.locator('#quote-status').textContent(), 'Offboarding · confirmed');
+  assert.equal(statusReads, 1);
   assert.equal(offboardKeys.length, 2);
   assert.equal(offboardKeys[1], offboardKeys[0]);
   await dialog.getByRole('button', { name: 'Close review', exact: true }).click();
 
   // Verify confirmed state reflection in Account & Admin when backend serves a CONFIRMED swap
-  const confirmedRecord = {
-    id: '22222222-2222-4222-8222-222222222222',
-    network: 'regtest',
-    route: 'ark-to-onchain',
-    method: 'cooperative-offboarding',
-    status: 'CONFIRMED',
-    quote: confirmedQuote,
-    inputOutpoint: offboardVtxo,
-    destination: offboardDestination,
-    commitmentTxid: offboardCommitment,
-    createdAt: Date.now(),
-    updatedAt: Date.now(),
-  };
   await page.route('**/v1/ark/swaps', route => route.request().method() === 'GET'
     ? route.fulfill({ json: { network: 'regtest', swaps: [confirmedRecord] } })
     : route.continue());
@@ -1102,18 +1178,88 @@ test('Ark regtest UI requires explicit inputs, keeps SUBMITTED pending without �
   }));
 
   await page.getByRole('link', { name: 'Account', exact: true }).click();
-  await page.getByText(`1 Ark ↔ On-chain swap owned by ${adminAccount.username}.`, { exact: true }).waitFor();
+  await page.locator('#account-history-list').getByText('Confirmed', { exact: true }).waitFor();
   assert.equal(await page.locator('#account-active-swaps').textContent(), '0');
   assert.equal(await page.locator('#account-completed-swaps').textContent(), '1');
 
   await page.getByRole('link', { name: 'Operations', exact: true }).click();
   await page.waitForFunction(() => document.getElementById('activity-completed')?.textContent === '1');
   assert.equal(await page.locator('#activity-pending').textContent(), '0');
-  assert.equal(await page.locator('#activity-ark-sent').textContent(), '50,750 sats');
-  assert.equal(await page.locator('#activity-onchain-received').textContent(), '49,759 sats');
+  assert.equal(await page.locator('#activity-ark-sent').textContent(), '50,000 sats');
+  assert.equal(await page.locator('#activity-onchain-received').textContent(), '49,009 sats');
   assert.equal(await page.locator('#fee-collected').textContent(), '750 sats');
   assert.equal(await page.locator('#fee-network').textContent(), '241 sats');
   assert.equal(await page.locator('#fee-net-revenue').textContent(), '750 sats');
 
   assert.deepEqual(errors, []);
+});
+
+test('private history filters rails and terminal states and deduplicates linked attempts without exposing other records', async context => {
+  const f = await setup(); context.after(f.cleanup);
+  const account = await testAccount(f.directory, 'USER');
+  const server = createApi(f.manager, async () => { throw new Error('Offline test port'); }, undefined, 'regtest', {
+    auth: { storePath: account.storePath },
+  });
+  server.listen(0, '127.0.0.1'); await once(server, 'listening');
+  context.after(() => new Promise<void>(resolve => server.close(() => resolve())));
+  const browser = await launchChromium(); context.after(() => browser.close());
+  const page = await browser.newPage({ viewport: { width: 390, height: 844 }, reducedMotion: 'reduce' });
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  await mockDebitQuotes(page);
+  const id = (digit: string) => `${digit.repeat(8)}-${digit.repeat(4)}-4222-8222-${digit.repeat(12)}`;
+  const claimDestination = payments.p2wpkh({ hash: Buffer.alloc(20, 0x44), network: networks.regtest }).address!;
+  const swap = { id: id('1'), network: 'regtest', revision: 4, state: 'REFUNDED', quote: f.quote, claimDestination,
+    payment: { status: 'FAILED', valueSats: f.quote.invoiceSats, feeSats: null },
+    funding: { txid: '11'.repeat(32), feeSats: 100 },
+    claim: { txid: null, feeSats: f.quote.claimFeeSats, netSats: f.quote.amountSats - f.quote.claimFeeSats },
+    execution: { status: 'RECONCILIATION_REQUIRED', approvedUntil: null }, allowedActions: [], invoice: 'must-not-display-invoice' };
+  const attempt = (digit: string, status: string, swapId: string | null = null) => ({ id: digit.repeat(64), status, swapId, statusUrl: '/unused' });
+  await page.route('**/v1/reverse/availability', route => route.fulfill({ json: {
+    network: 'regtest', liveSwapsEnabled: false, controlledReverseConfigured: true, executionAvailable: false,
+    recoveryAvailable: true, preparedSwapIds: [swap.id],
+    preparations: [attempt('b', 'READY', swap.id), attempt('c', 'EXPIRED'), attempt('d', 'REJECTED')],
+  } }));
+  await page.route('**/v1/swaps', route => route.fulfill({ json: {
+    network: 'regtest', swaps: [{ ...swap, state: 'INVOICE_CREATED', revision: 1 }, swap, { ...swap, id: id('9') }],
+  } }));
+  await page.route('**/v1/ark/swaps', route => route.fulfill({ json: { network: 'regtest', swaps: [] } }));
+  const guestReads: string[] = [];
+  page.on('request', request => { if (request.url().includes('/v1/guest/quotes')) guestReads.push(request.url()); });
+
+  await page.goto(base + '/#account');
+  await page.getByLabel('Username', { exact: true }).fill(account.username);
+  await page.getByLabel('Password', { exact: true }).fill(account.password);
+  await page.getByRole('button', { name: 'Sign in', exact: true }).click();
+  const list = page.locator('#account-history-list');
+  await list.getByText('Refunded', { exact: true }).waitFor();
+  assert.equal(await list.locator('li').count(), 3);
+  assert.equal(await page.locator('#account-expired-swaps').textContent(), '1');
+  assert.equal(await page.locator('#account-failed-swaps').textContent(), '1');
+  assert.equal(await page.locator('#account-refunded-swaps').textContent(), '1');
+  assert.doesNotMatch(await list.textContent() ?? '', new RegExp(`${id('9')}|${'b'.repeat(64)}|must-not-display-invoice`));
+  await page.getByLabel('History status').selectOption('Expired');
+  assert.equal(await list.locator('li').count(), 1);
+  await page.getByLabel('History route').selectOption('On-chain → Ark');
+  await page.getByText('No matching records.', { exact: true }).waitFor();
+
+  await page.getByRole('link', { name: 'Swap', exact: true }).click();
+  await page.getByLabel('Send network').selectOption('onchain');
+  await waitForRails(page, 'onchain', 'lightning');
+  await page.getByLabel('Receive network').selectOption('ark');
+  await waitForRails(page, 'onchain', 'ark');
+  const swapButton = page.getByRole('button', { name: 'SWAP', exact: true });
+  const review = page.getByRole('dialog', { name: 'Review quote' });
+  for (const _ of [1, 2]) {
+    await swapButton.click();
+    await review.getByRole('button', { name: 'Close review', exact: true }).click();
+  }
+  await page.getByRole('link', { name: 'Account', exact: true }).click();
+  await page.getByLabel('History status').selectOption('Quoted');
+  await list.getByText('Reviewed in this session', { exact: true }).waitFor();
+  assert.equal(await list.locator('li').count(), 1);
+  await audit(page);
+  await page.getByRole('button', { name: 'Sign out', exact: true }).click();
+  await page.locator('#signin').waitFor();
+  assert.equal(await list.locator('li').count(), 0);
+  assert.deepEqual(guestReads, []);
 });

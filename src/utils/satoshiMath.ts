@@ -43,8 +43,10 @@ export function validateQuoteFields(quote: Quote): boolean {
   validateMonetaryValue(quote.fundingReserveSats);
   validateMonetaryValue(quote.claimFeeSats);
 
-  // Validate amount range
-  validateAmount(quote.amountSats);
+  // Older quotes recorded the principal as the input. New exact-debit quotes
+  // can have a principal below the input minimum once the service fee is deducted.
+  if (quote.amountSats === 0) throw new SatoshiMathError('Principal must be positive');
+  validateAmount(quote.amountSats < 10_000 ? quote.invoiceSats : quote.amountSats);
 
   // Validate that invoiceSats equals amount + serviceFee (exact match)
   if (quote.invoiceSats !== quote.amountSats + quote.serviceFeeSats) {
@@ -54,12 +56,6 @@ export function validateQuoteFields(quote: Quote): boolean {
   // Validate claim fee does not exceed principal (allowed to equal it)
   if (quote.claimFeeSats > quote.amountSats) {
     throw new SatoshiMathError('Claim fee cannot exceed principal amount');
-  }
-
-  // Validate calculation consistency - amount + serviceFee = invoiceSats
-  const calculatedInvoice = quote.amountSats + quote.serviceFeeSats;
-  if (quote.invoiceSats !== calculatedInvoice) {
-    throw new SatoshiMathError(`Invoice mismatch: expected ${calculatedInvoice}, got ${quote.invoiceSats}`);
   }
 
   return true;

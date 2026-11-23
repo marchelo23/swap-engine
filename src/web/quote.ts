@@ -1,6 +1,8 @@
-import { api, quoteTotals, type ArkQuote, type ArkSwapPayload, type Quote } from './api.js';
+import type { Environment } from '../core/RailContract.js';
+import { api, quoteTotals, type ArkQuote, type ArkSwapPayload, type ArkSwapStatus, type Quote } from './api.js';
+import { arkProgress, arkStatusLabel } from './arkStatus.js';
 import { mountCubes } from './cubes.js';
-import { arkRoute, canQuote, defaultPair, isArkOnchainPair, railLabel, type Pair } from './rails.js';
+import { arkRoute, canQuote, defaultPair, isArkOnchainPair, railLabel, unsupportedRoute, type Pair } from './rails.js';
 import { details, get, integer, message, sats, text } from './ui.js';
 
 const outpointPattern = /^[a-f0-9]{64}:(0|[1-9][0-9]{0,8})$/;
@@ -9,7 +11,8 @@ const regtestArkPattern = /^tark1[qpzry9x8gf2tvdw0s3jn54khce6mua7l]{20,140}$/;
 
 type GuestFlow = { begin(amountSats: number, active: () => boolean): Promise<void>; cancel(): void };
 
-export function mountQuote(prepare?: (stillVisible: () => boolean, amountSats: number) => Promise<void>, guestFlow?: GuestFlow) {
+export function mountQuote(prepare?: (stillVisible: () => boolean, amountSats: number) => Promise<void>, guestFlow?: GuestFlow,
+  recordQuote?: (pair: Pair, quote: Quote) => void) {
   const form = get<HTMLFormElement>('quote-form');
   const amount = get<HTMLInputElement>('amount');
   const action = get<HTMLButtonElement>('swap-action');
@@ -34,6 +37,7 @@ export function mountQuote(prepare?: (stillVisible: () => boolean, amountSats: n
   let controlled: boolean | 'unavailable' | null = null;
   let csrf: string | undefined;
   let canPrepare = false; let preparing = false;
+  let hasPreparedSwap = false;
   let guestConfigured = false; let guestAvailable = false;
   let revision = 0;
   let quote: Quote | ArkQuote | undefined;
@@ -41,9 +45,31 @@ export function mountQuote(prepare?: (stillVisible: () => boolean, amountSats: n
   let debounce: number | undefined;
   let expiry: number | undefined;
   let submittingArk = false;
-  let arkExecutionAllowed = false;
+  let arkExecutionAllowed: boolean | null | 'unavailable' = null;
+  let arkEnvironment: Environment | null | undefined = null;
   let executedArkSwapId: string | undefined;
   let arkIdempotency: { fingerprint: string; key: string } | undefined;
+  let arkStatusTimer: number | undefined;
+  let arkStatusController: AbortController | undefined;
+
+  function canExecuteArk() {
+    return (arkEnvironment === 'regtest' || arkEnvironment === 'ark-regtest') && Boolean(csrf) && arkExecutionAllowed === true;
+  }
+
+  function arkReadiness() {
+    if (canExecuteArk()) return 'Regtest execution available';
+    if (arkEnvironment === null) return 'Checking Ark environment…';
+    if (arkEnvironment === undefined) return 'Ark environment unavailable';
+    if (arkEnvironment === 'simulation') return 'Simulation · execution disabled';
+    if (arkEnvironment !== 'regtest' && arkEnvironment !== 'ark-regtest') return 'Ark execution requires regtest';
+    if (!csrf) return 'Sign in to check Ark execution';
+    if (arkExecutionAllowed === null) return 'Checking Ark execution…';
+    return arkExecutionAllowed === 'unavailable' ? 'Ark readiness unavailable' : 'Ark execution unavailable for this account';
+  }
+
+  function showArkQuoteStatus() {
+    if (!executedArkSwapId) status(arkReadiness());
+  }
 
   function setFieldValidity(input: HTMLInputElement, valid: boolean) {
     if (input.value.trim().length > 0 && !valid) input.setAttribute('aria-invalid', 'true');
@@ -67,7 +93,7 @@ export function mountQuote(prepare?: (stillVisible: () => boolean, amountSats: n
 
   function buildArkPayload(): { payload: ArkSwapPayload } | { error: string } | undefined {
     const route = arkRoute(pair);
-    if (!route || !quote || !arkExecutionAllowed || !csrf) return undefined;
+    if (!route || !quote || !canExecuteArk() || !csrf) return undefined;
     if (route === 'onchain-to-ark') {
       const wallet = arkWallet.value === 'bob' ? 'bob' : 'alice';
       const fundingOutpoint = arkFundingOutpoint.value.trim();
@@ -112,11 +138,15 @@ export function mountQuote(prepare?: (stillVisible: () => boolean, amountSats: n
     if (!dialog.open || submittingArk || executedArkSwapId) return;
     const route = arkRoute(pair);
     if (!route || !quote) return;
-    const mode = get('mode').dataset.mode;
-    if ((mode !== 'regtest' && mode !== 'ark-regtest') || !csrf || !arkExecutionAllowed) {
+    if (!canExecuteArk()) {
+      arkFields.hidden = true;
       startButton.disabled = true;
+      text('execution-status', arkReadiness());
       return;
     }
+    arkFields.hidden = false;
+    arkBoardingFields.hidden = route !== 'onchain-to-ark';
+    arkOffboardFields.hidden = route !== 'ark-to-onchain';
     if (quote.expiresAt <= Date.now()) {
       startButton.disabled = true;
       text('execution-status', 'Quote expired · Close review and press Swap for a fresh quote.');
@@ -140,13 +170,72 @@ export function mountQuote(prepare?: (stillVisible: () => boolean, amountSats: n
     el.addEventListener('input', updateArkExecutionState);
     el.addEventListener('change', updateArkExecutionState);
   }
+
+  function stopArkStatus() {
+    window.clearTimeout(arkStatusTimer);
+    arkStatusController?.abort();
+    arkStatusController = undefined;
+  }
+
+  function showArkResult(result: ArkSwapStatus) {
+    const progress = arkProgress(result);
+    const label = arkStatusLabel(result);
+    details(get('review-details'), [
+      ['Route', railLabel[pair.send] + ' → ' + railLabel[pair.receive]],
+      ['Method', result.method === 'boarding' ? 'Boarding (On-chain → Ark VTXO)' : 'Cooperative offboarding (Ark VTXO → On-chain)'],
+      ['Status', label],
+      ['Swap ID', result.id],
+      ['Quoted debit', sats(result.quote.invoiceSats)],
+      ['Service fee', sats(result.quote.serviceFeeSats)],
+      ['Estimated batch commitment fee', sats(result.quote.claimFeeSats)],
+      ['Input outpoint', result.inputOutpoint],
+      ['Destination', result.destination],
+      ['Commitment txid', result.commitmentTxid ?? 'Unavailable'],
+      ['Estimated net receipt', sats(result.quote.netSats)],
+    ]);
+    const notice = progress === 'uncertain' ? `${label}. Reconcile the original outpoint before retrying.` : label;
+    text('execution-status', notice);
+    status(label);
+  }
+
+  function trackArkResult(result: ArkSwapStatus) {
+    if (!dialog.open || arkProgress(result) !== 'pending') return;
+    const version = revision;
+    const controller = new AbortController();
+    arkStatusController = controller;
+    const poll = async () => {
+      try {
+        const current = await api.arkSwapStatus(result.id, controller.signal);
+        if (controller.signal.aborted || !dialog.open || version !== revision) return;
+        if (current.id !== result.id || current.quote.id !== result.quote.id || current.route !== result.route) {
+          throw new Error('Ark status record mismatch.');
+        }
+        if (current.updatedAt >= result.updatedAt) {
+          const changed = current.status !== result.status || current.commitmentTxid !== result.commitmentTxid;
+          if (changed) showArkResult(current);
+          else text('execution-status', arkStatusLabel(current));
+          result = current;
+        }
+      } catch {
+        if (!controller.signal.aborted && dialog.open && version === revision) {
+          text('execution-status', `${arkStatusLabel(result)} · latest status unavailable`);
+        }
+      }
+      if (!controller.signal.aborted && dialog.open && version === revision && arkProgress(result) === 'pending') {
+        arkStatusTimer = window.setTimeout(() => void poll(), 5_000);
+      }
+    };
+    arkStatusTimer = window.setTimeout(() => void poll(), 2_000);
+  }
+
   dialog.addEventListener('close', () => {
+    stopArkStatus();
     clearArkFields();
   });
 
   startButton.addEventListener('click', async () => {
     const route = arkRoute(pair);
-    if (!route || !quote || submittingArk || executedArkSwapId || !csrf || !arkExecutionAllowed) return;
+    if (!route || !quote || submittingArk || executedArkSwapId || !csrf || !canExecuteArk()) return;
     if (quote.expiresAt <= Date.now()) {
       startButton.disabled = true;
       text('execution-status', 'Quote expired · Close review and press Swap for a fresh quote.');
@@ -166,41 +255,21 @@ export function mountQuote(prepare?: (stillVisible: () => boolean, amountSats: n
     submittingArk = true;
     startButton.disabled = true;
     window.clearTimeout(expiry);
+    const version = revision;
     text('execution-status', 'Submitting regtest Ark swap…');
     try {
       const result = await api.arkSwap(built.payload, arkIdempotency.key, csrf);
+      if (version !== revision) return;
+      if (result.route !== route || result.quote.id !== built.payload.quoteId) throw new Error('Ark swap record mismatch. Check account history.');
       executedArkSwapId = result.id;
       arkFields.hidden = true;
-      details(get('review-details'), [
-        ['Route', railLabel[pair.send] + ' → ' + railLabel[pair.receive]],
-        ['Method', result.method === 'boarding' ? 'Boarding (On-chain → Ark VTXO)' : 'Cooperative offboarding (Ark VTXO → On-chain)'],
-        ['Status', result.status],
-        ['Swap ID', result.id],
-        ['Quote principal', sats(result.quote.amountSats)],
-        ['Service fee', sats(result.quote.serviceFeeSats)],
-        ['Estimated batch commitment fee', sats(result.quote.claimFeeSats)],
-        ['Input outpoint', result.inputOutpoint],
-        ['Destination', result.destination],
-        ['Commitment txid', result.commitmentTxid ?? 'Pending batch round'],
-        ['Net receipt', sats(result.quote.netSats)],
-      ]);
-      if (result.status === 'CONFIRMED' && Boolean(result.commitmentTxid)) {
-        successNotice = true;
-        text('execution-status', 'Ark regtest swap confirmed.');
-        status('¡Swap exitoso!');
-      } else if (result.status === 'SUBMITTED') {
-        text('execution-status', 'Ark regtest swap submitted (pending settlement confirmation).');
-        status('Ark regtest swap submitted · pending confirmation');
-      } else if (result.status === 'UNCERTAIN') {
-        text('execution-status', 'Result uncertain. Reconcile the original outpoint before retrying; do not re-fund.');
-        status('Ark swap status: UNCERTAIN');
-      } else {
-        text('execution-status', `Ark swap status: ${result.status}`);
-        status(`Ark swap status: ${result.status}`);
-      }
+      showArkResult(result);
+      trackArkResult(result);
     } catch (error) {
-      text('execution-status', message(error));
-      startButton.disabled = false;
+      if (version === revision && dialog.open) {
+        text('execution-status', message(error));
+        startButton.disabled = !canExecuteArk();
+      }
     } finally {
       submittingArk = false;
     }
@@ -208,6 +277,7 @@ export function mountQuote(prepare?: (stillVisible: () => boolean, amountSats: n
 
   function invalidate() {
     guestFlow?.cancel();
+    stopArkStatus();
     revision++;
     pending?.controller.abort();
     pending = undefined;
@@ -221,7 +291,11 @@ export function mountQuote(prepare?: (stillVisible: () => boolean, amountSats: n
     for (const id of numbers) text(id, '—');
   }
 
-  function guestRoute() { return !csrf && pair.send === 'lightning' && pair.receive === 'onchain'; }
+  function guestRoute() {
+    const guestOnly = !csrf || controlled === false || controlled === 'unavailable'
+      || (controlled === true && !canPrepare && !hasPreparedSwap);
+    return guestOnly && pair.send === 'lightning' && pair.receive === 'onchain';
+  }
 
   function isArkRoute() {
     return isArkOnchainPair(pair);
@@ -258,21 +332,21 @@ export function mountQuote(prepare?: (stillVisible: () => boolean, amountSats: n
       : api.quote(value, active.signal, csrf);
     const work = request.then(result => {
       if (version !== revision) return;
-      const totals = quoteTotals(result, value, Date.now(), !route && controlled === true);
+      if (route && (!('route' in result) || result.route !== route)) throw new Error('Backend returned a different Ark route.');
+      const totals = quoteTotals(result, value);
       quote = result;
       animateValues([sats(result.serviceFeeSats), sats(result.claimFeeSats), sats(totals.lost), integer(totals.received)]);
       if (route) {
         action.disabled = !aligned || !canQuote(pair);
-        status(route === 'onchain-to-ark'
-          ? 'Ark boarding quote ready · regtest only'
-          : 'Ark cooperative offboard quote ready · regtest only');
+        showArkQuoteStatus();
       } else {
         if (controlled === true) action.disabled = preparing || !aligned || !canQuote(pair) || !canPrepare;
         status(controlled === true ? 'Quote ready · review before swapping' : 'Quote ready · execution off');
       }
       expiry = window.setTimeout(() => {
         invalidate();
-        status('Quote expired · press Swap');
+        status('Quote expired · press Swap to refresh');
+        if (visible && aligned) action.disabled = principal() === undefined || preparing;
       }, Math.min(Math.max(0, result.expiresAt - Date.now()), 2_147_483_647));
       return result;
     }).catch(error => {
@@ -292,10 +366,9 @@ export function mountQuote(prepare?: (stillVisible: () => boolean, amountSats: n
     if (!visible) return;
     const value = principal();
     if (value === undefined) amount.setAttribute('aria-invalid', 'true'); else amount.removeAttribute('aria-invalid');
-    if (aligned && (pair.send === 'ark' || pair.receive === 'ark') && !isArkOnchainPair(pair)) {
+    if (!aligned || !canQuote(pair)) {
       action.disabled = true;
-      successNotice = false;
-      status('Solo regtest · swaps no disponibles');
+      status(aligned ? unsupportedRoute(pair) : 'Aligning rails…');
       return;
     }
     if (aligned && isArkOnchainPair(pair)) {
@@ -305,10 +378,10 @@ export function mountQuote(prepare?: (stillVisible: () => boolean, amountSats: n
       if (!quote) {
         status('Updating quote…');
         debounce = window.setTimeout(() => void load(value), delay);
-      }
+      } else showArkQuoteStatus();
       return;
     }
-    text('amount-help', controlled === true ? '11,000–50,000 sats' : '10,000–1,000,000 sats');
+    text('amount-help', controlled === true || (guestRoute() && guestAvailable) ? '11,000–50,000 sats' : '10,000–1,000,000 sats');
     if (guestRoute() && guestConfigured && !guestAvailable) {
       action.disabled = true;
       status('Guest watcher unavailable · no invoice will be created.');
@@ -317,23 +390,30 @@ export function mountQuote(prepare?: (stillVisible: () => boolean, amountSats: n
     if (guestRoute() && guestAvailable) {
       action.disabled = preparing || !aligned || !canQuote(pair) || value === undefined;
       if (value === undefined) amount.setAttribute('aria-invalid', 'true'); else amount.removeAttribute('aria-invalid');
-      if (!aligned) { status('Aligning rails…'); return; }
-      if (!canQuote(pair)) { status('Route unavailable'); return; }
       if (value === undefined) { status('Enter 11,000–50,000 sats'); return; }
       status(preparing ? 'Opening guest recovery…' : 'Guest recovery required before the invoice is shown.');
       return;
     }
     if (controlled !== false) {
-      action.disabled = preparing || controlled !== true || !aligned || !canQuote(pair) || (canPrepare && (!value || !quote || quote.invoiceSats !== value));
-      if (controlled === true && canPrepare && aligned && canQuote(pair) && value !== undefined && !quote && !preparing) {
+      if (controlled !== true) {
+        action.disabled = true;
+        status(controlled === 'unavailable' ? 'Quote service unavailable.' : 'Checking quote availability…');
+        return;
+      }
+      if (!canPrepare) {
+        action.disabled = !hasPreparedSwap;
+        status(hasPreparedSwap ? 'Review a prepared swap.' : 'No prepared swaps available.');
+        return;
+      }
+      action.disabled = preparing || value === undefined;
+      if (preparing) status('Preparing your regtest swap for review…');
+      else if (value === undefined) status('Enter 11,000–50,000 sats');
+      else if (!quote) {
         status('Updating quote…'); debounce = window.setTimeout(() => void load(value), delay);
-      } else status(controlled === true ? preparing ? 'Preparing your regtest swap for review…' : value === undefined ? 'Enter 11,000–50,000 sats' : canPrepare ? 'Quote ready · review before swapping' : 'Review a prepared swap.'
-        : controlled === 'unavailable' ? 'Quote service unavailable.' : 'Checking quote availability…');
+      } else status('Quote ready · review before swapping');
       return;
     }
     action.disabled = !aligned || !canQuote(pair) || value === undefined;
-    if (!aligned) { status('Aligning rails…'); return; }
-    if (!canQuote(pair)) { status('Route unavailable'); return; }
     if (value === undefined) { status('Enter 10,000–1,000,000 sats'); return; }
     status('Updating quote…');
     debounce = window.setTimeout(() => void load(value), delay);
@@ -377,17 +457,33 @@ export function mountQuote(prepare?: (stillVisible: () => boolean, amountSats: n
       if (canPrepare && prepare && !preparing && aligned && canQuote(pair)) {
         const version = revision; const active = () => visible && version === revision && controlled === true;
         let failure: string | undefined;
-        preparing = true; schedule(0);
-        try { const value = principal(); if (!value || !quote || quote.invoiceSats !== value) throw new Error('Refresh the quote before continuing.'); await prepare(active, value); }
+        const value = principal();
+        if (value === undefined) return;
+        preparing = true;
+        action.disabled = true;
+        window.clearTimeout(debounce);
+        window.clearTimeout(expiry);
+        try {
+          const current = quote && quote.expiresAt > Date.now() ? quote : await load(value);
+          if (!active()) return;
+          if (!current || current.invoiceSats !== value || current.expiresAt <= Date.now()) throw new Error('A current quote for this amount is required. Press Swap to retry.');
+          window.clearTimeout(expiry);
+          status('Preparing your regtest swap for review…');
+          await prepare(active, value);
+        }
         catch (error) { failure = error instanceof Error ? error.message : 'Preparation uncertain. Check existing status.'; }
-        finally { preparing = false; if (visible) { schedule(0); if (active() && failure) status(failure); } }
+        finally {
+          preparing = false;
+          if (active() && failure) { action.disabled = false; status(failure); }
+          else if (visible) schedule(0);
+        }
         return;
       }
-      if (aligned && canQuote(pair)) location.hash = 'track';
+      if (aligned && canQuote(pair) && hasPreparedSwap) location.hash = 'track';
       return;
     }
     const value = principal();
-    if ((!route && controlled !== false) || !aligned || !canQuote(pair) || value === undefined || dialog.open) return;
+    if ((!route && controlled !== false) || !aligned || !canQuote(pair) || value === undefined || dialog.open || submittingArk) return;
     window.clearTimeout(debounce);
     if (quote && (quote.expiresAt <= Date.now() || executedArkSwapId)) invalidate();
     const version = revision;
@@ -400,47 +496,34 @@ export function mountQuote(prepare?: (stillVisible: () => boolean, amountSats: n
       return;
     }
     const totals = quoteTotals(current, value, now);
+    if (csrf) recordQuote?.(pair, current);
     if (route) {
       const boarding = route === 'onchain-to-ark';
       details(get('review-details'), [
         ['Route', railLabel[pair.send] + ' → ' + railLabel[pair.receive]],
         ['Method', boarding ? 'Boarding (On-chain → Ark VTXO)' : 'Cooperative offboarding (Ark VTXO → On-chain)'],
         ['Network', 'Bitcoin regtest'],
-        ['Quote principal', sats(current.amountSats)],
+        ['Amount to send', sats(current.invoiceSats)],
         ['Operator fee', sats(current.serviceFeeSats)],
         ['Estimated batch commitment fee', sats(current.claimFeeSats)],
-        [boarding ? 'Total on-chain funding' : 'Total Ark VTXO debit', sats(current.invoiceSats)],
         [boarding ? 'Estimated Ark VTXO credit' : 'Estimated on-chain payout', sats(totals.received)],
         ['Estimated cost', sats(totals.lost)],
       ]);
-      const mode = get('mode').dataset.mode;
-      const canExecuteArk = (mode === 'regtest' || mode === 'ark-regtest') && Boolean(csrf) && arkExecutionAllowed;
       clearArkFields();
-      if (canExecuteArk) {
-        arkFields.hidden = false;
-        arkBoardingFields.hidden = !boarding;
-        arkOffboardFields.hidden = boarding;
-      }
       startButton.disabled = true;
-      text('execution-status', canExecuteArk
-        ? (boarding
-          ? 'Enter a valid funding outpoint (64-hex txid:vout).'
-          : 'Enter a valid VTXO outpoint (64-hex txid:vout).')
-        : mode === 'regtest'
-          ? 'Regtest Ark adapter · Sign in at Account to execute swap.'
-          : 'Simulation · Execution disabled (regtest only).');
       dialog.showModal();
+      updateArkExecutionState();
       return;
     }
     clearArkFields();
     startButton.disabled = true;
     details(get('review-details'), [
       ['Route', railLabel[pair.send] + ' → ' + railLabel[pair.receive]],
-      ['Quote principal', sats(current.amountSats)],
+      ['Amount to send', sats(value)],
       ['Service fee', sats(current.serviceFeeSats)],
       ['Estimated network claim fee', sats(current.claimFeeSats)],
       ['Lightning routing fee', 'Unknown'],
-      ['Total Lightning payment', sats(current.invoiceSats)],
+      ['Lightning invoice amount', sats(current.invoiceSats)],
       ['Estimated on-chain receipt', sats(totals.received)],
       ['Estimated cost', sats(totals.lost)],
     ]);
@@ -452,6 +535,7 @@ export function mountQuote(prepare?: (stillVisible: () => boolean, amountSats: n
   });
 
   return {
+    noticeCompletion() { successNotice = true; },
     setVisible(next: boolean) {
       if (visible === next) return;
       visible = next;
@@ -460,24 +544,30 @@ export function mountQuote(prepare?: (stillVisible: () => boolean, amountSats: n
         if (!quote) invalidate();
         return;
       }
-      try {
-        if (sessionStorage.getItem('swap-engine.success-notice')) {
-          sessionStorage.removeItem('swap-engine.success-notice');
-          successNotice = true;
-        }
-      } catch { /* The completed swap remains available in transaction history. */ }
       if (quote && quote.expiresAt > Date.now()) { if (successNotice) status(''); return; }
       invalidate();
       schedule(0);
     },
-    setArkExecutionAllowed(allowed: boolean) { arkExecutionAllowed = allowed; updateArkExecutionState(); },
-    setContext(configured: boolean | 'unavailable' | null, csrfToken?: string, preparationAvailable = false) {
-      if (controlled === configured && csrf === csrfToken && canPrepare === preparationAvailable) return;
+    setArkEnvironment(environment: Environment | undefined) {
+      arkEnvironment = environment;
+      if (visible && aligned && isArkRoute() && quote) showArkQuoteStatus();
+      updateArkExecutionState();
+    },
+    setArkExecutionAllowed(allowed: typeof arkExecutionAllowed) {
+      arkExecutionAllowed = allowed;
+      if (visible && aligned && isArkRoute() && quote) showArkQuoteStatus();
+      updateArkExecutionState();
+    },
+    setContext(configured: boolean | 'unavailable' | null, csrfToken?: string, preparationAvailable = false, preparedSwapAvailable = false) {
+      if (controlled === configured && csrf === csrfToken && canPrepare === preparationAvailable && hasPreparedSwap === preparedSwapAvailable) return;
+      const sessionChanged = csrf !== csrfToken;
+      if (sessionChanged) successNotice = false;
       controlled = configured;
       csrf = csrfToken;
       canPrepare = preparationAvailable;
+      hasPreparedSwap = preparedSwapAvailable;
       amount.readOnly = false;
-      text('amount-help', configured === true || guestAvailable ? '11,000–50,000 sats' : '10,000–1,000,000 sats');
+      if (!sessionChanged && isArkRoute()) return;
       invalidate();
       schedule(0);
     },
@@ -486,7 +576,7 @@ export function mountQuote(prepare?: (stillVisible: () => boolean, amountSats: n
       if (guestConfigured === configured && guestAvailable === available) return;
       guestConfigured = configured;
       guestAvailable = available;
-      text('amount-help', guestAvailable || controlled === true ? '11,000–50,000 sats' : '10,000–1,000,000 sats');
+      if (!guestRoute()) return;
       invalidate();
       schedule(0);
     },

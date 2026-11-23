@@ -115,12 +115,12 @@ test('public quotes work without CSRF for anonymous and signed-in callers and st
   }
   const anonymous = await quote('{"amountSats":50000}');
   assert.equal(anonymous.status, 201);
-  assert.equal((await anonymous.json()).invoiceSats, 50_750);
+  assert.equal((await anonymous.json()).invoiceSats, 50_000);
 
   const { cookie } = await sessionFields(await login('member', password));
   const signedIn = await quote('{"amountSats":50000}', cookie);
   assert.equal(signedIn.status, 201);
-  assert.equal((await signedIn.json()).invoiceSats, 50_750);
+  assert.equal((await signedIn.json()).invoiceSats, 50_000);
   const invalid = await quote('{"amountSats":50000,"preimage":"extra"}', cookie);
   assert.equal(invalid.status, 400);
   assert.deepEqual(await invalid.json(), { error: 'INVALID_REQUEST' });

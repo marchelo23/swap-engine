@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises';
 
-const reads = new Set(['getblockchaininfo', 'getblockhash', 'getsidechaininfo', 'getwalletinfo']);
+const reads = new Set(['getblockchaininfo', 'getblockhash', 'getsidechaininfo', 'getwalletinfo', 'getnetworkinfo',
+  'getblock', 'listunspent']);
 
 /** Read-only Elements JSON-RPC client. It has no signing, funding, broadcast or
  * wallet-mutation method and rejects anything outside the exact read allowlist. */

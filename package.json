@@ -13,6 +13,7 @@
     "secrets:check": "node scripts/check-secrets.mjs",
     "start": "node --import tsx --import ./scripts/load-local-env.mjs src/main.ts",
     "inspect": "tsx scripts/inspect.ts",
+    "liquid:preflight": "node --import tsx --import ./scripts/load-local-env.mjs scripts/liquid-preflight.ts",
     "verify:readonly": "tsx scripts/verify-readonly.ts",
     "diagnose": "tsx scripts/diagnose.ts",
     "build:web": "node src/web/build.mjs",

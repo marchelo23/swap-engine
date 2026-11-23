@@ -226,6 +226,11 @@ as system-unit `User=` account paths.
 
 ## Remaining gaps
 
+For the canonical Liquid profile, `npm run liquid:preflight` provides a
+read-only chain diagnostic with explicit provider and fee-asset blockers.
+See [Liquid preflight](liquid-regtest-preflight.md) for the Elements compatibility
+finding, direct Chain Swap SDK decision and the evidence still required.
+
 - Elements/Liquid has a read-only identity and policy-asset/wallet attestation.
   Ark reports `NOT_VERIFIED` until a configured regtest operator matches its pinned signer.
 - Linux POSIX native-operator, vault and fixture tests are skipped on non-Linux
