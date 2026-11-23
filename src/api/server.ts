@@ -14,6 +14,7 @@ import { historicalSwaps, HistoricalSwapResponse } from './historicalSwaps.js';
 import { ArkSwapService, toPublicArkSwap, type ArkRegtestPort } from '../ark/ArkAdapter.js';
 import { GuestAdmission, validateGuestQuote } from '../guest/GuestAdmission.js';
 import { GuestReverse, GuestReverseError } from '../guest/GuestReverse.js';
+import { LiquidLightningRequest, liquidLightningUnavailable } from '../liquid/LightningAdmission.js';
 
 const webAssets = new Map([
   ['/', ['index.html', 'text/html; charset=utf-8']],
@@ -188,6 +189,21 @@ export function createApi(
         auth.revoke(session);
         res.setHeader('set-cookie', auth.cookie());
         return noContent();
+      }
+      if (req.method === 'GET' && path === '/v1/liquid/lightning/availability') {
+        const status = roleDenial(session, 'USER');
+        if (status) return deny(status);
+        return send(200, liquidLightningUnavailable());
+      }
+      if (req.method === 'POST' && (path === '/v1/liquid/lightning/quotes' || path === '/v1/liquid/lightning/swaps')) {
+        const status = roleDenial(session, 'USER');
+        if (status) return deny(status);
+        LiquidLightningRequest.parse(await body(req));
+        if (!/^[a-zA-Z0-9_-]{8,128}$/.test(String(req.headers['idempotency-key'] ?? '')))
+          return send(400, ErrorResponse.parse({ error: 'IDEMPOTENCY_KEY_REQUIRED' }));
+        // No attested Liquid atomic adapter is installed. Never delegate to generic quotes,
+        // create an invoice or reserve funds, including in simulation/mainnet.
+        return send(503, ErrorResponse.parse({ error: liquidLightningUnavailable().reason }));
       }
       if (path === '/v1/admin' || path.startsWith('/v1/admin/')) {
         const status = roleDenial(session, 'ADMIN');
