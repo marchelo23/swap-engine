@@ -324,7 +324,7 @@ test('public capabilities show the configured environment and only mark verified
   for (const rail of railIds) assert.equal(await page.locator(`#capability-${rail}`).textContent(), 'Unverified');
 });
 
-test('administrator wallets show four batteries with separate on-chain and Lightning scales', async context => {
+test('administrator wallets group batteries by owner and use independent rail and asset scales', async context => {
   const f = await setup();
   context.after(f.cleanup);
   const server = createApi(f.manager, async () => { throw new Error('Offline test port'); }, undefined, 'regtest');
@@ -341,6 +341,8 @@ test('administrator wallets show four batteries with separate on-chain and Light
   let releaseRefresh!: () => void;
   const refreshGate = new Promise<void>(resolve => { releaseRefresh = resolve; });
   const capturedAt = new Date(Date.now() - 20_000).toISOString();
+  const assetId = 'ab'.repeat(32);
+  let aliceAssetId = assetId;
   await page.route('**/v1/operations/balances', async route => {
     if (denied) return route.fulfill({ status: 403, json: { error: 'FORBIDDEN' } });
     if (zeroSnapshot) {
@@ -355,6 +357,11 @@ test('administrator wallets show four batteries with separate on-chain and Light
           { rail: 'onchain', account: 'alice', status: 'unavailable', reason: 'UNAVAILABLE', balances: null },
           { rail: 'lightning', account: 'provider', status: 'available', reason: null, balances: { localSats: 900_000, remoteSats: 1, capacitySats: 900_001 } },
           { rail: 'lightning', account: 'alice', status: 'available', reason: null, balances: { localSats: 0, remoteSats: 0, capacitySats: 0 } },
+          { rail: 'ark', account: 'operator', status: 'available', reason: null, balances: { spendableSats: 888, pendingSats: 777, recoverableSats: 666 } },
+          { rail: 'ark', account: 'provider', status: 'unavailable', reason: 'NOT_VERIFIED', balances: null },
+          { rail: 'ark', account: 'alice', status: 'available', reason: null, balances: { spendableSats: 0, pendingSats: 17, recoverableSats: null } },
+          { rail: 'liquid', account: 'operator', status: 'unavailable', reason: 'NOT_CONFIGURED', balances: null },
+          { rail: 'liquid', account: 'provider', status: 'unknown', reason: 'NOT_VERIFIED', balances: { assetId, confirmedSats: 300, unconfirmedSats: 0 } },
         ],
       } });
     }
@@ -367,19 +374,28 @@ test('administrator wallets show four batteries with separate on-chain and Light
         { rail: 'onchain', account: 'alice', status: 'available', reason: null, balances: { confirmedSats: 25_000, unconfirmedSats: 925 } },
         { rail: 'lightning', account: 'provider', status: 'available', reason: null, balances: { localSats: 7_000, remoteSats: 21_000, capacitySats: 35_000 } },
         { rail: 'lightning', account: 'alice', status: 'unknown', reason: 'UNAVAILABLE', balances: { localSats: null, remoteSats: 0, capacitySats: null } },
+        { rail: 'ark', account: 'provider', status: 'available', reason: null, balances: { spendableSats: 12_000, pendingSats: 0, recoverableSats: 500 } },
+        { rail: 'ark', account: 'alice', status: 'available', reason: null, balances: { spendableSats: 3_000, pendingSats: 75_000, recoverableSats: null } },
+        { rail: 'liquid', account: 'provider', status: 'available', reason: null, balances: { assetId, confirmedSats: 2_500, unconfirmedSats: 100 } },
+        { rail: 'liquid', account: 'alice', status: 'available', reason: null, balances: { assetId: aliceAssetId, confirmedSats: 500, unconfirmedSats: 0 } },
       ],
     } });
   });
   await page.goto(`http://127.0.0.1:${(server.address() as AddressInfo).port}/#operations`);
   await page.getByText('Regtest snapshot', { exact: true }).waitFor();
-  assert.deepEqual(await page.locator('#balance-piles .wallet-pile').evaluateAll(piles => piles.map(pile => pile.id)),
-    ['core-pile', 'provider-lightning-pile', 'alice-lightning-pile', 'alice-pile']);
+  const piles = (owner: string) => page.getByRole('region', { name: owner, exact: true }).locator('.wallet-pile').evaluateAll(nodes => nodes.map(node => node.id));
+  assert.deepEqual(await piles('Provider'), ['core-pile', 'provider-lightning-pile', 'provider-ark-pile', 'provider-liquid-pile']);
+  assert.deepEqual(await piles('Alice'), ['alice-pile', 'alice-lightning-pile', 'alice-ark-pile', 'alice-liquid-pile']);
   assert.equal(await page.getByText('520,000 sats', { exact: true }).count(), 0);
   for (const [id, amount] of Object.entries({
     'core-confirmed': '100,000 sats', 'core-unconfirmed': '0 sats',
     'provider-local': '7,000 sats', 'provider-remote': '21,000 sats', 'provider-capacity': '35,000 sats',
     'alice-confirmed': '25,000 sats', 'alice-unconfirmed': '925 sats',
     'alice-local': 'Unknown', 'alice-remote': '0 sats', 'alice-capacity': 'Unknown',
+    'provider-ark-spendable': '12,000 sats', 'provider-ark-pending': '0 sats', 'provider-ark-recoverable': '500 sats',
+    'alice-ark-spendable': '3,000 sats', 'alice-ark-pending': '75,000 sats', 'alice-ark-recoverable': 'Unavailable',
+    'provider-liquid-confirmed': '2,500 base units', 'provider-liquid-unconfirmed': '100 base units', 'provider-liquid-asset': assetId,
+    'alice-liquid-confirmed': '500 base units', 'alice-liquid-unconfirmed': '0 base units', 'alice-liquid-asset': assetId,
   })) {
     assert.equal(await page.locator('#' + id).textContent(), amount);
   }
@@ -392,24 +408,35 @@ test('administrator wallets show four batteries with separate on-chain and Light
   assert.equal(await fill('alice-lightning'), '');
   assert.equal(await page.locator('#alice-lightning-pile').getAttribute('data-state'), 'unavailable');
   assert.equal(await fill('alice'), '25%');
+  assert.equal(await fill('provider-ark'), '100%');
+  assert.equal(await fill('alice-ark'), '25%');
+  assert.equal(await fill('provider-liquid'), '100%');
+  assert.equal(await fill('alice-liquid'), '20%');
   assert.equal(await page.locator('#alice-pile').getAttribute('data-state'), 'known');
   await page.getByText(/relative to the larger known confirmed balance/).waitFor();
   await page.getByText(/reported channel capacity/).waitFor();
   assert.equal(await page.locator('#balance-time').getAttribute('datetime'), capturedAt);
   await audit(page);
-  await page.screenshot({ path: evidence + '/operations-balances.png' });
+  await mkdir(evidence, { recursive: true });
+  const walletPanel = page.getByRole('article', { name: 'Wallet balances by owner' });
+  await walletPanel.screenshot({ path: evidence + '/operations-balances.png' });
   await page.setViewportSize({ width: 390, height: 844 });
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), 390);
-  await page.screenshot({ path: evidence + '/operations-balances-mobile.png', fullPage: true });
+  await walletPanel.screenshot({ path: evidence + '/operations-balances-mobile.png' });
+  const refresh = page.getByRole('button', { name: 'Refresh balances', exact: true });
+  aliceAssetId = 'cd'.repeat(32);
+  await refresh.click();
+  await page.getByText(aliceAssetId, { exact: true }).waitFor();
+  assert.equal(await fill('alice-liquid'), '100%');
   await page.clock.fastForward(41_000);
   await page.getByText('Regtest snapshot · at least 1 minute old', { exact: true }).waitFor();
   assert.equal(await page.locator('#balance-piles').getAttribute('data-stale'), '');
   assert.equal(await page.locator('#core-confirmed').textContent(), '100,000 sats');
-  const refresh = page.getByRole('button', { name: 'Refresh balances', exact: true });
   zeroSnapshot = true;
   await refresh.click();
   await page.getByText('Loading balances…', { exact: true }).waitFor();
   assert.equal(await page.locator('#core-pile').getAttribute('data-state'), 'loading');
+  assert.equal(await page.locator('#provider-ark-pile').getAttribute('data-state'), 'loading');
   assert.equal(await fill('provider-lightning'), '');
   releaseRefresh();
   await page.getByText('Regtest snapshot', { exact: true }).waitFor();
@@ -424,11 +451,19 @@ test('administrator wallets show four batteries with separate on-chain and Light
   assert.equal(await fill('core'), '0%');
   assert.equal(await fill('alice-lightning'), '0%');
   assert.equal(await fill('alice'), '');
+  assert.equal(await fill('alice-ark'), '0%');
+  assert.equal(await page.locator('#alice-ark-spendable').textContent(), '0 sats');
+  assert.equal(await page.locator('#alice-ark-pending').textContent(), '17 sats');
+  assert.equal(await page.locator('#provider-ark-spendable').textContent(), 'Unavailable');
+  assert.equal(await page.locator('#provider-liquid-confirmed').textContent(), 'Unavailable');
+  assert.equal(await page.locator('#provider-liquid-asset').textContent(), 'Unavailable');
+  assert.equal(await page.locator('#alice-liquid-pile').getAttribute('data-state'), 'unavailable');
   assert.equal(await page.locator('#balance-piles').getAttribute('data-stale'), null);
   denied = true;
   await refresh.click();
   await page.getByText('Balance snapshot unavailable.', { exact: true }).waitFor();
   assert.equal(await page.locator('#provider-remote').textContent(), 'Unavailable');
+  assert.equal(await page.locator('#alice-ark-pending').textContent(), 'Unavailable');
   assert.equal(await page.locator('#balance-time').isVisible(), false);
 });
 

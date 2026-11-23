@@ -180,7 +180,7 @@
     <div id="admin-dashboard" hidden>
     <article class="panel inset" aria-labelledby="balance-title">
       <div class="panel-header">
-        <h2 id="balance-title">Wallets and Lightning liquidity</h2>
+        <h2 id="balance-title">Wallet balances by owner</h2>
         <button class="secondary" id="balance-refresh" type="button">Refresh balances</button>
       </div>
       <div class="balance-meta">
@@ -188,30 +188,57 @@
         <time id="balance-time" hidden></time>
       </div>
       <section class="balance-group" id="balance-piles" aria-labelledby="balance-piles-title">
-        <h3 id="balance-piles-title">Wallet balances</h3>
+        <h3 id="balance-piles-title">Wallets and channel liquidity</h3>
         <p class="balance-scale">On-chain fill is relative to the larger known confirmed balance shown here.</p>
         <p class="balance-scale">Lightning fill uses each node’s reported channel capacity. Dark is local and gray is remote.</p>
+        <p class="balance-scale">Ark fill compares spendable VTXOs. Liquid fill compares confirmed amounts within the same asset.</p>
         <div class="balance-grid">
-          <div class="balance-node balance-wallet">
-            <h4>Bitcoin Core Provider <span>On-chain</span></h4>
-            <div class="wallet-pile" id="core-pile" data-state="unavailable" aria-hidden="true"><span></span></div>
-            <dl><div><dt>Confirmed</dt><dd id="core-confirmed">Unavailable</dd></div><div><dt>Unconfirmed</dt><dd id="core-unconfirmed">Unavailable</dd></div></dl>
-          </div>
-          <div class="balance-node balance-wallet">
-            <h4>LND Provider <span>Lightning</span></h4>
-            <div class="wallet-pile wallet-pile-lightning" id="provider-lightning-pile" data-state="unavailable" aria-hidden="true"><span></span></div>
-            <dl><div><dt>Local</dt><dd id="provider-local">Unavailable</dd></div><div><dt>Remote</dt><dd id="provider-remote">Unavailable</dd></div><div><dt>Reported capacity</dt><dd id="provider-capacity">Unavailable</dd></div></dl>
-          </div>
-          <div class="balance-node balance-wallet">
-            <h4>LND Alice <span>Lightning</span></h4>
-            <div class="wallet-pile wallet-pile-lightning" id="alice-lightning-pile" data-state="unavailable" aria-hidden="true"><span></span></div>
-            <dl><div><dt>Local</dt><dd id="alice-local">Unavailable</dd></div><div><dt>Remote</dt><dd id="alice-remote">Unavailable</dd></div><div><dt>Reported capacity</dt><dd id="alice-capacity">Unavailable</dd></div></dl>
-          </div>
-          <div class="balance-node balance-wallet">
-            <h4>LND Alice <span>On-chain</span></h4>
-            <div class="wallet-pile" id="alice-pile" data-state="unavailable" aria-hidden="true"><span></span></div>
-            <dl><div><dt>Confirmed</dt><dd id="alice-confirmed">Unavailable</dd></div><div><dt>Unconfirmed</dt><dd id="alice-unconfirmed">Unavailable</dd></div></dl>
-          </div>
+          <section class="balance-owner" aria-labelledby="balance-provider-title">
+            <h4 id="balance-provider-title">Provider</h4>
+            <div class="balance-node balance-wallet">
+              <h5>Bitcoin Core <span>On-chain</span></h5>
+              <div class="wallet-pile" id="core-pile" data-state="unavailable" aria-hidden="true"><span></span></div>
+              <dl><div><dt>Confirmed</dt><dd id="core-confirmed">Unavailable</dd></div><div><dt>Unconfirmed</dt><dd id="core-unconfirmed">Unavailable</dd></div></dl>
+            </div>
+            <div class="balance-node balance-wallet">
+              <h5>LND <span>Lightning</span></h5>
+              <div class="wallet-pile wallet-pile-lightning" id="provider-lightning-pile" data-state="unavailable" aria-hidden="true"><span></span></div>
+              <dl><div><dt>Local</dt><dd id="provider-local">Unavailable</dd></div><div><dt>Remote</dt><dd id="provider-remote">Unavailable</dd></div><div><dt>Reported capacity</dt><dd id="provider-capacity">Unavailable</dd></div></dl>
+            </div>
+            <div class="balance-node balance-wallet">
+              <h5>Ark <span>VTXO</span></h5>
+              <div class="wallet-pile" id="provider-ark-pile" data-state="unavailable" aria-hidden="true"><span></span></div>
+              <dl><div><dt>Spendable</dt><dd id="provider-ark-spendable">Unavailable</dd></div><div><dt>Pending</dt><dd id="provider-ark-pending">Unavailable</dd></div><div><dt>Recoverable</dt><dd id="provider-ark-recoverable">Unavailable</dd></div></dl>
+            </div>
+            <div class="balance-node balance-wallet">
+              <h5>Liquid <span>Asset balance</span></h5>
+              <div class="wallet-pile" id="provider-liquid-pile" data-state="unavailable" aria-hidden="true"><span></span></div>
+              <dl><div><dt>Confirmed</dt><dd id="provider-liquid-confirmed">Unavailable</dd></div><div><dt>Unconfirmed</dt><dd id="provider-liquid-unconfirmed">Unavailable</dd></div><div><dt>Asset&nbsp;ID</dt><dd id="provider-liquid-asset">Unavailable</dd></div></dl>
+            </div>
+          </section>
+          <section class="balance-owner" aria-labelledby="balance-alice-title">
+            <h4 id="balance-alice-title">Alice</h4>
+            <div class="balance-node balance-wallet">
+              <h5>LND wallet <span>On-chain</span></h5>
+              <div class="wallet-pile" id="alice-pile" data-state="unavailable" aria-hidden="true"><span></span></div>
+              <dl><div><dt>Confirmed</dt><dd id="alice-confirmed">Unavailable</dd></div><div><dt>Unconfirmed</dt><dd id="alice-unconfirmed">Unavailable</dd></div></dl>
+            </div>
+            <div class="balance-node balance-wallet">
+              <h5>LND <span>Lightning</span></h5>
+              <div class="wallet-pile wallet-pile-lightning" id="alice-lightning-pile" data-state="unavailable" aria-hidden="true"><span></span></div>
+              <dl><div><dt>Local</dt><dd id="alice-local">Unavailable</dd></div><div><dt>Remote</dt><dd id="alice-remote">Unavailable</dd></div><div><dt>Reported capacity</dt><dd id="alice-capacity">Unavailable</dd></div></dl>
+            </div>
+            <div class="balance-node balance-wallet">
+              <h5>Ark <span>VTXO</span></h5>
+              <div class="wallet-pile" id="alice-ark-pile" data-state="unavailable" aria-hidden="true"><span></span></div>
+              <dl><div><dt>Spendable</dt><dd id="alice-ark-spendable">Unavailable</dd></div><div><dt>Pending</dt><dd id="alice-ark-pending">Unavailable</dd></div><div><dt>Recoverable</dt><dd id="alice-ark-recoverable">Unavailable</dd></div></dl>
+            </div>
+            <div class="balance-node balance-wallet">
+              <h5>Liquid <span>Asset balance</span></h5>
+              <div class="wallet-pile" id="alice-liquid-pile" data-state="unavailable" aria-hidden="true"><span></span></div>
+              <dl><div><dt>Confirmed</dt><dd id="alice-liquid-confirmed">Unavailable</dd></div><div><dt>Unconfirmed</dt><dd id="alice-liquid-unconfirmed">Unavailable</dd></div><div><dt>Asset&nbsp;ID</dt><dd id="alice-liquid-asset">Unavailable</dd></div></dl>
+            </div>
+          </section>
         </div>
       </section>
     </article>
