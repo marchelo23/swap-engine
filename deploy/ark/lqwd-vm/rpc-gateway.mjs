@@ -12,6 +12,7 @@ const PROFILES = {
     'gettxout',
   ],
   'indexer-readonly': [
+    'estimatesmartfee',
     'getbestblockhash',
     'getblock',
     'getblockchaininfo',
@@ -24,10 +25,12 @@ const PROFILES = {
     'getmempoolentry',
     'getmempoolinfo',
     'getnetworkinfo',
+    'getpeerinfo',
     'getrawmempool',
     'getrawtransaction',
     'gettxout',
     'help',
+    'validateaddress',
   ],
 };
 
@@ -89,12 +92,12 @@ function canonicalize(parsed) {
   for (const item of items) {
     if (!item || typeof item !== 'object' || Array.isArray(item)) return null;
     if (typeof item.method !== 'string' || item.method.length === 0) return null;
-    if (item.jsonrpc !== undefined && item.jsonrpc !== '2.0') return null;
+    if (item.jsonrpc !== undefined && item.jsonrpc !== '1.0' && item.jsonrpc !== '2.0') return null;
     if (item.params !== undefined && item.params !== null && typeof item.params !== 'object') return null;
     if (item.id === undefined) return null;
     if (item.id !== null && typeof item.id !== 'string' && typeof item.id !== 'number') return null;
     out.push({
-      jsonrpc: '2.0',
+      jsonrpc: item.jsonrpc ?? '2.0',
       method: item.method,
       params: item.params ?? [],
       id: item.id,

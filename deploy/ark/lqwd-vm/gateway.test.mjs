@@ -265,6 +265,18 @@ test('gateway defenses', async t => {
     assert.equal(response.status, 415);
   });
 
+  await t.test('legacy RPC transport keeps canonical validation and rejects browser origins', async () => {
+    const body = '{"jsonrpc":"1.0","method":"getblockchaininfo","params":[],"id":8}';
+    const headers = { authorization, 'content-type': 'text/plain' };
+    const response = await request(gateway.port, { headers, body });
+    assert.equal(response.status, 200);
+    assert.equal(mock.requests.at(-1).body, body);
+    const before = mock.requests.length;
+    const browserResponse = await request(gateway.port, { headers: { ...headers, origin: 'http://127.0.0.1:3103' }, body });
+    assert.equal(browserResponse.status, 415);
+    assert.equal(mock.requests.length, before);
+  });
+
   await t.test('a batch with one denied method is rejected as a whole', async () => {
     const before = mock.requests.length;
     const body = JSON.stringify([
@@ -282,7 +294,7 @@ test('gateway defenses', async t => {
       '{"jsonrpc":"2.0","params":[],"id":11}',
       '[]',
       '{"jsonrpc":"2.0","method":"getblockchaininfo","params":"bad","id":12}',
-      '{"jsonrpc":"1.0","method":"getblockchaininfo","params":[],"id":13}',
+      '{"jsonrpc":"3.0","method":"getblockchaininfo","params":[],"id":13}',
       'null',
     ];
     for (const body of cases) {
