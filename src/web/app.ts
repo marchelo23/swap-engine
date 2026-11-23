@@ -68,7 +68,9 @@ const environment = api.capabilities().then(capabilities => {
   text('capabilities-status', `${networkName} · Read-only capabilities`);
   for (const id of railIds) {
     const rail = rails[id];
-    text(`capability-${id}`, rail.available ? 'Verified' : rail.reason ? railReason[rail.reason] : 'Unavailable');
+    const liquidWalletVerified = id === 'liquid' && capabilities.liquidStatus === 'CHAIN_AND_WALLET_VERIFIED';
+    text(`capability-${id}`, liquidWalletVerified ? 'Node and wallet verified · swaps unavailable'
+      : rail.available ? 'Verified' : rail.reason ? railReason[rail.reason] : 'Unavailable');
   }
   return environment;
 }).catch(() => {

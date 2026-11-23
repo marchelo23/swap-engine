@@ -68,12 +68,19 @@ test('OFFLINE: wrong identity/scope fails before evidence RPC', async () => {
     const f = fixtures(); mutate(f);
     await assert.rejects(confirmedAssetEvidence(config(env()), f.reader, f.observed)); assert.equal(f.calls.length, 0);
   }
-  for (const overrides of [{ APP_ENV: 'regtest' }, { APP_ENV: 'mainnet' },
+  for (const overrides of [{ APP_ENV: 'regtest', SPEND_POLICY: 'regtest-only' }, { APP_ENV: 'mainnet' },
     { LIQUID_CONFIRMATION_POLICY: 'disabled' }, { LIQUID_GENESIS_HASH: '' }]) {
     const f = fixtures();
     await assert.rejects(confirmedAssetEvidence(config({ ...env(), ...overrides }), f.reader, f.observed), /SCOPE_INVALID/);
     assert.equal(f.calls.length, 0);
   }
+});
+
+test('a read-only Bitcoin regtest profile can verify a local Elements wallet without enabling execution', async () => {
+  const f = fixtures();
+  const evidence = await confirmedAssetEvidence(config({ ...env(), APP_ENV: 'regtest' }), f.reader, f.observed);
+  assert.equal(evidence.walletAssetVerified, true);
+  assert.equal(evidence.feePolicyVerified, false);
 });
 
 test('OFFLINE: absent, unsafe or wrong-asset wallet outputs and noncanonical blocks fail closed', async () => {

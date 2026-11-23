@@ -74,7 +74,7 @@ export async function attestStartup(config: Config, clients: {
     } catch (error) {
       // Never use this path for a conflicting/malformed fee_asset or another profile.
       if (!(error instanceof Error) || error.message !== 'LIQUID_FEE_ASSET_UNAVAILABLE' ||
-        config.environment !== 'liquid-regtest') throw error;
+        !['regtest', 'liquid-regtest'].includes(config.environment) || config.spendPolicy !== 'disabled') throw error;
       try {
         liquidAssetEvidence = await confirmedAssetEvidence(config, clients.liquid,
           { blockchain, sidechain, genesis, wallet });

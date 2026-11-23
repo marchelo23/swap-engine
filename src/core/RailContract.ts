@@ -52,6 +52,7 @@ export const capabilitiesSchema = z.object({
   execution: z.object({ enabled: z.literal(false), policy: z.enum(['disabled', 'regtest-only']),
     reason: railReasonSchema.nullable() }).strict(),
   rails: railAvailabilityMapSchema,
+  liquidStatus: z.literal('CHAIN_AND_WALLET_VERIFIED').optional(),
   capturedAt: z.iso.datetime(),
 }).strict();
 export type Capabilities = z.infer<typeof capabilitiesSchema>;

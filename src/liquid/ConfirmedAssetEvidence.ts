@@ -33,7 +33,7 @@ export async function confirmedAssetEvidence(c: Config, reader: Reader, observed
   blockchain: unknown; sidechain: unknown; genesis: unknown; wallet: unknown;
 }): Promise<ConfirmedAssetEvidence> {
   const rail = c.rails.liquid;
-  if (c.environment !== 'liquid-regtest' || c.spendPolicy !== 'disabled' || !rail.enabled ||
+  if (!['regtest', 'liquid-regtest'].includes(c.environment) || c.spendPolicy !== 'disabled' || !rail.enabled ||
     rail.confirmationPolicy !== 'read-only' || rail.chainName !== 'elementsregtest' || !rail.genesisHash)
     throw new Error('LIQUID_ASSET_EVIDENCE_SCOPE_INVALID');
   if (reader.origin !== new URL(rail.rpcUrl).origin) throw new Error('LIQUID_ASSET_EVIDENCE_ORIGIN_MISMATCH');
