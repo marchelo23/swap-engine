@@ -4,6 +4,7 @@ import type { Quote } from './SwapTypes.js';
 import { buildHtlc, type Contract } from '../bitcoin/HtlcBuilder.js';
 import { validateQuoteFields } from '../utils/satoshiMath.js';
 import { invoiceBudget } from './SwapManager.js';
+import { OWNED_ECONOMICS } from './Economics.js';
 
 const hash = z.string().regex(/^[a-f0-9]{64}$/);
 const pubkey = z.string().regex(/^(02|03)[a-f0-9]{64}$/);
@@ -36,7 +37,7 @@ export function verifyReverseTestPlan(value: unknown): ReverseTestPlan {
   validateQuoteFields(plan.quote);
   const legacy = plan.quote.amountSats === 50000 && plan.quote.invoiceSats === 50750 && plan.quote.serviceFeeSats === 750;
   let current = false;
-  try { const budget = invoiceBudget(plan.quote.invoiceSats); current = Object.entries(budget).every(([key, value]) => plan.quote[key as keyof typeof budget] === value); } catch { /* Invalid budgets remain rejected. */ }
+  try { const budget = invoiceBudget(plan.quote.invoiceSats, OWNED_ECONOMICS.invoice); current = Object.entries(budget).every(([key, value]) => plan.quote[key as keyof typeof budget] === value); } catch { /* Invalid budgets remain rejected. */ }
   if ((!legacy && !current) || plan.routingFeeLimitSats !== (legacy ? 100 : 0) || plan.quote.claimFeeSats !== 500 ||
     plan.quote.fundingReserveSats !== plan.fundingFeeLimitSats || plan.contract.timeoutHeight !== plan.tipHeight + 30 ||
     plan.providerNode === plan.payerNode || plan.routing.providerOrigin === plan.routing.payerOrigin) throw new Error('Reverse plan differs from test contract');
@@ -55,5 +56,5 @@ export function createReverseTestPlan(quote: Quote, tipHeight: number, client: {
   return verifyReverseTestPlan({ network: 'regtest', wallet, createdAt: Date.now(), tipHeight,
     providerNode: nodes.provider, payerNode: nodes.payer, routing, claimDestination: destinations.claim, refundDestination: destinations.refund,
     contract, address: htlc.address, witnessScript: htlc.witnessScript.toString('hex'), quote,
-    invoiceExpirySeconds: 3600, invoiceCltvDelta: 80, routingFeeLimitSats: quote.invoiceSats === 50750 ? 100 : 0, fundingFeeLimitSats: 1000, executionApproved: false });
+    invoiceExpirySeconds: 3600, invoiceCltvDelta: 80, routingFeeLimitSats: quote.amountSats === 50000 && quote.invoiceSats === 50750 && quote.serviceFeeSats === 750 ? 100 : 0, fundingFeeLimitSats: 1000, executionApproved: false });
 }

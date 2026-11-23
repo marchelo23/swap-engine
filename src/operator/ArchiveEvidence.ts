@@ -5,6 +5,7 @@ import { preparationSpecSchema } from '../core/ReversePreparation.js';
 import type { ReadOnlyBitcoinClient } from '../diagnostics/ReadOnlyClients.js';
 import { verifyHtlcSpend } from '../bitcoin/SpendEvidence.js';
 import { operatorStopped } from './OperatorFiles.js';
+import { OWNED_ECONOMICS } from '../core/Economics.js';
 import { invoiceBudget } from '../core/SwapManager.js';
 
 const hash = z.string().regex(/^[a-f0-9]{64}$/);
@@ -22,7 +23,7 @@ const observationSchema = z.object({ fromHeight: height, height, blockHash: hash
 export async function verifyArchivedChain(db: Database, spec: ArchivedPreparationSpec, ownerId: string, destination: string,
   bitcoin: Pick<ReadOnlyBitcoinClient, 'call' | 'confirmed'>) {
   const swaps = Object.values(db.swaps); const swap = swaps[0];
-  const expected = spec.sourceAmountSats === undefined ? { amountSats: 50000, invoiceSats: 50750, serviceFeeSats: 750, claimFeeSats: 500, fundingReserveSats: 1000 } : invoiceBudget(spec.sourceAmountSats);
+  const expected = spec.sourceAmountSats === undefined ? { amountSats: 50000, invoiceSats: 50750, serviceFeeSats: 750, claimFeeSats: 500, fundingReserveSats: 1000 } : invoiceBudget(spec.sourceAmountSats, OWNED_ECONOMICS.invoice);
   if (db.schema !== 1 || swaps.length !== 1 || !swap || swap.state !== 'COMPLETED' || swap.clientPayment?.status !== 'SUCCEEDED' ||
     !swap.lockup || !swap.claimTxid || db.ownedReverse?.owners[swap.id]?.ownerId !== ownerId ||
     db.ownedReverse.owners[swap.id]!.claimDestination !== destination || swap.contract.paymentHash !== spec.client.paymentHash ||

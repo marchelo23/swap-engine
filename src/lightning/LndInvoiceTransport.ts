@@ -1,6 +1,7 @@
 import https from 'node:https';
 import { readFile } from 'node:fs/promises';
 import type { ClientRequest, IncomingMessage } from 'node:http';
+import { MAX_OWNED_DEBIT_SATS } from '../core/Economics.js';
 import { z } from 'zod';
 import { parseLndInvoice } from './InvoiceParser.js';
 import type { Invoice } from './LndClient.js';
@@ -13,7 +14,7 @@ export type InvoiceTransportIO = {
 type Request = Parameters<PreparationAdapters['createInvoice']>[0];
 export type InvoiceLookup = { status: 'ABSENT' } | { status: 'PRESENT'; invoice: Invoice };
 const hash = z.string().regex(/^[a-f0-9]{64}$/);
-const requestSchema = z.object({ hash, sats: z.union([z.number().int().min(11000).max(50000), z.literal(50750)]), expirySeconds: z.literal(3600), cltvDelta: z.literal(80) }).strict();
+const requestSchema = z.object({ hash, sats: z.number().int().min(11000).max(MAX_OWNED_DEBIT_SATS), expirySeconds: z.literal(3600), cltvDelta: z.literal(80) }).strict();
 const absentSchema = z.object({ code: z.literal(5), message: z.enum(['unable to locate invoice', 'there are no existing invoices']),
   details: z.array(z.never()).length(0).optional() }).strict();
 const uncertain = () => new Error('LND invoice evidence unavailable or outcome uncertain; reconcile without retry');

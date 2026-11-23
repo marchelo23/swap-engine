@@ -7,6 +7,7 @@ import type { ApprovedFundingInput } from '../bitcoin/ControlledFunding.js';
 import type { LndClient } from '../lightning/LndClient.js';
 import { verifyDecodedHoldInvoice } from '../lightning/InvoiceVerification.js';
 import { verifyReverseTestPlan } from './ReverseTestPlan.js';
+import { CONTROLLED_FUNDING_CHANGE_BUFFER_SATS } from './Economics.js';
 import type { ControlledRunRuntime } from './ControlledReverseBackend.js';
 import { buildHtlc } from '../bitcoin/HtlcBuilder.js';
 import { terminal } from './SwapTypes.js';
@@ -147,7 +148,8 @@ export function createControlledReadiness(store: Store, id: string, suppliedScop
       const previous = await new BitcoinConfirmationLookup(rpc).confirmed(input.txid);
       const tx = Transaction.fromHex(previous.hex); const output = tx.outs[input.vout];
       if (!output || output.script.length !== 22 || output.script[0] !== 0 || output.script[1] !== 20 ||
-        output.value > BigInt(Number.MAX_SAFE_INTEGER) || output.value < BigInt(plan.quote.amountSats + plan.quote.fundingReserveSats + 10000) ||
+        output.value > BigInt(Number.MAX_SAFE_INTEGER) ||
+        output.value < BigInt(plan.quote.amountSats + plan.quote.fundingReserveSats + CONTROLLED_FUNDING_CHANGE_BUFFER_SATS) ||
         sats(selected[0]!.amount) !== output.value || selected[0]!.scriptPubKey !== Buffer.from(output.script).toString('hex') ||
         selected[0]!.confirmations !== previous.confirmations) throw new Error();
       const unspent = async () => {

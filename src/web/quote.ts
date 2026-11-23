@@ -11,7 +11,7 @@ const regtestArkPattern = /^tark1[qpzry9x8gf2tvdw0s3jn54khce6mua7l]{20,140}$/;
 
 type GuestFlow = { begin(amountSats: number, active: () => boolean): Promise<void>; cancel(): void };
 
-export function mountQuote(prepare?: (stillVisible: () => boolean, amountSats: number) => Promise<void>, guestFlow?: GuestFlow,
+export function mountQuote(prepare?: (stillVisible: () => boolean, quote: Quote, destination?: string) => Promise<void>, guestFlow?: GuestFlow,
   recordQuote?: (pair: Pair, quote: Quote) => void) {
   const form = get<HTMLFormElement>('quote-form');
   const amount = get<HTMLInputElement>('amount');
@@ -35,6 +35,9 @@ export function mountQuote(prepare?: (stillVisible: () => boolean, amountSats: n
   let aligned = true;
   let visible = false;
   let controlled: boolean | 'unavailable' | null = null;
+  let admin = false;
+  let maxSourceAmount = 50_000;
+  let ownedDestination: string | undefined;
   let csrf: string | undefined;
   let canPrepare = false; let preparing = false;
   let hasPreparedSwap = false;
@@ -292,6 +295,7 @@ export function mountQuote(prepare?: (stillVisible: () => boolean, amountSats: n
   }
 
   function guestRoute() {
+    if (admin) return false;
     const guestOnly = !csrf || controlled === false || controlled === 'unavailable'
       || (controlled === true && !canPrepare && !hasPreparedSwap);
     return guestOnly && pair.send === 'lightning' && pair.receive === 'onchain';
@@ -304,7 +308,8 @@ export function mountQuote(prepare?: (stillVisible: () => boolean, amountSats: n
   function principal() {
     const value = Number(amount.value);
     const controlledBounds = (controlled === true || (guestRoute() && guestAvailable)) && !isArkRoute();
-    if (/^\d+$/.test(amount.value) && value >= (controlledBounds ? 11_000 : 10_000) && value <= (controlledBounds ? 50_000 : 1_000_000)) return value;
+    const maximum = controlled === true ? maxSourceAmount : 50_000;
+    if (/^\d+$/.test(amount.value) && value >= (controlledBounds ? 11_000 : 10_000) && value <= (controlledBounds ? maximum : 1_000_000)) return value;
     return undefined;
   }
 
@@ -341,7 +346,7 @@ export function mountQuote(prepare?: (stillVisible: () => boolean, amountSats: n
         showArkQuoteStatus();
       } else {
         if (controlled === true) action.disabled = preparing || !aligned || !canQuote(pair) || !canPrepare;
-        status(controlled === true ? 'Quote ready · review before swapping' : 'Quote ready · execution off');
+        status(controlled === true ? (admin ? 'Quote ready · SWAP starts execution' : 'Quote ready · review before swapping') : 'Quote ready · execution off');
       }
       expiry = window.setTimeout(() => {
         invalidate();
@@ -364,6 +369,9 @@ export function mountQuote(prepare?: (stillVisible: () => boolean, amountSats: n
 
   function schedule(delay: number) {
     if (!visible) return;
+    const destination = get('owned-quote-destination');
+    destination.hidden = !ownedDestination || !admin || controlled !== true || pair.send !== 'lightning' || pair.receive !== 'onchain';
+    destination.textContent = destination.hidden ? '' : 'Bitcoin regtest payout address ' + ownedDestination;
     const value = principal();
     if (value === undefined) amount.setAttribute('aria-invalid', 'true'); else amount.removeAttribute('aria-invalid');
     if (!aligned || !canQuote(pair)) {
@@ -381,7 +389,13 @@ export function mountQuote(prepare?: (stillVisible: () => boolean, amountSats: n
       } else showArkQuoteStatus();
       return;
     }
-    text('amount-help', controlled === true || (guestRoute() && guestAvailable) ? '11,000–50,000 sats' : '10,000–1,000,000 sats');
+    const ownedRange = '11,000–' + integer(maxSourceAmount) + ' sats';
+    text('amount-help', controlled === true ? ownedRange : guestRoute() && guestAvailable ? '11,000–50,000 sats' : '10,000–1,000,000 sats');
+    if (admin && pair.send === 'lightning' && pair.receive === 'onchain' && controlled !== null && controlled !== true) {
+      action.disabled = true;
+      status('Authenticated swap service unavailable for this account.');
+      return;
+    }
     if (guestRoute() && guestConfigured && !guestAvailable) {
       action.disabled = true;
       status('Guest watcher unavailable · no invoice will be created.');
@@ -406,11 +420,11 @@ export function mountQuote(prepare?: (stillVisible: () => boolean, amountSats: n
         return;
       }
       action.disabled = preparing || value === undefined;
-      if (preparing) status('Preparing your regtest swap for review…');
-      else if (value === undefined) status('Enter 11,000–50,000 sats');
+      if (preparing) status(admin ? 'Preparing and executing your regtest swap…' : 'Preparing your regtest swap for review…');
+      else if (value === undefined) status('Enter ' + ownedRange);
       else if (!quote) {
         status('Updating quote…'); debounce = window.setTimeout(() => void load(value), delay);
-      } else status('Quote ready · review before swapping');
+      } else status(admin ? 'Quote ready · SWAP starts execution' : 'Quote ready · review before swapping');
       return;
     }
     action.disabled = !aligned || !canQuote(pair) || value === undefined;
@@ -440,6 +454,7 @@ export function mountQuote(prepare?: (stillVisible: () => boolean, amountSats: n
     event.preventDefault();
     successNotice = false;
     const route = arkRoute(pair);
+    if (admin && pair.send === 'lightning' && pair.receive === 'onchain' && controlled !== true) return;
     if (guestRoute() && guestAvailable) {
       if (preparing || !guestFlow) return;
       const value = principal();
@@ -468,8 +483,8 @@ export function mountQuote(prepare?: (stillVisible: () => boolean, amountSats: n
           if (!active()) return;
           if (!current || current.invoiceSats !== value || current.expiresAt <= Date.now()) throw new Error('A current quote for this amount is required. Press Swap to retry.');
           window.clearTimeout(expiry);
-          status('Preparing your regtest swap for review…');
-          await prepare(active, value);
+          status(admin ? 'Preparing and executing your regtest swap…' : 'Preparing your regtest swap for review…');
+          await prepare(active, current, ownedDestination);
         }
         catch (error) { failure = error instanceof Error ? error.message : 'Preparation uncertain. Check existing status.'; }
         finally {
@@ -558,12 +573,17 @@ export function mountQuote(prepare?: (stillVisible: () => boolean, amountSats: n
       if (visible && aligned && isArkRoute() && quote) showArkQuoteStatus();
       updateArkExecutionState();
     },
-    setContext(configured: boolean | 'unavailable' | null, csrfToken?: string, preparationAvailable = false, preparedSwapAvailable = false) {
-      if (controlled === configured && csrf === csrfToken && canPrepare === preparationAvailable && hasPreparedSwap === preparedSwapAvailable) return;
+    setContext(configured: boolean | 'unavailable' | null, csrfToken?: string, preparationAvailable = false,
+      preparedSwapAvailable = false, isAdmin = false, maximum = 50_000, destination?: string) {
+      if (controlled === configured && csrf === csrfToken && canPrepare === preparationAvailable &&
+        hasPreparedSwap === preparedSwapAvailable && admin === isAdmin && maxSourceAmount === maximum && ownedDestination === destination) return;
       const sessionChanged = csrf !== csrfToken;
       if (sessionChanged) successNotice = false;
       controlled = configured;
       csrf = csrfToken;
+      admin = isAdmin;
+      maxSourceAmount = maximum;
+      ownedDestination = destination;
       canPrepare = preparationAvailable;
       hasPreparedSwap = preparedSwapAvailable;
       amount.readOnly = false;

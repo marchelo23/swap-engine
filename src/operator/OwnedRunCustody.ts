@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
 import { open, mkdir, copyFile } from 'node:fs/promises';
 import { isAbsolute, join, relative, resolve } from 'node:path';
+import { MAX_OWNED_DEBIT_SATS } from '../core/Economics.js';
 import { address, networks } from 'bitcoinjs-lib';
 import { z } from 'zod';
 import { readAccounts } from '../auth/store.js';
@@ -23,7 +24,7 @@ const loopbackOrigin = z.string().refine(value => {
 export const ownedRunPolicyBase = z.object({ ownerUsername: Username, ownerId: z.uuid(), authStorePath: absolute,
   wallet: z.string().regex(/^[A-Za-z0-9._-]{1,120}$/),
   origin: loopbackOrigin, port: z.number().int().min(1).max(65535), backupDirectory: absolute,
-  sourceAmountSats: z.number().int().min(11000).max(50000).optional(),
+  sourceAmountSats: z.number().int().min(11000).max(MAX_OWNED_DEBIT_SATS).optional(),
   tipHeight: z.number().int().positive().max(499999969), providerNode: pubkey, payerNode: pubkey,
   routing: reverseRoutingSchema, claimDestination: z.string(), refundDestination: z.string(),
   input: z.object({ txid: hash, vout: z.number().int().nonnegative().max(0xffffffff), valueSats: z.number().int().min(61000).max(Number.MAX_SAFE_INTEGER) }).strict(),

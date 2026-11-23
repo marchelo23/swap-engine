@@ -2,7 +2,8 @@ import { api, type Session, type ReverseAvailability, type OwnedPreparation } fr
 
 /** Persist admission/review keys before POST. Network uncertainty retains the same
  * attempt across reload; this module has no payment/execution API call. */
-export async function prepareForReview(owner: Session, available: ReverseAvailability, amountSats: number): Promise<string> {
+export async function prepareForReview(owner: Session, available: ReverseAvailability, amountSats: number, activeView: () => boolean): Promise<string | undefined> {
+  if (!activeView()) return;
   if (!available.controlledReverseConfigured || !available.preparationAvailable) throw new Error('Preparation unavailable for this account.');
   const name = `swap-engine.preparation.${owner.user.id}`;
   type Saved = { key: string; id?: string; amountSats?: number; reviewKey?: string; reviewState?: 'INTENT' | 'CONFIRMED'; reviewedUntil?: number };
@@ -26,6 +27,7 @@ export async function prepareForReview(owner: Session, available: ReverseAvailab
     if (['COMPLETED', 'EXPIRED', 'REJECTED'].includes(result.status)) { saved = undefined; result = undefined; }
   }
   if (!result) {
+    if (!activeView()) return;
     saved ??= save({ key: crypto.randomUUID(), amountSats });
     if (saved.amountSats !== amountSats) throw new Error('A previous preparation has different terms. Review it before continuing.');
     result = await api.prepare(saved.key, owner.csrfToken, amountSats);
@@ -40,6 +42,7 @@ export async function prepareForReview(owner: Session, available: ReverseAvailab
   if (swap.payment.valueSats !== amountSats) throw new Error('An existing preparation has a different amount. Review it before continuing.');
   if (swap.execution.status !== 'NOT_STARTED') return swap.id;
   if (!swap.execution.approvedUntil || swap.execution.approvedUntil <= Date.now()) {
+    if (!activeView()) return;
     // A fresh explicit SWAP click may review the SAME unused invoice after expiry.
     // Never reuse a successful review key to extend its authority.
     if (!saved?.reviewKey || saved.reviewState === 'CONFIRMED') saved = save({ ...saved!, reviewKey: crypto.randomUUID(), reviewState: 'INTENT' });

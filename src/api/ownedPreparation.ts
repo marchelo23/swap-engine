@@ -5,6 +5,7 @@ import type { Store } from '../persistence/Store.js';
 import type { Database } from '../core/SwapTypes.js';
 import type { OwnedReverseApi, OwnerSessions } from './ownedReverse.js';
 import { invoiceBudget } from '../core/SwapManager.js';
+import { LEGACY_ECONOMICS, MAX_OWNED_DEBIT_SATS, OWNED_ECONOMICS } from '../core/Economics.js';
 
 export type PreparationEntry = NonNullable<Database['ownedPreparations']>[string];
 /** Trusted native adapter proof: the invoice-creation harness was never invoked. */
@@ -17,7 +18,6 @@ export type PreparedRuntime = { swapId: string; api: OwnedReverseApi;
 export type PreparationFactory = { prepare(id: string, entry: PreparationEntry): Promise<PreparedRuntime>;
   restore(id: string, entry: PreparationEntry): Promise<PreparedRuntime | undefined>; history?(): Promise<PreparedRuntime[]>;
   preflight?(): Promise<unknown>; close?(): Promise<void> };
-const inputSchema = z.object({ amountSats: z.number().int().min(11000).max(50000) }).strict();
 const digest = (v: unknown) => createHash('sha256').update(JSON.stringify(v)).digest('hex');
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 class Rejected extends Error { constructor(readonly status: number, readonly code: string) { super(code); } }
@@ -35,11 +35,15 @@ async function json(req: IncomingMessage) {
  * custody/invoice calls. No HTTP request supplies credentials, destinations or node evidence. */
 export async function createOwnedPreparation<S extends { account: { id: string; role: string; username: string } }>(
   store: Store, sessions: OwnerSessions<S>, factory: PreparationFactory,
-  policy: { mode: 'regtest'; ownerId: string; ownerUsername: string; origin: string; profileDigest: string },
+  policy: { mode: 'regtest'; ownerId: string; ownerUsername: string; origin: string; profileDigest: string;
+    maxSourceAmountSats?: number; claimDestination?: string },
 ) {
   if (policy.mode !== 'regtest' || !z.uuid().safeParse(policy.ownerId).success ||
     !/^[a-f0-9]{64}$/.test(policy.profileDigest) || new URL(policy.origin).origin !== policy.origin ||
     !['127.0.0.1', 'localhost', '[::1]'].includes(new URL(policy.origin).hostname)) throw new Error('PREPARATION_DISABLED');
+  const maxSourceAmountSats = z.number().int().min(LEGACY_ECONOMICS.invoice.minSats).max(MAX_OWNED_DEBIT_SATS)
+    .parse(policy.maxSourceAmountSats ?? LEGACY_ECONOMICS.invoice.maxSats);
+  const inputSchema = z.object({ amountSats: z.number().int().min(LEGACY_ECONOMICS.invoice.minSats).max(maxSourceAmountSats) }).strict();
   const runtimes = new Map<string, PreparedRuntime>(); const pending = new Map<string, Promise<void>>();
   let closing = false; let requests = 0; let drained: (() => void) | undefined;
   for (const runtime of await factory.history?.() ?? []) runtimes.set(`history-${runtime.swapId}`, runtime);
@@ -107,12 +111,13 @@ export async function createOwnedPreparation<S extends { account: { id: string; 
         if (!['GET', 'HEAD'].includes(req.method ?? '') && !sessions.verifyCsrf(req, session)) reject(403, 'CSRF_REJECTED');
         if (req.method === 'POST' && path === '/v1/quotes') {
           const input = inputSchema.parse(await json(req));
-          send(201, { id: randomUUID(), ...invoiceBudget(input.amountSats), expiresAt: Date.now() + 120000 }); return true;
+          send(201, { id: randomUUID(), ...invoiceBudget(input.amountSats, OWNED_ECONOMICS.invoice), expiresAt: Date.now() + 120000 }); return true;
         }
         if (req.method === 'GET' && path === '/v1/reverse/availability') {
           await refresh();
           const swaps = [...runtimes.values()].flatMap(r => r.api.list(policy.ownerId));
           send(200, { network: 'regtest', liveSwapsEnabled: false, controlledReverseConfigured: true, preparationAvailable: true,
+            maxSourceAmountSats, claimDestination: policy.claimDestination,
             executionAvailable: swaps.some(s => s.allowedActions.includes('EXECUTE')), recoveryAvailable: true,
             preparedSwapIds: swaps.map(s => s.id), preparations: Object.keys(store.read().ownedPreparations ?? {}).map(project) }); return true;
         }

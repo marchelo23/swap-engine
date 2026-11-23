@@ -9,6 +9,7 @@ import { describeSwapState } from '../ui/swapStatus.js';
 import { ReconcileResponse } from './schemas.js';
 import { buildHtlc } from '../bitcoin/HtlcBuilder.js';
 import { invoiceBudget } from '../core/SwapManager.js';
+import { OWNED_ECONOMICS } from '../core/Economics.js';
 
 const ownerSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/);
 const hashSchema = z.string().regex(/^[a-f0-9]{64}$/);
@@ -46,7 +47,7 @@ function profile(swap: Swap) {
   const q = swap.quote;
   const legacy = q.amountSats === 50000 && q.serviceFeeSats === 750 && q.invoiceSats === 50750;
   let current = false;
-  try { const budget = invoiceBudget(q.invoiceSats); current = Object.entries(budget).every(([key, value]) => q[key as keyof typeof budget] === value); } catch { /* Outside the approved profile. */ }
+  try { const budget = invoiceBudget(q.invoiceSats, OWNED_ECONOMICS.invoice); current = Object.entries(budget).every(([key, value]) => q[key as keyof typeof budget] === value); } catch { /* Outside the approved profile. */ }
   if ((!legacy && !current) || q.claimFeeSats !== 500 || q.fundingReserveSats !== 1000 || !swap.invoice) error(409, 'PREPARED_SWAP_REQUIRED');
 }
 async function body(req: IncomingMessage) {

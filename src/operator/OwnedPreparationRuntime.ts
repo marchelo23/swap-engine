@@ -24,6 +24,8 @@ import { createReverseRecovery } from '../api/reverseRecovery.js';
 import { createOwnedReverseApi, sessionOwnerAuthenticator, type OwnerSessions } from '../api/ownedReverse.js';
 import { PreparationRejected, type PreparationFactory, type PreparationEntry, type PreparedRuntime } from '../api/ownedPreparation.js';
 import { withMiningLock } from '../mining/MiningLock.js';
+import { CONTROLLED_FUNDING_CHANGE_BUFFER_SATS, LEGACY_ECONOMICS, MAX_OWNED_DEBIT_SATS, OWNED_ECONOMICS } from '../core/Economics.js';
+import { invoiceBudget } from '../core/SwapManager.js';
 
 const absolute = z.string().refine(isAbsolute);
 const historyInteger = z.string().regex(/^(0|[1-9][0-9]{0,19})$/).refine(v => BigInt(v) <= 0xffffffffffffffffn);
@@ -42,10 +44,17 @@ export const ownedRuntimePolicySchema = ownedRunPolicyBase.omit({ backupDirector
   actions: actionPathsSchema, amountSats: z.literal(50000), invoiceSats: z.literal(50750),
   fundingFeeLimitSats: z.literal(1000), routingFeeLimitSats: z.literal(100), claimFeeSats: z.literal(500),
   maxBlocks: z.literal(2), maxInputSats: z.number().int().min(61000).max(Number.MAX_SAFE_INTEGER),
+  maxSourceAmountSats: z.number().int().min(LEGACY_ECONOMICS.invoice.minSats).max(MAX_OWNED_DEBIT_SATS).optional(),
   archives: z.array(z.object({ directory: absolute, specSha256: z.string().regex(/^[a-f0-9]{64}$/) }).strict()).max(20).default([]),
 }).strict().refine(p => p.actions.providerSettleMacaroonPath === p.credentialPaths.providerInvoiceMacaroonPath &&
-  new URL(p.origin).port === String(p.port), 'Invoice creation must use the same inspected invoices-only credential');
+  new URL(p.origin).port === String(p.port), 'Invoice creation must use the same inspected invoices-only credential')
+  .refine(p => p.maxInputSats >= minimumFundingInput(p.maxSourceAmountSats), 'Funding input cap cannot cover the approved debit');
 export type OwnedRuntimePolicy = z.infer<typeof ownedRuntimePolicySchema>;
+function minimumFundingInput(sourceAmountSats?: number) {
+  if (sourceAmountSats === undefined) return 61_000;
+  const budget = invoiceBudget(sourceAmountSats, OWNED_ECONOMICS.invoice);
+  return Math.max(61_000, budget.amountSats + budget.fundingReserveSats + CONTROLLED_FUNDING_CHANGE_BUFFER_SATS);
+}
 const clockSynchronized = async () => {
   const { stdout } = await promisify(execFile)('/usr/bin/timedatectl', ['show', '-p', 'NTPSynchronized', '--value'], { timeout: 5000, maxBuffer: 1024 });
   if (stdout.trim() !== 'yes') throw operatorStopped();
@@ -77,7 +86,7 @@ export async function createOwnedRuntimeFactory<S extends { account: { id: strin
   const password = await protectedBytes(policy.passwordPath);
   if (password.length < 8 || password.length > 4096 || [10, 13].includes(password.at(-1)!)) { password.fill(0); throw operatorStopped(); }
   const clients = io.clients(policy); let closed = false; const opened = new Set<PreparedRuntime>();
-  const checkOwnerAndNodes = async () => {
+  const checkOwnerAndNodes = async (sourceAmountSats?: number) => {
     if (closed) throw operatorStopped(); await io.clock();
     const chain = z.object({ chain: z.literal('regtest'), initialblockdownload: z.literal(false), blocks: z.number().int().positive(), bestblockhash: z.string() })
       .parse(await clients.bitcoin.call('getblockchaininfo'));
@@ -91,7 +100,7 @@ export async function createOwnedRuntimeFactory<S extends { account: { id: strin
       const active = response.channels.filter(c => c.active); const c = active[0];
       if (active.length !== 1 || !c || c.chan_id !== policy.routing.channelId || c.channel_point !== policy.routing.channelPoint || c.remote_pubkey !== peer ||
         c.pending_htlcs.length || c.unsettled_balance !== '0' ||
-        BigInt(payerSide ? c.local_balance : c.remote_balance) - BigInt(payerSide ? c.local_constraints.chan_reserve_sat : c.remote_constraints.chan_reserve_sat) - BigInt(c.commit_fee) < 50850n) throw operatorStopped();
+        BigInt(payerSide ? c.local_balance : c.remote_balance) - BigInt(payerSide ? c.local_constraints.chan_reserve_sat : c.remote_constraints.chan_reserve_sat) - BigInt(c.commit_fee) < BigInt(sourceAmountSats ?? 50_850)) throw operatorStopped();
     }
     // Fixed default external-address inventory is read-only; never derives a new address.
     const addresses = z.object({ account_with_addresses: z.array(z.object({ addresses: z.array(z.object({ address: z.string(), is_internal: z.boolean() })) })) })
@@ -101,19 +110,22 @@ export async function createOwnedRuntimeFactory<S extends { account: { id: strin
   };
   const assemble = async (id: string, entry: PreparationEntry, fresh: boolean, marker?: { invoiceMayHaveBeenAttempted: boolean }): Promise<PreparedRuntime | undefined> => {
     if (closed || !/^[a-f0-9]{64}$/.test(id) || !z.uuid().safeParse(entry.attemptId).success || entry.ownerId !== policy.ownerId) throw operatorStopped();
-    if (entry.sourceAmountSats !== undefined && (!Number.isSafeInteger(entry.sourceAmountSats) || entry.sourceAmountSats < 11000 || entry.sourceAmountSats > policy.amountSats)) throw operatorStopped();
+    const sourceAmount = entry.sourceAmountSats;
+    if (sourceAmount !== undefined && (!Number.isSafeInteger(sourceAmount) || sourceAmount < LEGACY_ECONOMICS.invoice.minSats ||
+      sourceAmount > (policy.maxSourceAmountSats ?? policy.amountSats))) throw operatorStopped();
     const directory = join(policy.runsDirectory, entry.attemptId); const backupDirectory = join(policy.backupsDirectory, entry.attemptId);
     if (fresh) {
       try { await lstat(directory); if (marker) marker.invoiceMayHaveBeenAttempted = true; throw operatorStopped(); }
       catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') { if (marker) marker.invoiceMayHaveBeenAttempted = true; throw error; } }
-      const chain = await checkOwnerAndNodes();
+      const chain = await checkOwnerAndNodes(sourceAmount);
+      const minimumInputSats = minimumFundingInput(sourceAmount);
       const coins = z.array(z.object({ txid: z.string().regex(/^[a-f0-9]{64}$/), vout: z.number().int().nonnegative(), amount: z.number(),
         confirmations: z.number().int(), scriptPubKey: z.string(), safe: z.boolean(), spendable: z.boolean(), solvable: z.boolean() })).max(1000)
         .parse(await clients.bitcoin.call('listunspent', [1, 9999999, [], false, { maximumCount: 1000 }], true));
       if (coins.length === 1000 || new Set(coins.map(c => `${c.txid}:${c.vout}`)).size !== coins.length) throw operatorStopped();
       const locks = z.array(z.object({ txid: z.string(), vout: z.number() })).parse(await clients.bitcoin.call('listlockunspent', [], true));
       const candidates = coins.filter(c => c.safe && c.spendable && c.solvable && c.confirmations > 0 && /^0014[a-f0-9]{40}$/.test(c.scriptPubKey) &&
-        Number.isSafeInteger(Math.round(c.amount * 1e8)) && Math.round(c.amount * 1e8) / 1e8 === c.amount && c.amount * 1e8 >= 61000 &&
+        Number.isSafeInteger(Math.round(c.amount * 1e8)) && Math.round(c.amount * 1e8) / 1e8 === c.amount && Math.round(c.amount * 1e8) >= minimumInputSats &&
         Math.round(c.amount * 1e8) <= policy.maxInputSats && !locks.some(l => l.txid === c.txid && l.vout === c.vout))
         .sort((a, b) => a.amount - b.amount || a.txid.localeCompare(b.txid) || a.vout - b.vout).slice(0, 20);
       let input: { txid: string; vout: number; valueSats: number } | undefined;
@@ -179,7 +191,7 @@ export async function createOwnedRuntimeFactory<S extends { account: { id: strin
       const authorize = async (reviewId: string) => {
         if (stopped) throw operatorStopped();
         if (approvedUntil > Date.now()) return; // Same valid approval, never extend it by replay.
-        await checkOwnerAndNodes();
+        await checkOwnerAndNodes(spec.sourceAmountSats);
         await assertRecoveryNode(clients.recoveryPayer, spec.payerNode);
         const before = current.read(); const swap = before.swaps[swapId]!;
         if (Object.keys(before.jitExecutions ?? {}).length || Object.keys(before.controlledExecutions ?? {}).length ||
@@ -242,7 +254,8 @@ export async function createOwnedRuntimeFactory<S extends { account: { id: strin
       catch (error) { if (!marker.invoiceMayHaveBeenAttempted) throw new PreparationRejected('Regtest prerequisites rejected before invoice preparation'); throw error; }
     }, restore: (id, entry) => assemble(id, entry, false),
     async preflight() {
-      const chain = await checkOwnerAndNodes(); const inspected = await io.inspect(policy.actions, policy.credentialPaths);
+      const chain = await checkOwnerAndNodes(policy.maxSourceAmountSats);
+      const inspected = await io.inspect(policy.actions, policy.credentialPaths);
       // Public placeholders for the wallet-scope probe only; no contract, key generation,
       // invoice, input reservation or execution capability is created by this check.
       const spec = preparationSpecSchema.parse({ id: randomUUID(), isolationId: randomUUID(), tipHeight: chain.blocks, wallet: policy.wallet,

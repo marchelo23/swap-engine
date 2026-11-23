@@ -1,4 +1,4 @@
-import { api, ApiResponseError, type OwnedOperation, type OwnedSwap, type ReverseAvailability, type Session } from './api.js';
+import { api, ApiResponseError, type OwnedOperation, type OwnedSwap, type Quote, type ReverseAvailability, type Session } from './api.js';
 import { describeSwapState } from '../ui/swapStatus.js';
 import { details, get, sats, text } from './ui.js';
 
@@ -295,6 +295,34 @@ export function mountOwnedReverse(onConfigured: (configured: Preparation, availa
   dialog.addEventListener('close', () => { if (!dialog.open) { reviewed = undefined; actions(); } });
 
   return {
+    async executePrepared(owner: Session, id: string, quoted: Quote, destination: string | undefined, active: () => boolean) {
+      if (owner.user.role !== 'ADMIN' || session !== owner || !active()) return;
+      const signal = new AbortController().signal;
+      const [available, swap] = await Promise.all([api.reverseAvailability(signal), api.ownedSwap(id, signal)]);
+      if (session !== owner || !active()) return;
+      if (swap.id !== id) throw new Error('Unexpected prepared swap ID.');
+      if (swap.execution.status !== 'NOT_STARTED') return 'Check the existing execution status.';
+      const quote = swap.quote;
+      if (!permitted('execute', swap, available) || !swap.execution.approvedUntil ||
+        (destination !== undefined && (swap.claimDestination !== destination || available.claimDestination !== destination)) ||
+        Math.min(quoted.expiresAt, quote.expiresAt, swap.execution.approvedUntil) <= Date.now() ||
+        quote.invoiceSats !== quoted.invoiceSats || quote.amountSats !== quoted.amountSats ||
+        quote.serviceFeeSats !== quoted.serviceFeeSats || quote.claimFeeSats !== quoted.claimFeeSats ||
+        quote.fundingReserveSats !== quoted.fundingReserveSats)
+        return 'Execution terms or authorization changed. Review the prepared swap before continuing.';
+      const key = durableIntent(owner, swap, 'execute');
+      try {
+        const result = await api.reverseAction(id, swap.revision, key, owner.csrfToken, 'execute');
+        if (result.status === 'SUCCEEDED' && result.result.id !== id) throw new Error('Unexpected swap ID.');
+        return outcome(result, 'execute');
+      } catch (error) {
+        return errorStatus(error);
+      }
+    },
+    async showPrepared(id: string, notice?: string) {
+      visible = true;
+      await refresh(id, notice);
+    },
     async reviewPrepared(id: string) {
       visible = true; const epoch = viewEpoch; await refresh(id);
       if (visible && epoch === viewEpoch && !get('track').hidden && current?.id === id && permitted('execute', current, capability)) reviewButton.click();

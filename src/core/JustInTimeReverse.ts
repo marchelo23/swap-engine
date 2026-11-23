@@ -8,6 +8,7 @@ import { assertRecoveryNode } from '../lightning/LndPayerRecovery.js';
 import { preparationSpecSchema, preparationDigest, type PreparationSpec, type PreparationAdapters } from './ReversePreparation.js';
 import { verifyReverseTestPlan, createReverseTestPlan, type ReverseTestPlan } from './ReverseTestPlan.js';
 import { controlledRunDigest, type ControlledRunApproval } from './ControlledReverseBackend.js';
+import { OWNED_ECONOMICS } from './Economics.js';
 import { SwapManager } from './SwapManager.js';
 import type { Database } from './SwapTypes.js';
 
@@ -132,7 +133,7 @@ export function createJustInTimeReverse(store: Store, value: PreparationSpec, re
       };
       try {
         if (authority.startBefore <= wall() || clock.monotonic() >= prepDeadline) throw fail();
-        const quotedAt = wall(); const manager = new SwapManager(store);
+        const quotedAt = wall(); const manager = new SwapManager(store, OWNED_ECONOMICS);
         const quote = spec.sourceAmountSats === undefined ? await manager.quote(50000, quotedAt) : await manager.quoteInvoice(spec.sourceAmountSats, quotedAt);
         owned('INTENT');
         if (quote.expiresAt !== quotedAt + 120000) throw fail();

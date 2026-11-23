@@ -114,6 +114,15 @@ reverse protocol also keeps immutable constants: `CONFIRMATIONS_REQUIRED=1`,
 `READINESS_MAX_BLOCKS=2` and `READINESS_TIMEOUT_MS=90000`; setting another value
 fails with `PROTOCOL_POLICY_IMMUTABLE`.
 
+The authenticated regtest profile can set `maxSourceAmountSats` in the
+checksum-approved owned policy, up to 1,000,000 sats. Existing policies without
+this field retain the 50,000-sat limit. Verify the wallet has an eligible
+confirmed input within `maxInputSats` and that the pinned Lightning channel has
+sufficient Alice-side liquidity. Before approving a new policy digest, resolve
+any active owned preparations and retain their records. The browser shows the
+configured payout address and a single explicit SWAP action starts the
+authenticated flow. Guest retains its own limit.
+
 ## Preparation spec migration
 
 Fresh live preparation, restore and execution specs now require an explicit

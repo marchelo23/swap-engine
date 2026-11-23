@@ -8,6 +8,8 @@ export type InvoiceEconomics = {
 };
 export type ReadinessBudget = { confirmations: 1; maxBlocks: 2; timeoutMs: 90_000 };
 export type EconomicsConfig = { quote: QuoteEconomics; invoice: InvoiceEconomics; readiness: ReadinessBudget };
+export const MAX_OWNED_DEBIT_SATS = 1_000_000;
+export const CONTROLLED_FUNDING_CHANGE_BUFFER_SATS = 10_000;
 
 export const LEGACY_ECONOMICS: EconomicsConfig = Object.freeze({
   quote: Object.freeze({ minAmountSats: 10_000, maxAmountSats: 1_000_000, serviceFeeBaseSats: 500,
@@ -15,6 +17,10 @@ export const LEGACY_ECONOMICS: EconomicsConfig = Object.freeze({
   invoice: Object.freeze({ minSats: 11_000, maxSats: 50_000, serviceFeeBaseSats: 500,
     serviceFeeDivisor: 200, fundingReserveSats: 1_000, claimFeeSats: 500, ttlMs: 120_000 }),
   readiness: Object.freeze({ confirmations: 1, maxBlocks: 2, timeoutMs: 90_000 }),
+});
+export const OWNED_ECONOMICS: EconomicsConfig = Object.freeze({
+  ...LEGACY_ECONOMICS,
+  invoice: Object.freeze({ ...LEGACY_ECONOMICS.invoice, maxSats: MAX_OWNED_DEBIT_SATS }),
 });
 export function validateEconomics(economics: EconomicsConfig): void {
   const { quote, invoice } = economics;
@@ -27,7 +33,7 @@ export function validateEconomics(economics: EconomicsConfig): void {
   const invoiceFee = invoice.serviceFeeBaseSats + Math.ceil(invoice.minSats / invoice.serviceFeeDivisor);
   const principal = invoice.minSats - invoiceFee;
   if (!Number.isSafeInteger(invoice.minSats) || invoice.minSats < 11_000 ||
-    invoice.maxSats < invoice.minSats || invoice.maxSats > 50_000 ||
+    !Number.isSafeInteger(invoice.maxSats) || invoice.maxSats < invoice.minSats || invoice.maxSats > MAX_OWNED_DEBIT_SATS ||
     !Number.isSafeInteger(invoice.serviceFeeDivisor) || invoice.serviceFeeDivisor < 1 ||
     invoiceFee < 0 || principal <= 0 || invoice.fundingReserveSats < 1_000 ||
     invoice.claimFeeSats < 500 || invoice.claimFeeSats >= principal || invoice.ttlMs < 30_000)

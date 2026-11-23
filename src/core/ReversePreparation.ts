@@ -8,6 +8,7 @@ import type { ControlledRunReadiness } from './ControlledReverseBackend.js';
 import type { ReadinessCustody } from './ControlledReadiness.js';
 import { controlledRunDigest } from './ControlledReverseBackend.js';
 import { createReverseTestPlan, reverseRoutingSchema, verifyReverseTestPlan } from './ReverseTestPlan.js';
+import { MAX_OWNED_DEBIT_SATS, OWNED_ECONOMICS } from './Economics.js';
 import { SwapManager, invoiceBudget } from './SwapManager.js';
 import { invoiceOnlyPorts } from './InvoiceOnlyPorts.js';
 import { transition, updateSwapRevision } from './SwapStateMachine.js';
@@ -19,7 +20,7 @@ export const preparationSpecSchema = z.object({ id: z.uuid(), isolationId: z.uui
   wallet: z.string().regex(/^[A-Za-z0-9._-]{1,120}$/),
   providerNode: pubkey, payerNode: pubkey, routing: reverseRoutingSchema,
   client: z.object({ paymentHash: hash, claimPublicKey: pubkey }).strict(), refundPublicKey: pubkey,
-  sourceAmountSats: z.number().int().min(11000).max(50000).optional(),
+  sourceAmountSats: z.number().int().min(11000).max(MAX_OWNED_DEBIT_SATS).optional(),
   claimDestination: z.string(), refundDestination: z.string(),
   input: z.object({ txid: hash, vout: z.number().int().nonnegative().max(0xffffffff),
     valueSats: z.number().int().min(61000).max(Number.MAX_SAFE_INTEGER) }).strict(),
@@ -60,7 +61,7 @@ export function preparationDigest(value: PreparationSpec) {
 export function createReversePreparation(store: Store, supplied: PreparationSpec, adapters: PreparationAdapters,
   suppliedApproval?: PreparationApproval) {
   const spec = preparationSpecSchema.parse(structuredClone(supplied)); const digest = preparationDigest(spec);
-  const budget = spec.sourceAmountSats === undefined ? legacyBudget : invoiceBudget(spec.sourceAmountSats);
+  const budget = spec.sourceAmountSats === undefined ? legacyBudget : invoiceBudget(spec.sourceAmountSats, OWNED_ECONOMICS.invoice);
   const approval = suppliedApproval ? preparationApprovalSchema.parse(structuredClone(suppliedApproval)) : undefined;
   const now = adapters.now ?? Date.now;
   const planFor = (quote: Quote) => createReverseTestPlan(quote, spec.tipHeight, spec.client, spec.refundPublicKey,
@@ -205,7 +206,7 @@ export function createReversePreparation(store: Store, supplied: PreparationSpec
       });
       try {
         const liquidity = await nodesAndCustody(); await unusedHash(); authorize(); owned(attemptId, 'INTENT');
-        const manager = new SwapManager(store); const quote = spec.sourceAmountSats === undefined ? await manager.quote(50000, now()) : await manager.quoteInvoice(spec.sourceAmountSats, now());
+        const manager = new SwapManager(store, OWNED_ECONOMICS); const quote = spec.sourceAmountSats === undefined ? await manager.quote(50000, now()) : await manager.quoteInvoice(spec.sourceAmountSats, now());
         const plan = planFor(quote);
         await store.transaction(db => { authorize(); owned(attemptId, 'INTENT'); db.reversePreparations![spec.id]!.plan = plan; });
         // One quote object, including ID and expiry, is used in the plan and persisted swap.
