@@ -28,8 +28,7 @@ export function mountQuote(prepare?: (stillVisible: () => boolean, quote: Quote,
   const arkDestinationAddress = get<HTMLInputElement>('ark-destination-address');
   let successNotice = false;
   const status = (message: string) => text('quote-status', successNotice ? '¡Swap exitoso!' : message);
-  const numbers = ['service', 'claim', 'cost', 'received-preview', 'quote-debit', 'quote-payout', 'quote-reserve'];
-  const reserveRow = get('quote-reserve-row');
+  const numbers = ['service', 'claim', 'cost', 'received-preview', 'quote-debit'];
   const motion = matchMedia('(prefers-reduced-motion: reduce)');
   for (const type of ['copy', 'cut']) form.addEventListener(type, event => event.preventDefault());
   let pair = defaultPair;
@@ -293,7 +292,6 @@ export function mountQuote(prepare?: (stillVisible: () => boolean, quote: Quote,
     delete form.dataset.loading;
     if (dialog.open) dialog.close();
     for (const id of numbers) text(id, '—');
-    reserveRow.hidden = true;
   }
 
   function guestRoute() {
@@ -343,9 +341,8 @@ export function mountQuote(prepare?: (stillVisible: () => boolean, quote: Quote,
       if (route && (!('route' in result) || result.route !== route)) throw new Error('Backend returned a different Ark route.');
       const totals = quoteTotals(result, value);
       quote = result;
-      reserveRow.hidden = result.fundingReserveSats === 0;
       animateValues([sats(result.serviceFeeSats), sats(result.claimFeeSats), sats(totals.lost),
-        integer(totals.received), sats(result.invoiceSats), sats(totals.received), sats(result.fundingReserveSats)]);
+        integer(totals.received), sats(result.invoiceSats)]);
       if (route) {
         action.disabled = !aligned || !canQuote(pair);
         showArkQuoteStatus();

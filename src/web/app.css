@@ -296,7 +296,6 @@ dialog::backdrop { background: #16161670; }
 .cube-outer .face-note { margin-bottom: clamp(.4rem, 2.9vw, 2.4rem); }
 .cube-fees { margin-top: auto; display: grid; gap: 6px; font-size: clamp(.67rem, 1.12vw, .85rem); }
 .cube-fees div { display: flex; justify-content: space-between; gap: 5px; }
-.cube-fees div[hidden] { display: none; }
 .cube-fees dt { color: #dedede; }
 .cube-fees dt span { font-size: .83em; }
 .cube-fees dd { font-family: var(--mono); text-align: right; white-space: nowrap; }

@@ -85,12 +85,13 @@ test('guest cubes work after signed-in reverse is denied and show an exact invoi
   });
   await page.goto(base);
   await page.getByRole('textbox', { name: 'Amount to send in sats' }).waitFor();
-  await page.waitForFunction(() => document.getElementById('quote-payout')?.textContent === '48,750 sats');
+  await page.waitForFunction(() => document.getElementById('received-preview')?.textContent === '48,750');
   assert.equal(await page.locator('#quote-debit').textContent(), '50,000 sats');
   assert.equal(await page.locator('#service').textContent(), '750 sats');
   assert.equal(await page.locator('#claim').textContent(), '500 sats');
   assert.equal(await page.locator('#cost').textContent(), '1,250 sats');
-  assert.equal(await page.locator('#quote-reserve').textContent(), '1,000 sats');
+  assert.deepEqual(await page.locator('.cube-swap .cube-fees dd').allTextContents(),
+    ['50,000 sats', '750 sats', '500 sats', '1,250 sats']);
   const requestedSats = Number(await page.locator('#amount').inputValue());
   await page.getByRole('button', { name: 'SWAP', exact: true }).click();
   const dialog = page.getByRole('dialog', { name: 'Guest swap recovery' });
