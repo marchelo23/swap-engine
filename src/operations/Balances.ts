@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type { RailBalanceEntry } from '../core/RailContract.js';
+import { collectLiquidBalances, type LiquidBalanceSnapshot, type LiquidBalanceSource } from '../liquid/LiquidBalances.js';
 
 const CoreRegtest = z.object({ chain: z.literal('regtest') });
 const LndRegtest = z.object({
@@ -51,6 +52,7 @@ export type OperationsBalances = {
   provider: NodeBalance | null;
   alice: NodeBalance | null;
   rails: RailBalanceEntry[];
+  liquid?: LiquidBalanceSnapshot;
 };
 
 type NodeSnapshot = { legacy: NodeBalance; capacitySats: number | null };
@@ -67,6 +69,7 @@ export type OperationsBalancesClients = {
   bitcoin: BitcoinBalanceReader | null;
   provider: LndBalanceReader | null;
   alice: LndBalanceReader | null;
+  liquid?: LiquidBalanceSource | null;
 };
 
 async function read<T>(schema: z.ZodType<T>, call: () => Promise<unknown>): Promise<T | null> {
@@ -151,7 +154,8 @@ function statusOf(values: Array<number | null>): 'available' | 'unavailable' | '
   if (values.every(value => value === null)) return 'unavailable';
   return values.every(value => value !== null) ? 'available' : 'unknown';
 }
-function railEntries(core: CoreBalance, provider: NodeSnapshot | null, alice: NodeSnapshot | null): RailBalanceEntry[] {
+function railEntries(core: CoreBalance, provider: NodeSnapshot | null, alice: NodeSnapshot | null,
+  liquid: LiquidBalanceSnapshot | null, liquidConfigured: boolean): RailBalanceEntry[] {
   const onchainCoreStatus = statusOf([core.confirmedSats, core.unconfirmedSats]);
   const entries: RailBalanceEntry[] = [{ rail: 'onchain', account: 'core', status: onchainCoreStatus,
     reason: onchainCoreStatus === 'available' ? null : onchainCoreStatus === 'unavailable' ? 'UNAVAILABLE' : 'UNAVAILABLE',
@@ -169,18 +173,32 @@ function railEntries(core: CoreBalance, provider: NodeSnapshot | null, alice: No
       balances: status === 'unavailable' ? null : { localSats: values[0]!, remoteSats: values[1]!, capacitySats: values[2]! } });
   }
   entries.push({ rail: 'ark', account: 'operator', status: 'unavailable', reason: 'NOT_CONFIGURED', balances: null });
-  entries.push({ rail: 'liquid', account: 'operator', status: 'unavailable', reason: 'NOT_CONFIGURED', balances: null });
+  entries.push({ rail: 'liquid', account: 'operator', status: liquid ? 'available' : 'unavailable',
+    reason: liquid ? null : liquidConfigured ? 'UNAVAILABLE' : 'NOT_CONFIGURED',
+    balances: liquid ? { assetId: liquid.assetId, confirmedBaseUnits: liquid.confirmedBaseUnits,
+      unconfirmedBaseUnits: liquid.unconfirmedBaseUnits, spendableBaseUnits: liquid.spendableBaseUnits,
+      utxoCount: liquid.utxoCount } : null });
   return entries;
+}
+
+async function collectLiquid(source: LiquidBalanceSource | null | undefined): Promise<LiquidBalanceSnapshot | null> {
+  if (!source) return null;
+  try {
+    return await collectLiquidBalances(source);
+  } catch {
+    return null;
+  }
 }
 
 export async function collectOperationsBalances(
   clients: OperationsBalancesClients,
   now = new Date(),
 ): Promise<OperationsBalances> {
-  const [core, provider, alice] = await Promise.all([
+  const [core, provider, alice, liquid] = await Promise.all([
     collectCore(clients.bitcoin),
     collectNode(clients.provider),
     collectNode(clients.alice),
+    collectLiquid(clients.liquid),
   ]);
   return {
     network: 'regtest',
@@ -188,6 +206,7 @@ export async function collectOperationsBalances(
     core,
     provider: provider?.legacy ?? null,
     alice: alice?.legacy ?? null,
-    rails: railEntries(core, provider, alice),
+    rails: railEntries(core, provider, alice, liquid, Boolean(clients.liquid)),
+    ...(liquid ? { liquid } : {}),
   };
 }

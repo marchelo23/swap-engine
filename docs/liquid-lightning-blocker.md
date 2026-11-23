@@ -65,6 +65,31 @@ not wired to produce a quote or authorize an action:
   quote expiry margins. The existing decoder-result checker is reused; it is
   not a BOLT11 signature decoder. No such decoder is installed in this route.
 
+## Real Liquid balances in Operations
+
+The application now also renders the configured Elements wallet's real
+read-only data in ADMIN Operations when the profile attests the wallet and the
+configured policy asset. It reads wallet-scoped `listunspent` with
+`minconf=0`, `maxconf=9999999`, `include_unsafe=false` and an explicit
+`{ asset: LIQUID_POLICY_ASSET }` query, and rejects any row whose asset differs
+from the configured value. It reports confirmed, unconfirmed and spendable
+base units, UTXO count, asset ID, wallet name, chain height and native genesis.
+The amounts are labelled Liquid test units, never BTC.
+
+The startup coinbase/wallet evidence is reported as
+`assetEvidence=confirmed-wallet-and-coinbase`; it still records
+`feePolicyVerified=false`. With no coinbase evidence the balance snapshot is
+marked `assetEvidence=not-collected`; it is not treated as a verified fee
+policy or as permission to spend. No address, blinder, raw transaction, cookie
+or RPC error is exposed. The wallet read remains read-only and does not add a
+signing, funding or broadcast path.
+
+This visualization does not unblock Liquid-to-Lightning execution. The
+authenticated availability endpoint still reports
+`LIQUID_LIGHTNING_ATOMIC_ADAPTER_UNAVAILABLE`, and the quote/swap POST paths
+still return 503 without creating a quote, invoice, reservation or journal
+entry.
+
 ## Required atomicity and recovery before any funding
 
 The HTLC must commit to the hash of the independently verified destination

@@ -144,6 +144,14 @@ export async function startApplication(env: NodeJS.ProcessEnv = process.env, arg
   if (!identity && (c.rails.onchain.enabled || c.rails.lightning.enabled || c.rails.liquid.enabled)) {
     identity = await attestStartup(c, { bitcoin, provider: lnd, alice, liquid });
   }
+  if (!dependencies.reads && (c.environment === 'regtest' || c.environment === 'liquid-regtest') &&
+    liquid && c.rails.liquid.enabled && c.rails.liquid.genesisHash) {
+    const liquidSource = { reader: liquid, chainName: c.rails.liquid.chainName,
+      policyAsset: c.rails.liquid.policyAsset, genesisHash: c.rails.liquid.genesisHash,
+      parentGenesisHash: c.rails.liquid.parentGenesisHash, wallet: c.rails.liquid.wallet,
+      assetEvidence: identity?.liquidAssetEvidence ? 'confirmed-wallet-and-coinbase' as const : 'not-collected' as const };
+    operations = () => collectOperationsBalances({ bitcoin, provider: lnd, alice, liquid: liquidSource });
+  }
   let ark: ArkRegtestPort | undefined;
   let arkVerified = false;
   if (!dependencies.reads && c.rails.ark.enabled && c.bitcoinNetwork === 'regtest') {

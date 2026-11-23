@@ -25,6 +25,21 @@ export const LiquidityResponse = z.object({ onchainSats: z.number().int().nonneg
 const BalanceSats = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).nullable();
 const WalletBalance = z.object({ confirmedSats: BalanceSats, unconfirmedSats: BalanceSats }).strict();
 const LightningBalance = WalletBalance.extend({ localSats: BalanceSats, remoteSats: BalanceSats });
+const LiquidBaseUnits = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
+export const LiquidBalanceSnapshotResponse = z.object({
+  wallet: z.string().min(1).max(120),
+  chain: z.string().min(1).max(40),
+  height: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+  genesisHash: z.string().regex(/^[a-f0-9]{64}$/),
+  assetId: z.string().regex(/^[a-f0-9]{64}$/),
+  confirmedBaseUnits: LiquidBaseUnits,
+  unconfirmedBaseUnits: LiquidBaseUnits,
+  spendableBaseUnits: LiquidBaseUnits,
+  utxoCount: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+  assetEvidence: z.enum(['confirmed-wallet-and-coinbase', 'not-collected']),
+  feePolicyVerified: z.literal(false),
+  readOnly: z.literal(true),
+}).strict();
 export const OperationsBalancesResponse = z.object({
   network: z.literal('regtest'),
   capturedAt: z.iso.datetime(),
@@ -32,6 +47,7 @@ export const OperationsBalancesResponse = z.object({
   provider: LightningBalance.nullable(),
   alice: LightningBalance.nullable(),
   rails: z.array(railBalanceEntrySchema),
+  liquid: LiquidBalanceSnapshotResponse.optional(),
 }).strict();
 export const CapabilitiesResponse = capabilitiesSchema;
 

@@ -8,6 +8,19 @@ const maxFreshAge = 60_000;
 const date = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'medium' });
 const format = (value: number | null | undefined, entry?: RailBalanceEntry) =>
   value == null ? entry?.status === 'unknown' ? 'Unknown' : 'Unavailable' : sats(value);
+const liquidAmount = (value: number | null | undefined) => {
+  if (value == null) return 'Unavailable';
+  const whole = Math.floor(value / 1e8);
+  const fraction = String(value - whole * 1e8).padStart(8, '0');
+  return `${integer(whole)}.${fraction} Liquid units`;
+};
+const shortHash = (value: string) => `${value.slice(0, 10)}…${value.slice(-8)}`;
+const liquidAsset = (value: string | null | undefined) => {
+  if (value == null) return 'Unavailable';
+  const node = get('liquid-asset');
+  node.title = value;
+  return shortHash(value);
+};
 
 function verifiedBalance<T extends RailBalanceEntry>(entries: T[], owner: string): T['balances'] | null {
   const [entry, ...duplicates] = entries.filter(row => row.account === owner);
@@ -35,6 +48,7 @@ export function mountOperationsBalances() {
   const snapshotTime = get<HTMLTimeElement>('balance-time');
   let active = false;
   let pending: AbortController | undefined;
+  let routePending: AbortController | undefined;
   let staleTimer: number | undefined;
 
   function showAge(capturedAt: string) {
@@ -88,7 +102,10 @@ export function mountOperationsBalances() {
       text(`${owner}-ark-recoverable`, format(balance?.recoverableSats));
     }
     const liquidEntries = snapshot?.rails.filter(entry => entry.rail === 'liquid') ?? [];
-    const liquidWallets = owners.map(owner => ({ owner, balance: verifiedBalance(liquidEntries, owner) }));
+    const liquidWallets = owners.map(owner => {
+      const balance = verifiedBalance(liquidEntries, owner);
+      return { owner, balance: balance && 'confirmedSats' in balance ? balance : null };
+    });
     for (const { owner, balance } of liquidWallets) {
       const maxConfirmedForAsset = Math.max(0, ...liquidWallets.map(wallet =>
         wallet.balance?.assetId === balance?.assetId ? wallet.balance?.confirmedSats ?? 0 : 0));
@@ -98,10 +115,60 @@ export function mountOperationsBalances() {
       const hasAmount = balance?.confirmedSats != null || balance?.unconfirmedSats != null;
       text(`${owner}-liquid-asset`, hasAmount ? balance.assetId : 'Unavailable');
     }
+    const liquid = snapshot?.liquid;
+    if (loading) {
+      text('liquid-tag', 'LOADING');
+      text('liquid-status', 'Loading Liquid wallet…');
+    } else if (liquid) {
+      text('liquid-tag', 'READ ONLY');
+      text('liquid-status', `Liquid wallet ${liquid.wallet} on ${liquid.chain}.`);
+      text('liquid-confirmed', liquidAmount(liquid.confirmedBaseUnits));
+      text('liquid-unconfirmed', liquidAmount(liquid.unconfirmedBaseUnits));
+      text('liquid-spendable', liquidAmount(liquid.spendableBaseUnits));
+      text('liquid-utxos', integer(liquid.utxoCount));
+      text('liquid-asset', liquidAsset(liquid.assetId));
+      text('liquid-wallet', liquid.wallet);
+      text('liquid-chain', liquid.chain);
+      const identity = get('liquid-chain-identity');
+      identity.textContent = `${integer(liquid.height)} · ${shortHash(liquid.genesisHash)}`;
+      identity.title = liquid.genesisHash;
+      text('liquid-evidence', liquid.assetEvidence === 'confirmed-wallet-and-coinbase'
+        ? 'Wallet asset matched to coinbase; current fee policy unproven.'
+        : 'Configured policy asset; coinbase evidence not collected.');
+    } else {
+      text('liquid-tag', 'UNAVAILABLE');
+      text('liquid-status', 'Liquid wallet data unavailable.');
+      for (const id of ['liquid-confirmed', 'liquid-unconfirmed', 'liquid-spendable', 'liquid-utxos',
+        'liquid-asset', 'liquid-wallet', 'liquid-chain', 'liquid-chain-identity', 'liquid-evidence'])
+        text(id, 'Unavailable');
+    }
     snapshotTime.hidden = !snapshot;
     snapshotTime.dateTime = snapshot?.capturedAt ?? '';
     snapshotTime.textContent = snapshot ? date.format(new Date(snapshot.capturedAt)) : '';
     if (snapshot) showAge(snapshot.capturedAt);
+  }
+
+  async function loadLiquidLightning() {
+    if (!active || routePending) return;
+    const controller = new AbortController();
+    routePending = controller;
+    text('liquid-lightning-tag', 'CHECKING');
+    text('liquid-lightning-status', 'Checking Liquid to Lightning route readiness...');
+    try {
+      const route = await api.liquidLightningAvailability(controller.signal);
+      if (routePending !== controller) return;
+      text('liquid-lightning-tag', 'BLOCKED');
+      text('liquid-lightning-status', route.reason === 'LIQUID_LIGHTNING_ATOMIC_ADAPTER_UNAVAILABLE'
+        ? 'Execution is blocked: no attested Liquid HTLC atomic adapter is installed. Liquidity is visible read-only; no payment or invoice will be created.'
+        : `Execution is disabled: ${route.reason}.`);
+    } catch {
+      if (routePending === controller) {
+        text('liquid-lightning-tag', 'UNAVAILABLE');
+        text('liquid-lightning-status', 'Liquid to Lightning readiness is unavailable.');
+      }
+    } finally {
+      if (routePending === controller) routePending = undefined;
+    }
   }
 
   async function load() {
@@ -128,19 +195,24 @@ export function mountOperationsBalances() {
     }
   }
 
-  refresh.addEventListener('click', () => void load());
+  refresh.addEventListener('click', () => { void load(); void loadLiquidLightning(); });
 
   return (enabled: boolean) => {
     if (active === enabled) return;
     active = enabled;
     if (active) {
       void load();
+      void loadLiquidLightning();
     } else {
       pending?.abort();
+      routePending?.abort();
       pending = undefined;
+      routePending = undefined;
       refresh.disabled = false;
       render();
       text('balance-status', 'Balance snapshot unavailable.');
+      text('liquid-lightning-tag', 'UNAVAILABLE');
+      text('liquid-lightning-status', 'Sign in with an administrator account to inspect Liquid route readiness.');
     }
   };
 }
