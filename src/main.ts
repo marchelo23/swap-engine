@@ -154,14 +154,18 @@ export async function startApplication(env: NodeJS.ProcessEnv = process.env, arg
   }
   let ark: ArkRegtestPort | undefined;
   let arkVerified = false;
+  let arkExecutionOwner: string | undefined;
+  let arkStorePath: string | undefined;
   if (!dependencies.reads && c.rails.ark.enabled && c.bitcoinNetwork === 'regtest') {
     const settings = c.rails.ark;
     const cli = settings.cliPath && settings.labRoot
-      ? createArkLabCliRunner(settings.cliPath, { cwd: settings.labRoot, readOnly: true })
+      ? createArkLabCliRunner(settings.cliPath, { cwd: settings.labRoot, readOnly: !settings.executionEnabled })
       : undefined;
     ark = createArkRegtestCliPort({ operatorInfoUrl: settings.operatorInfoUrl,
       expectedSignerPubkey: settings.expectedSignerPubkey, cli });
     arkVerified = (await ark.telemetry()).operatorStatus === 'ok';
+    arkExecutionOwner = settings.executionOwner ?? undefined;
+    arkStorePath = settings.storePath ?? undefined;
   }
   if (operatorArgs && !dependencies.operator) {
     const command = parseOperatorCommand(operatorArgs);
@@ -200,7 +204,7 @@ export async function startApplication(env: NodeJS.ProcessEnv = process.env, arg
       }
     }
     const server = createApi(new SwapManager(store, c.economics), liquidity, diagnostics, c.mode,
-      { operations, ark, guestReverse: guestRuntime?.guestReverse, auth: { storePath: c.auth.storePath ?? undefined, origin: c.auth.origin ?? undefined },
+      { operations, ark, arkExecutionOwner, arkStorePath, guestReverse: guestRuntime?.guestReverse, auth: { storePath: c.auth.storePath ?? undefined, origin: c.auth.origin ?? undefined },
         capabilities: () => ({ ...c.capabilities({ ...identity?.verified, ark: arkVerified }),
           ...(identity?.liquidAssetEvidence ? { liquidStatus: 'CHAIN_AND_WALLET_VERIFIED' as const } : {}) }),
         environment: c.environment });

@@ -47,7 +47,8 @@ export type LightningRailConfig = {
   alice: { url: string; cert: string; macaroon: string } | null;
 } | { enabled: false };
 export type ArkRailConfig = { enabled: true; operatorInfoUrl: string; expectedSignerPubkey: string;
-  labRoot: string | null; cliPath: string | null; storePath: string | null; confirmationPolicy: 'disabled' | 'read-only' } | { enabled: false };
+  labRoot: string | null; cliPath: string | null; storePath: string | null; confirmationPolicy: 'disabled' | 'read-only';
+  executionEnabled: boolean; executionOwner: string | null } | { enabled: false };
 export type LiquidRailConfig = { enabled: true; rpcUrl: string; cookie: string; chainName: string;
   policyAsset: string; parentGenesisHash: string; genesisHash: string | null; wallet: string; confirmationPolicy: 'disabled' | 'read-only' } | { enabled: false };
 
@@ -137,13 +138,20 @@ function arkRail(env: NodeJS.ProcessEnv): ArkRailConfig {
     throw new Error('ARK_LAB_E2E_FIXTURE_FORBIDDEN');
   const execution = optional(env, 'ARK_EXECUTION_ENABLED');
   if (execution !== undefined && !['true', 'false'].includes(execution)) throw new Error('ARK_EXECUTION_ENABLED_INVALID');
-  if (execution === 'true') throw new Error('ARK_EXECUTION_FORBIDDEN');
+  const executionEnabled = execution === 'true';
+  const executionOwner = optional(env, 'ARK_EXECUTION_OWNER') ?? null;
+  if (executionOwner !== null && !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/.test(executionOwner))
+    throw new Error('ARK_EXECUTION_OWNER_INVALID');
+  if (executionOwner !== null && !executionEnabled) throw new Error('ARK_EXECUTION_OWNER_WITHOUT_EXECUTION');
   const legacyEnabled = optional(env, 'ARK_ENABLED');
   if (legacyEnabled !== undefined && !['true', 'false'].includes(legacyEnabled)) throw new Error('ARK_ENABLED_INVALID');
   const names = ['ARK_NETWORK', 'ARK_OPERATOR_URL', 'ARK_OPERATOR_INFO_URL', 'ARK_EXPECTED_SIGNER_PUBKEY',
     'ARK_SIGNER_PUBKEY', 'ARK_LAB_ROOT', 'ARK_CLI_PATH', 'ARK_LAB_CLI_PATH', 'ARK_STORE_PATH', 'ARK_CONFIRMATION_POLICY'];
-  if (legacyEnabled === 'false') return { enabled: false };
-  if (legacyEnabled !== 'true' && !names.some(name => optional(env, name) !== undefined)) return { enabled: false };
+  if (legacyEnabled === 'false') {
+    if (executionEnabled) throw new Error('ARK_EXECUTION_DISABLED_CONFLICT');
+    return { enabled: false };
+  }
+  if (legacyEnabled !== 'true' && !executionEnabled && !names.some(name => optional(env, name) !== undefined)) return { enabled: false };
   const network = required(env, 'ARK_NETWORK');
   if (network !== 'regtest') throw new Error('ARK_NETWORK_REGTEST_ONLY');
   const operatorInfoUrl = pick(env, 'ARK_OPERATOR_URL', 'ARK_OPERATOR_INFO_URL') ??
@@ -158,9 +166,15 @@ function arkRail(env: NodeJS.ProcessEnv): ArkRailConfig {
   if (!loopbackHttpEndpoint(operatorInfoUrl) || !/^(02|03)[a-f0-9]{64}$/.test(expectedSignerPubkey) ||
     (labRoot !== undefined && !absolutePath(labRoot)) || (cliPath !== undefined && !absolutePath(cliPath)) ||
     (storePath !== undefined && !absolutePath(storePath))) throw new Error('ARK_CONFIGURATION_INVALID');
+  if (executionEnabled) {
+    if (executionOwner === null) throw new Error('ARK_EXECUTION_OWNER_REQUIRED');
+    if (cliPath === undefined) throw new Error('ARK_EXECUTION_CLI_REQUIRED');
+    if (labRoot === undefined) throw new Error('ARK_EXECUTION_LAB_ROOT_REQUIRED');
+    if (storePath === undefined) throw new Error('ARK_EXECUTION_STORE_REQUIRED');
+  }
   return { enabled: true, operatorInfoUrl, expectedSignerPubkey,
     labRoot: labRoot ?? null, cliPath: cliPath ?? null, storePath: storePath ?? null,
-    confirmationPolicy: confirmationRaw as 'disabled' | 'read-only' };
+    confirmationPolicy: confirmationRaw as 'disabled' | 'read-only', executionEnabled, executionOwner };
 }
 function liquidRail(env: NodeJS.ProcessEnv): LiquidRailConfig {
   const execution = optional(env, 'LIQUID_EXECUTION_ENABLED');
@@ -314,6 +328,8 @@ export function config(env: NodeJS.ProcessEnv = process.env): Config {
   const onchain = onchainRail(env); const lightning = lightningRail(env);
   if (recovery && (!onchain.enabled || !lightning.enabled)) throw new Error('RECOVERY_RAILS_REQUIRED');
   const ark = arkRail(env); const liquid = liquidRail(env);
+  if (ark.enabled && ark.executionEnabled && selectedEnvironment !== 'regtest' && selectedEnvironment !== 'ark-regtest')
+    throw new Error('ARK_EXECUTION_REGTEST_ONLY');
   const directory = env.DATA_DIR?.trim() || './data';
   const bitcoinNetwork = selectedEnvironment === 'regtest' || selectedEnvironment === 'ark-regtest' || selectedEnvironment === 'liquid-regtest'
     ? 'regtest' as const : selectedEnvironment === 'signet' ? 'signet' as const : selectedEnvironment === 'mainnet' ? 'mainnet' as const : null;

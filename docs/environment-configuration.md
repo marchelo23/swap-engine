@@ -1,6 +1,6 @@
 # Environment-driven configuration
 
-Status: implementation review candidate. Financial execution and real mining remain disabled.
+Status: implementation review candidate. Financial execution is disabled by default; Ark regtest boarding/offboarding is opt-in and real mining remains disabled.
 
 ## Profiles
 
@@ -41,7 +41,9 @@ Legacy Bitcoin/LND variable names remain accepted. Ark/Liquid canonical names ar
   fail startup. `FEATURE_*`/`ENABLE_*` execution flags are centralized and
   reported false.
 - Liquid has a read-only Elements identity/asset/wallet attestation and remains
-  execution-less. Ark can verify a configured operator and expose read-only telemetry.
+  execution-less. Ark can verify a configured operator and expose read-only
+  telemetry; Ark boarding/offboarding execution is opt-in, regtest-only and
+  bound to one explicit account.
 
 ## Ark operator and wallet telemetry
 
@@ -62,13 +64,20 @@ authenticated Lightning-to-on-chain flow in the same process.
   application. The lab must be installed and running separately. The app only
   invokes read commands.
 - Keep `ARK_EXECUTION_ENABLED=false` and
-  `ARK_CONFIRMATION_POLICY=read-only`. An unverified or unreachable operator
-  yields unavailable telemetry. No historical output or address is used.
+  `ARK_CONFIRMATION_POLICY=read-only` for quotes-only readiness. An unverified or
+  unreachable operator yields unavailable telemetry. No historical output or
+  address is used.
+- To allow real regtest boarding/offboarding, set `ARK_EXECUTION_ENABLED=true`,
+  name the single allowed account in `ARK_EXECUTION_OWNER`, and provide
+  `ARK_LAB_ROOT`, `ARK_CLI_PATH` and `ARK_STORE_PATH`. Execution requires a
+  writable lab CLI, is rejected for anything other than `regtest`/`ark-regtest`,
+  and only that owner account can submit and read its own swaps. Prefer
+  `ARK_CONFIRMATION_POLICY=read-only` unless the lab intentionally allows more.
 
 After starting the application, check `GET /v1/capabilities` for the Ark
 verification result and use the authenticated Operations view to check the
-operator and wallet balances. Ark writes remain unavailable in this deployment.
-A submission or a returned transaction ID alone cannot prove settlement.
+operator and wallet balances. A submission or a returned transaction ID alone
+cannot prove settlement.
 
 ## Guest Lightning-to-on-chain swaps
 

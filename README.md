@@ -191,7 +191,7 @@ This is a command **template**, not a ready-to-run policy. Never invent policy h
 
 [PR #71](https://github.com/Truja503/swap-engine/pull/71) integrates the Arkade selector into the existing three cubes and adds **read-only** operator telemetry, wallet observations and availability reporting to the backend. The adapter validates the configured Ark operator identity and uses an allowlisted, read-only laboratory CLI. Missing or unverifiable telemetry is reported as unavailable; historical transactions are not substituted as proof of new operations.
 
-**Ark financial writes remain disabled**. A boarding or offboarding quote is not an executed transfer. `SUBMITTED` is not `CONFIRMED`, and neither a commitment TXID alone nor an Ark preconfirmation proves Lightning settlement.
+**Ark financial writes are off by default and opt-in for regtest**: set `ARK_EXECUTION_ENABLED=true`, `ARK_EXECUTION_OWNER` to the single allowed account, and provide a writable lab CLI plus `ARK_LAB_ROOT`, `ARK_CLI_PATH` and `ARK_STORE_PATH`. Only that owner can submit boarding (On-chain → Ark) and cooperative offboarding (Ark → On-chain) and read its own swaps. A boarding or offboarding quote is not an executed transfer. `SUBMITTED` is not `CONFIRMED`, and neither a commitment TXID alone nor an Ark preconfirmation proves Lightning settlement.
 
 The collaborator's independent Rust/Arkade regtest lab covers operator lifecycle, persistent wallets A/B, boarding, VTXO transfer, cooperative offboarding and restart/evidence testing. Its [cumulative PR #64](https://github.com/Truja503/swap-engine/pull/64) remains separate from this application's deployment. **Ark↔Lightning and Ark↔Liquid swaps are not implemented.** Do not assume the collaborator's isolated Bitcoin regtest blockchain shares UTXOs with the LND/Core lab.
 
@@ -262,7 +262,7 @@ Always identify the service name and actual release commit before starting, stop
 | `GET /v1/operations/balances` | ADMIN | Core/LND balances and typed rail entries |
 | `GET /v1/ark/telemetry` | ADMIN | Operator/wallet read-only Ark status when attested |
 | `POST /v1/ark/quotes` | Public estimate | Indicative Ark↔on-chain quote; **not execution** |
-| `POST /v1/ark/swaps` | Guarded/unavailable in shipped runtime | Ark financial writes are disabled |
+| `POST /v1/ark/swaps` | USER (owner) when Ark execution is explicitly enabled; otherwise quotes-only | Opt-in regtest boarding/offboarding; SUBMITTED stays pending |
 
 Requests involving a payment or claim require stricter identity, network, quote, expiry, fee, revision and idempotency validation. Client UI status is never the financial source of truth.
 
