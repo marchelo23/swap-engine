@@ -257,7 +257,8 @@ export function createApi(
         const status = roleDenial(session, 'USER');
         if (status) return deny(status);
         return send(200, { executionAvailable: Boolean(arkProfile && arkPort && arkExecutionOwner &&
-          session!.account.username === arkExecutionOwner) });
+          session!.account.username === arkExecutionOwner),
+          ...(arkProfile && arkPort && !arkExecutionOwner ? { quotesOnly: true } : {}) });
       }
       if (req.method === 'POST' && path === '/v1/ark/swaps') {
         const status = roleDenial(session, 'USER');

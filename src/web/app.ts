@@ -292,7 +292,7 @@ mountAuth(next => {
     session = next;
     quotes.setArkExecutionAllowed(next ? null : false);
     if (next) void api.arkAvailability().then(result => {
-      if (session === next) quotes.setArkExecutionAllowed(result.executionAvailable);
+      if (session === next) quotes.setArkExecutionAllowed(result.quotesOnly ? 'quotes-only' : result.executionAvailable);
     }).catch(() => { if (session === next) quotes.setArkExecutionAllowed('unavailable'); });
     quotes.setContext(next ? null : false, next?.csrfToken, false, false, next?.user.role === 'ADMIN');
   } else if (!next) quotes.setContext(false);

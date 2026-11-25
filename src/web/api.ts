@@ -259,7 +259,7 @@ export type ArkSwapPayload =
     };
 
 export const api = {
-  arkAvailability: () => request('/v1/ark/availability', z.object({ executionAvailable: z.boolean() })),
+  arkAvailability: () => request('/v1/ark/availability', z.object({ executionAvailable: z.boolean(), quotesOnly: z.optional(z.boolean()) })),
   capabilities: () => request('/v1/capabilities', capabilitiesSchema, { credentials: 'omit' }),
   quote: (amountSats: number, signal: AbortSignal, csrfToken?: string) => request('/v1/quotes', quote, {
     method: 'POST', headers: { 'Content-Type': 'application/json', ...(csrfToken ? { 'x-csrf-token': csrfToken } : {}) },

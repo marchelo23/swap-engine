@@ -48,7 +48,7 @@ export function mountQuote(prepare?: (stillVisible: () => boolean, quote: Quote,
   let debounce: number | undefined;
   let expiry: number | undefined;
   let submittingArk = false;
-  let arkExecutionAllowed: boolean | null | 'unavailable' = null;
+  let arkExecutionAllowed: boolean | null | 'unavailable' | 'quotes-only' = null;
   let arkEnvironment: Environment | null | undefined = null;
   let executedArkSwapId: string | undefined;
   let arkIdempotency: { fingerprint: string; key: string } | undefined;
@@ -67,6 +67,7 @@ export function mountQuote(prepare?: (stillVisible: () => boolean, quote: Quote,
     if (arkEnvironment !== 'regtest' && arkEnvironment !== 'ark-regtest') return 'Ark execution requires regtest';
     if (!csrf) return 'Sign in to check Ark execution';
     if (arkExecutionAllowed === null) return 'Checking Ark execution…';
+    if (arkExecutionAllowed === 'quotes-only') return 'Ark regtest · quotes only';
     return arkExecutionAllowed === 'unavailable' ? 'Ark readiness unavailable' : 'Ark execution unavailable for this account';
   }
 
