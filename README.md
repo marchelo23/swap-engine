@@ -197,6 +197,21 @@ The collaborator's independent Rust/Arkade regtest lab covers operator lifecycle
 
 Read [Ark configuration](docs/environment-configuration.md#ark-operator-and-wallet-telemetry), [Ark lab epic #46](https://github.com/Truja503/swap-engine/issues/46) and the [frontend behavior](docs/frontend.md) for the supported distinctions.
 
+## Unified local regtest interface
+
+Start the existing Admin and Guest services with their own regtest policies and
+databases. The gateway serves the Admin interface and session on one loopback
+origin, and forwards `/v1/guest/` to the Guest service using Guest recovery
+capabilities. Use a signed-in browser for Admin's one-click flow and an
+anonymous browser for Guest.
+
+```sh
+UNIFIED_BROWSER_ORIGIN=http://127.0.0.1:3100 \
+UNIFIED_ADMIN_ORIGIN=http://127.0.0.1:3101 \
+UNIFIED_GUEST_ORIGIN=http://127.0.0.1:3103 \
+node --import tsx scripts/serve-unified-regtest.ts
+```
+
 ## Liquid / Elements
 
 The `liquid-regtest` profile validates the configured Elements node, chain/genesis, wallet and policy asset using read-only calls. ADMIN Operations shows the configured wallet's real Liquid balances: confirmed, unconfirmed and spendable base units, UTXO count, asset ID, wallet, chain height and native genesis. Balances come from wallet-scoped `listunspent` filtered to the configured policy asset; startup also records whether a confirmed wallet UTXO matches an explicit tip coinbase asset. Current fee policy remains unproven (`feePolicyVerified=false`). These are Elements regtest units, not real BTC. `GET /v1/liquid/lightning/availability` reports the route and `POST /v1/liquid/lightning/quotes` and `/swaps` remain `503 LIQUID_LIGHTNING_ATOMIC_ADAPTER_UNAVAILABLE` until an attested atomic adapter is implemented. The profile does **not** enable L-BTC issuance, pegs, payments, Liquid HTLCs or Liquid↔Lightning swaps. Do not mistake a local Elements policy asset for the production Liquid L-BTC asset.
