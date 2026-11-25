@@ -68,17 +68,28 @@ test('mainnet and signet remain read-only with zero execution and explicit spend
   assert.throws(() => config(env({ ...base, SPEND_POLICY: 'mainnet' })), /SPEND_POLICY_INVALID/);
 });
 
-test('Ark and Liquid expose canonical config and read-only identity contracts without execution', () => {
+test('Ark and Liquid expose canonical config; Ark execution is opt-in regtest-only and Liquid stays read-only', () => {
   const arkEnv = { APP_ENV: 'ark-regtest', DEPLOYMENT_ID: 'ark-lab', ARK_NETWORK: 'regtest',
     ARK_EXECUTION_ENABLED: 'false', ARK_OPERATOR_URL: 'http://127.0.0.1:37070/v1/info',
     ARK_EXPECTED_SIGNER_PUBKEY: '02' + '11'.repeat(32), ARK_LAB_ROOT: '/var/lib/ark',
     ARK_CLI_PATH: '/var/lib/ark/ark-lab', ARK_STORE_PATH: '/var/lib/ark/store.json', ARK_CONFIRMATION_POLICY: 'read-only' };
   const ark = config(env(arkEnv));
   assert.equal(ark.chain.kind, 'ark'); assert.equal(ark.rails.ark.enabled, true);
+  assert.equal(ark.rails.ark.enabled && ark.rails.ark.executionEnabled, false);
+  assert.equal(ark.rails.ark.enabled && ark.rails.ark.executionOwner, null);
   assert.equal(ark.capabilities().rails.ark.configured, true);
   assert.equal(ark.capabilities().rails.ark.available, false);
   assert.throws(() => config(env({ ...base, ARK_ENABLED: 'true' })), /ARK_NETWORK_REQUIRED/);
-  assert.throws(() => config(env({ ...arkEnv, ARK_EXECUTION_ENABLED: 'true' })), /ARK_EXECUTION_FORBIDDEN/);
+  assert.throws(() => config(env({ ...arkEnv, ARK_EXECUTION_ENABLED: 'true' })), /ARK_EXECUTION_OWNER_REQUIRED/);
+  assert.throws(() => config(env({ ...arkEnv, ARK_EXECUTION_OWNER: 'swapper' })), /ARK_EXECUTION_OWNER_WITHOUT_EXECUTION/);
+  assert.throws(() => config(env({ ...arkEnv, ARK_EXECUTION_ENABLED: 'true', ARK_EXECUTION_OWNER: 'bad owner' })), /ARK_EXECUTION_OWNER_INVALID/);
+  assert.throws(() => config(env({ ...arkEnv, ARK_EXECUTION_ENABLED: 'true', ARK_EXECUTION_OWNER: 'swapper', ARK_CLI_PATH: '' })), /ARK_EXECUTION_CLI_REQUIRED/);
+  assert.throws(() => config(env({ ...arkEnv, ARK_EXECUTION_ENABLED: 'true', ARK_EXECUTION_OWNER: 'swapper', ARK_STORE_PATH: '' })), /ARK_EXECUTION_STORE_REQUIRED/);
+  const executionArk = config(env({ ...arkEnv, ARK_EXECUTION_ENABLED: 'true', ARK_EXECUTION_OWNER: 'swapper' }));
+  assert.equal(executionArk.rails.ark.enabled && executionArk.rails.ark.executionEnabled, true);
+  assert.equal(executionArk.rails.ark.enabled && executionArk.rails.ark.executionOwner, 'swapper');
+  assert.throws(() => config(env({ ...arkEnv, APP_ENV: 'mainnet', APP_MODE: '', DEPLOYMENT_ID: 'mainnet-ark',
+    ARK_EXECUTION_ENABLED: 'true', ARK_EXECUTION_OWNER: 'swapper' })), /ARK_EXECUTION_REGTEST_ONLY/);
   assert.throws(() => config(env({ ...base, ARK_ENABLED: 'yes' })), /ARK_ENABLED_INVALID/);
   assert.throws(() => config(env({ ...arkEnv, ARK_OPERATOR_INFO_URL: 'http://127.0.0.1:9/v1/info' })), /ARK_OPERATOR_URL_CONFLICT/);
 

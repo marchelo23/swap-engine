@@ -28,6 +28,47 @@ const offboardDestination = payments.p2wpkh({ hash: Buffer.alloc(20, 0x11), netw
 const offboardCommitment = '44'.repeat(32);
 const syntheticForfeitAddress = payments.p2wpkh({ hash: Buffer.alloc(20, 0x22), network: networks.regtest }).address!;
 
+function mockArkExecutionPort(commitments: { boarding?: string; offboarding?: string } = {}) {
+  const boarding = commitments.boarding ?? boardingCommitment;
+  const offboarding = commitments.offboarding ?? offboardCommitment;
+  return createArkRegtestCliPort({
+    operatorInfoUrl: 'http://127.0.0.1:37070/v1/info',
+    fetchImpl: (async () => new Response(JSON.stringify({
+      network: 'regtest', version: 'v0.9.25',
+      signerPubkey: '032203ea0a05239f49049ee3f939757dde2271b9051eb3c905283d24b9e25dd6be',
+      forfeitAddress: syntheticForfeitAddress, dust: 330,
+    }), { status: 200 })) as typeof fetch,
+    cli: async args => {
+      if (args[0] === 'board') {
+        return { network: 'regtest', asset: 'BTC', wallets: { [args[1]!]: { input: args[2], commitment_txid: boarding } } };
+      }
+      if (args[0] === 'offboard-coop') {
+        return { network: 'regtest', asset: 'BTC', wallets: { bob: { input: args[1], address: args[2],
+          amount_sats: Number(args[3]), commitment_txid: offboarding, method: 'cooperative' } } };
+      }
+      throw new Error('Unexpected CLI call');
+    },
+  });
+}
+
+async function arkOwnerHeaders(origin: string, username: string, password: string) {
+  const response = await fetch(`${origin}/v1/auth/login`, {
+    method: 'POST', headers: { 'content-type': 'application/json', origin },
+    body: JSON.stringify({ username, password }),
+  });
+  assert.equal(response.status, 200);
+  const { csrfToken } = await response.json() as { csrfToken: string };
+  return { 'content-type': 'application/json', origin, cookie: response.headers.get('set-cookie')!.split(';')[0]!,
+    'x-csrf-token': csrfToken };
+}
+
+async function submitArkSwap(origin: string, key: string, body: unknown, headers: Record<string, string>) {
+  const response = await fetch(`${origin}/v1/ark/swaps`, { method: 'POST',
+    headers: { ...headers, 'idempotency-key': key }, body: JSON.stringify(body) });
+  return { status: response.status, record: await response.json() as { id: string; status: string; route: string; method: string; commitmentTxid: string | null } };
+}
+
+
 test('Ark <-> On-chain route identification and regtest address/outpoint validation enforce boundaries', () => {
   assert.equal(isArkOnchainRoute('onchain', 'ark'), true);
   assert.equal(isArkOnchainRoute('ark', 'onchain'), true);
@@ -858,6 +899,77 @@ test('regression: SUBMITTED is pending and excluded from settled accounting, whi
       assert.equal(report.summary.collectedServiceFeesSats, confirmedQuote.serviceFeeSats);
       assert.equal(report.summary.estimatedNetworkFeesSats, confirmedQuote.claimFeeSats);
       assert.equal(report.summary.netOperationalRevenueSats, confirmedQuote.serviceFeeSats);
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close(err => err ? reject(err) : resolve()));
+    }
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test('opt-in ARK execution config wires one owner and executes boarding and cooperative offboarding', async () => {
+  const f = await setup();
+  try {
+    const adminAccount = await testAccount(f.directory, 'ADMIN');
+    const owner = { username: 'ark-execution-owner', password: 'ark-execution-password-123' };
+    await provisionAccount(adminAccount.storePath, owner.username, 'USER', owner.password);
+    const storePath = join(f.directory, 'ark-execution-swaps.json');
+    const c = config({
+      APP_ENV: 'ark-regtest', DEPLOYMENT_ID: 'ark-execution',
+      ARK_ENABLED: 'true', ARK_NETWORK: 'regtest',
+      ARK_EXECUTION_ENABLED: 'true', ARK_EXECUTION_OWNER: owner.username,
+      ARK_OPERATOR_URL: 'http://127.0.0.1:37070/v1/info',
+      ARK_EXPECTED_SIGNER_PUBKEY: '02' + '11'.repeat(32),
+      ARK_LAB_ROOT: '/var/lib/ark', ARK_CLI_PATH: '/var/lib/ark/ark-lab', ARK_STORE_PATH: storePath,
+      ARK_CONFIRMATION_POLICY: 'read-only',
+    });
+    assert.equal(c.rails.ark.enabled && c.rails.ark.executionEnabled, true);
+    const settings = c.rails.ark;
+    if (!settings.enabled) throw new Error('ARK config expected');
+    const port = mockArkExecutionPort();
+    const server = createApi(f.manager, async () => ({ onchainSats: 0, incomingSats: 0 }), undefined, 'regtest', {
+      auth: { storePath: adminAccount.storePath }, ark: port,
+      arkStorePath: settings.storePath ?? undefined, arkExecutionOwner: settings.executionOwner ?? undefined,
+    });
+    server.listen(0, '127.0.0.1');
+    await once(server, 'listening');
+    const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    try {
+      const headers = await arkOwnerHeaders(origin, owner.username, owner.password);
+      const availability = await (await fetch(`${origin}/v1/ark/availability`, { headers: { cookie: headers.cookie } })).json() as { executionAvailable: boolean; quotesOnly?: boolean };
+      assert.equal(availability.executionAvailable, true);
+      assert.equal(availability.quotesOnly, undefined);
+
+      const boardQuote = await (await fetch(`${origin}/v1/ark/quotes`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ route: 'onchain-to-ark', amountSats: 50_000 }),
+      })).json() as { id: string; amountSats: number };
+      const boarded = await submitArkSwap(origin, 'ark-execution-boarding-key-1', {
+        quoteId: boardQuote.id, route: 'onchain-to-ark', wallet: 'alice',
+        fundingOutpoint: boardingOutpoint, amountSats: boardQuote.amountSats,
+      }, headers);
+      assert.equal(boarded.status, 202);
+      assert.equal(boarded.record.status, 'SUBMITTED');
+      assert.equal(boarded.record.method, 'boarding');
+      assert.equal(boarded.record.commitmentTxid, boardingCommitment);
+
+      const offboardQuote = await (await fetch(`${origin}/v1/ark/quotes`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ route: 'ark-to-onchain', amountSats: 30_000 }),
+      })).json() as { id: string; amountSats: number };
+      const offboarded = await submitArkSwap(origin, 'ark-execution-offboarding-key-1', {
+        quoteId: offboardQuote.id, route: 'ark-to-onchain', vtxoOutpoint: offboardVtxo,
+        destinationAddress: offboardDestination, amountSats: offboardQuote.amountSats,
+      }, headers);
+      assert.equal(offboarded.status, 202);
+      assert.equal(offboarded.record.status, 'SUBMITTED');
+      assert.equal(offboarded.record.method, 'cooperative-offboarding');
+      assert.equal(offboarded.record.commitmentTxid, offboardCommitment);
+
+      const list = await (await fetch(`${origin}/v1/ark/swaps`, { headers: { cookie: headers.cookie } })).json() as { swaps: Array<{ route: string }> };
+      assert.equal(list.swaps.length, 2);
+      assert.deepEqual(list.swaps.map(swap => swap.route).sort(), ['ark-to-onchain', 'onchain-to-ark']);
+      assert.equal(new ArkSwapService(port, storePath).listAllSwaps().length, 2);
     } finally {
       await new Promise<void>((resolve, reject) => server.close(err => err ? reject(err) : resolve()));
     }
