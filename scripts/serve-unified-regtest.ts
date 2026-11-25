@@ -1,6 +1,7 @@
-import { createServer, request, type IncomingHttpHeaders } from 'node:http';
+import { createServer, request, type IncomingHttpHeaders, type IncomingMessage } from 'node:http';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { createRegtestBalanceExtension } from './unified-regtest-balances.js';
 
 function loopbackOrigin(value: string | undefined) {
   const url = new URL(value ?? '');
@@ -9,7 +10,21 @@ function loopbackOrigin(value: string | undefined) {
   return url;
 }
 
-export function createUnifiedRegtestServer(options: { browserOrigin: string; adminOrigin: string; guestOrigin: string }) {
+async function readOperations(response: IncomingMessage) {
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const chunk of response) {
+    size += chunk.length;
+    if (size > 65_536) throw new Error('Operations response too large');
+    chunks.push(chunk);
+  }
+  return JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown;
+}
+
+export function createUnifiedRegtestServer(options: {
+  browserOrigin: string; adminOrigin: string; guestOrigin: string;
+  extendBalances?: (balances: unknown) => Promise<unknown>;
+}) {
   const browser = loopbackOrigin(options.browserOrigin);
   const admin = loopbackOrigin(options.adminOrigin);
   const guest = loopbackOrigin(options.guestOrigin);
@@ -48,6 +63,14 @@ export function createUnifiedRegtestServer(options: { browserOrigin: string; adm
         if (response.headers[key] !== undefined) outgoing[key] = response.headers[key];
       }
       if (!isGuest && response.headers['set-cookie']) outgoing['set-cookie'] = response.headers['set-cookie'];
+      const extend = options.extendBalances;
+      if (extend && response.statusCode === 200 && method === 'GET' && url.pathname === '/v1/operations/balances') {
+        void readOperations(response).then(extend).then(report => {
+          res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+          res.end(JSON.stringify(report));
+        }).catch(() => reject(502, 'OPERATIONS_BALANCES_UNAVAILABLE'));
+        return;
+      }
       res.writeHead(response.statusCode ?? 502, outgoing);
       response.on('error', () => res.destroy());
       response.pipe(res);
@@ -66,6 +89,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
     browserOrigin: browser.origin,
     adminOrigin: loopbackOrigin(process.env.UNIFIED_ADMIN_ORIGIN).origin,
     guestOrigin: loopbackOrigin(process.env.UNIFIED_GUEST_ORIGIN).origin,
+    extendBalances: createRegtestBalanceExtension(process.env),
   });
   server.listen(Number(browser.port), browser.hostname);
 }

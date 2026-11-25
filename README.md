@@ -212,6 +212,13 @@ UNIFIED_GUEST_ORIGIN=http://127.0.0.1:3103 \
 node --import tsx scripts/serve-unified-regtest.ts
 ```
 
+For the additional Ark and Liquid balance cards, run the gateway with a
+read-only regtest environment file. Set `UNIFIED_LIQUID_ALICE_WALLET` and
+`UNIFIED_LIQUID_PROVIDER_WALLET` to the corresponding Elements wallet names.
+For Ark, use `UNIFIED_ARK_ALICE_WALLET` and `UNIFIED_ARK_PROVIDER_WALLET` to map
+the `alice` and `bob` lab wallets, alongside the pinned operator and read-only
+CLI configuration. Balance requests still require the existing Admin session.
+
 ## Liquid / Elements
 
 The `liquid-regtest` profile validates the configured Elements node, chain/genesis, wallet and policy asset using read-only calls. ADMIN Operations shows the configured wallet's real Liquid balances: confirmed, unconfirmed and spendable base units, UTXO count, asset ID, wallet, chain height and native genesis. Balances come from wallet-scoped `listunspent` filtered to the configured policy asset; startup also records whether a confirmed wallet UTXO matches an explicit tip coinbase asset. Current fee policy remains unproven (`feePolicyVerified=false`). These are Elements regtest units, not real BTC. `GET /v1/liquid/lightning/availability` reports the route and `POST /v1/liquid/lightning/quotes` and `/swaps` remain `503 LIQUID_LIGHTNING_ATOMIC_ADAPTER_UNAVAILABLE` until an attested atomic adapter is implemented. The profile does **not** enable L-BTC issuance, pegs, payments, Liquid HTLCs or Liquid↔Lightning swaps. Do not mistake a local Elements policy asset for the production Liquid L-BTC asset.
