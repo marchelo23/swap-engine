@@ -98,10 +98,40 @@
       </article>
       </form>
       <div class="swap-links">
+        <a class="text-link" href="#forward" id="forward-link">Bitcoin on-chain → Lightning (regtest)</a>
         <a id="prepared-swap-link" class="text-link" href="#track" hidden>Review prepared swaps</a>
         <button class="secondary" id="guest-open-import" type="button">Restore Guest swap</button>
       </div>
     </div>
+  </section>
+
+  <section id="forward" data-view hidden aria-labelledby="forward-title" class="subpage">
+    <h1 id="forward-title" tabindex="-1">Bitcoin on-chain → Lightning</h1>
+    <article class="panel inset">
+      <p id="forward-status" class="status" role="status">Sign in to check forward availability.</p>
+      <div id="forward-controls" hidden>
+        <form id="forward-admission">
+          <p>Regtest only. Reserve a unique deposit for a fixed-amount invoice. The deposit includes a 100 sat fee reserve; this lab does not offer refunds.</p>
+          <label for="forward-invoice">Regtest Lightning invoice</label>
+          <input id="forward-invoice" required maxlength="4102" autocomplete="off" spellcheck="false">
+          <label for="forward-amount">Invoice amount (sats)</label>
+          <input id="forward-amount" type="number" min="1000" max="200000" step="1" required>
+          <button type="submit" class="primary">Reserve deposit</button>
+        </form>
+        <label for="forward-picker">Your forward swaps</label>
+        <select id="forward-picker"></select>
+        <button id="forward-refresh" type="button" class="secondary">Refresh status</button>
+        <dl id="forward-evidence"></dl>
+        <div id="forward-deposit" hidden>
+          <label for="forward-txid">Deposit transaction ID</label>
+          <input id="forward-txid" maxlength="64" autocomplete="off" spellcheck="false">
+          <label for="forward-vout">Deposit output index</label>
+          <input id="forward-vout" type="number" min="0" max="4294967295" step="1">
+          <button id="forward-execute" type="button" class="primary" disabled>Pay invoice</button>
+          <button id="forward-recover" type="button" class="secondary" disabled>Check payment without resending</button>
+        </div>
+      </div>
+    </article>
   </section>
 
   <section id="track" data-view hidden aria-labelledby="track-title" class="subpage">

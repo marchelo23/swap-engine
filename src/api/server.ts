@@ -7,7 +7,8 @@ import { Sessions, roleDenial, sessionResponse, type AuthOptions } from '../auth
 import type { OperationsBalances } from '../operations/Balances.js';
 import type { Capabilities, Environment, RailId } from '../core/RailContract.js';
 import { QuoteRequest, QuoteResponse, ReverseRequest, HealthResponse, LiquidityResponse, OperationsBalancesResponse, CapabilitiesResponse, ErrorResponse, LoginRequest, SessionResponse, ArkQuoteRequest, ArkQuoteResponse, ArkSwapRequest, ArkSwapStatusResponse, ArkSwapListResponse, ArkAdminReportResponse, ArkTelemetryResponse } from './schemas.js';
-import { ZodError } from 'zod';
+import { ZodError, z } from 'zod';
+import type { ForwardAdmission } from '../core/ForwardAdmission.js';
 import { readFile } from 'node:fs/promises';
 import type { preflight } from '../diagnostics/preflight.js';
 import type { ApplicationMode } from '../config.js';
@@ -37,13 +38,16 @@ async function body(req: IncomingMessage): Promise<unknown> {
   return JSON.parse(Buffer.concat(chunks).toString('utf8'));
 }
 const safeMethods = new Set(['GET', 'HEAD', 'OPTIONS']);
+const forwardPoint = z.strictObject({ txid: z.string().regex(/^[a-f0-9]{64}$/), vout: z.number().int().min(0).max(0xffffffff) });
+const forwardInvoice = z.strictObject({ invoice: z.string().regex(/^lnbcrt[0-9a-z]{20,4096}$/),
+  invoiceSats: z.number().int().min(1000).max(200_000) });
 
 export function createApi(
   manager: SwapManager,
   liquidity: () => Promise<Balances>,
   diagnostics?: () => ReturnType<typeof preflight>,
   mode: ApplicationMode = 'simulation',
-  { auth: authOptions = {}, operations, history = historicalSwaps, capabilities, environment, ark: arkPort, arkStorePath, arkExecutionOwner, guestQuotes = false, guestReverse }: {
+  { auth: authOptions = {}, operations, history = historicalSwaps, capabilities, environment, ark: arkPort, arkStorePath, arkExecutionOwner, guestQuotes = false, guestReverse, forward }: {
     auth?: AuthOptions;
     operations?: () => Promise<OperationsBalances>;
     history?: () => unknown | Promise<unknown>;
@@ -54,9 +58,14 @@ export function createApi(
     arkExecutionOwner?: string;
     guestQuotes?: boolean;
     guestReverse?: GuestReverse;
+    forward?: { ownerId: string; admission: ForwardAdmission };
   } = {},
 ) {
   const auth = new Sessions(authOptions, mode);
+  if (forward && (mode !== 'regtest' || environment !== 'regtest'))
+    throw new Error('Forward requires isolated Bitcoin regtest');
+  if (forward) z.uuid().parse(forward.ownerId);
+  const activeForward = new Set<string>();
   const fallbackCapabilities = (): Capabilities => {
     const unavailable = (id: RailId) => ({ id, configured: false, verified: false, available: false, reason: 'NOT_CONFIGURED' as const });
     return { schemaVersion: 1, environment: mode === 'regtest' ? 'regtest' : 'simulation',
@@ -201,6 +210,53 @@ export function createApi(
         auth.revoke(session);
         res.setHeader('set-cookie', auth.cookie());
         return noContent();
+      }
+      if (path === '/v1/forward' || path.startsWith('/v1/forward/')) {
+        if (!session) return deny(401);
+        if (req.headers.origin !== undefined && !auth.sameOrigin(req)) return deny(403);
+        const owner = session.account.id;
+        const service = forward?.ownerId === owner ? forward.admission : undefined;
+        if (req.method === 'GET' && path === '/v1/forward/availability' && !url.search)
+          return send(200, { executionAvailable: Boolean(service) });
+        if (!forward) return send(503, { error: 'FORWARD_EXECUTION_UNAVAILABLE' });
+        if (!service) return deny(403);
+        if (req.method === 'GET' && path === '/v1/forward' && !url.search)
+          return send(200, { ids: service.list(owner) });
+        if (req.method === 'POST' && path === '/v1/forward' && !url.search) {
+          const key = z.string().regex(/^[a-zA-Z0-9_-]{8,128}$/).parse(req.headers['idempotency-key']);
+          const input = forwardInvoice.parse(await body(req));
+          try { return send(201, await service.admit(owner, input.invoice, input.invoiceSats, key)); }
+          catch { return send(409, { error: 'FORWARD_ADMISSION_REJECTED' }); }
+        }
+        const match = /^\/v1\/forward\/([a-f0-9-]{36})(?:\/(execute|recover))?$/.exec(path);
+        const parsed = z.uuid().safeParse(match?.[1]);
+        if (!parsed.success || !service.list(owner).includes(parsed.data))
+          return send(404, { error: 'NOT_FOUND' });
+        const id = parsed.data;
+        const action = match?.[2];
+        if (req.method === 'GET' && !action) {
+          if (url.search && (url.searchParams.size !== 2 || !url.searchParams.has('txid') || !url.searchParams.has('vout')))
+            return send(400, { error: 'INVALID_REQUEST' });
+          const point = url.search ? forwardPoint.parse({
+            txid: url.searchParams.get('txid'),
+            vout: /^\d{1,10}$/.test(url.searchParams.get('vout') ?? '') ? Number(url.searchParams.get('vout')) : NaN,
+          }) : undefined;
+          return send(200, await service.status(owner, id, point));
+        }
+        if (req.method === 'POST' && action && !url.search) {
+          const input = await body(req);
+          const point = action === 'execute' ? forwardPoint.parse(input) : undefined;
+          if (action === 'recover') z.strictObject({}).parse(input);
+          if (activeForward.has(id)) return send(409, { error: 'FORWARD_OPERATION_IN_PROGRESS' });
+          activeForward.add(id);
+          try {
+            if (point) await service.submit(owner, id, point);
+            else await service.recover(owner, id);
+            return send(200, await service.status(owner, id));
+          } catch { return send(409, { error: 'FORWARD_ACTION_NOT_CONFIRMED' }); }
+          finally { activeForward.delete(id); }
+        }
+        return send(404, { error: 'NOT_FOUND' });
       }
       if (req.method === 'GET' && path === '/v1/liquid/lightning/availability') {
         const status = roleDenial(session, 'USER');

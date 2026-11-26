@@ -258,7 +258,28 @@ export type ArkSwapPayload =
       amountSats: number;
     };
 
+const forwardPoint = z.object({ txid: z.string(), vout: z.int() });
+const forwardStatus = z.object({
+  id: z.uuid(), invoice: z.string(), invoiceSats: amount, address: z.string(), depositSats: amount,
+  expiresAt: z.int(), outpoint: z.nullable(forwardPoint), confirmations: z.nullable(amount),
+  requiredConfirmations: z.literal(2), state: z.enum(['AWAITING_DEPOSIT', 'EXPIRED', 'INTENT', 'UNKNOWN', 'SUCCEEDED']),
+});
+export type ForwardStatus = z.infer<typeof forwardStatus>;
+export type ForwardPoint = z.infer<typeof forwardPoint>;
+const forwardPost = (csrf: string, input: unknown, key?: string): RequestInit => ({
+  method: 'POST', headers: { 'Content-Type': 'application/json', 'x-csrf-token': csrf, ...(key ? { 'Idempotency-Key': key } : {}) },
+  body: JSON.stringify(input),
+});
+
 export const api = {
+  forwardAvailability: () => request('/v1/forward/availability', z.object({ executionAvailable: z.boolean() })),
+  forwardList: () => request('/v1/forward', z.object({ ids: z.array(z.uuid()) })),
+  forwardStatus: (id: string, point?: ForwardPoint) => request(`/v1/forward/${encodeURIComponent(id)}${point ?
+    `?${new URLSearchParams({ txid: point.txid, vout: String(point.vout) })}` : ''}`, forwardStatus),
+  forwardAdmit: (csrf: string, invoice: string, invoiceSats: number, key: string) =>
+    request('/v1/forward', z.object({ id: z.uuid() }), forwardPost(csrf, { invoice, invoiceSats }, key)),
+  forwardAction: (csrf: string, id: string, point?: ForwardPoint) =>
+    request(`/v1/forward/${encodeURIComponent(id)}/${point ? 'execute' : 'recover'}`, forwardStatus, forwardPost(csrf, point ?? {})),
   arkAvailability: () => request('/v1/ark/availability', z.object({ executionAvailable: z.boolean(), quotesOnly: z.optional(z.boolean()) })),
   capabilities: () => request('/v1/capabilities', capabilitiesSchema, { credentials: 'omit' }),
   quote: (amountSats: number, signal: AbortSignal, csrfToken?: string) => request('/v1/quotes', quote, {

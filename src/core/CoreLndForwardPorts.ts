@@ -65,7 +65,7 @@ export class CoreLndForwardPorts implements ForwardPorts {
   async inspectDeposit(txid: string, vout: number) {
     hash.parse(txid); z.number().int().min(0).max(0xffffffff).parse(vout);
     const tip = await this.tip();
-    const utxo = z.object({ bestblock: hash, coinbase: z.literal(false), confirmations: z.number().int().min(2),
+    const utxo = z.object({ bestblock: hash, coinbase: z.literal(false), confirmations: z.number().int().nonnegative(),
       value: z.number().positive(), scriptPubKey: z.object({ hex: script }) })
       .parse(await this.core.call('gettxout', [txid, vout, true]));
     const scriptPubKey = utxo.scriptPubKey.hex;

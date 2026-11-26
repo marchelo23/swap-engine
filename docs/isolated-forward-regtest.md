@@ -1,7 +1,7 @@
 # BTC on-chain → Lightning in isolated regtest
 
-The forward service is internal; no HTTP route or financial web capability is
-enabled. The caller supplies the authenticated owner's ID (never a body field),
+The forward service is internal; the default app does not install the HTTP
+execution gate. The caller supplies the authenticated owner's ID (never a body field),
 and the operator pins one provider LND, one payee and one direct channel.
 Keep one durable `Store` per payer; do not replace or clone it to retry a send.
 
@@ -46,3 +46,35 @@ confirmed in Core. With a new invoice, the fixture observed two deposit
 confirmations, one Router send, one Router track after reopening the journal,
 and Alice independently reported `SETTLED` for 5,000 sats. This is
 self-funded laboratory evidence, not an externally funded user swap.
+
+## HTTP y preview web (2026-11-25)
+
+- `#swap` enlaza a `#forward`, un flujo separado de Ark y de los swaps
+  inversos. La vista requiere sesión, muestra la factura, dirección exclusiva,
+  importe exacto y confirmaciones del outpoint consultado. Sólo muestra pago
+  verificado cuando una lectura posterior del estado propio devuelve `SUCCEEDED`.
+- La API privada `/v1/forward` sólo acepta una admisión instalada explícitamente
+  para un UUID de cuenta en Bitcoin regtest. Las mutaciones pasan el control
+  CSRF de origen y sesión. La creación conserva la clave idempotente en disco;
+  la ejecución ancla el outpoint y el diario impide un segundo envío. Una
+  incertidumbre se resuelve con `recover` (consulta), nunca con otro envío.
+- Prueba HTTP automatizada con puertos simulados: cuenta ajena (incluido ADMIN),
+  CSRF ausente, replay y conflicto de claves, depósito inexacto, una
+  confirmación, respuesta perdida y recuperación. Resultado: un envío y una
+  consulta; ningún preimage en HTTP. No es evidencia de un pago real.
+- Orca embebido en `http://127.0.0.1:3200/#forward` tras reiniciar el mismo
+  preview aislado: sesión HTTP 200, disponibilidad forward HTTP 200 con
+  `executionAvailable: false`, controles ocultos y aviso de no disponibilidad.
+  La ruta Ark devolvió `executionAvailable: false` sin tocar permisos.
+
+**No habilitar aún.** El arranque del preview no instala los puertos de
+escritura forward. Antes de instalarlos, reconciliar la intención `UNKNOWN`
+de la ejecución previa en el mismo LND y designar un único diario duradero y
+exclusivo para el pagador (no arrancar con un diario vacío en paralelo);
+vincular un perfil local revisado al UUID de la cuenta autorizada, al wallet
+Core, al par LND y al canal directo confirmado del stack aislado, con
+credenciales privadas y capacidad saliente vigente. En ese perfil, validar
+desde Orca el depósito exacto con fondos de prueba, las dos confirmaciones y
+la recuperación tras perder la respuesta, verificando un solo envío y
+liquidación en el receptor. No se financió ni se pagó ningún swap web en esta
+entrega. El alcance de laboratorio sigue sin reembolsos.

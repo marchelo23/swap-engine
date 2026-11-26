@@ -10,6 +10,7 @@ import { mountOperationsBalances } from './operations.js';
 import { mountGuest } from './guest.js';
 import { createGuestPresentation } from './guestUi.js';
 import { mountOwnedReverse } from './ownedReverse.js';
+import { mountForward } from './forward.js';
 import { mountQuote } from './quote.js';
 import { details, get, integer, sats, text } from './ui.js';
 
@@ -263,14 +264,17 @@ async function loadDiagnostics() {
   }
 }
 
+const forward = mountForward();
 const views = [...document.querySelectorAll<HTMLElement>('[data-view]')];
 function navigate(focus: boolean) {
   if (location.hash === '#main') return;
   const current = views.find(view => '#' + view.id === location.hash) ?? views[0]!;
   for (const view of views) view.hidden = current !== view;
-  document.querySelector<HTMLElement>('.footer-squares')!.dataset.viewActive = current.id === 'track' ? 'account' : current.id;
+  document.querySelector<HTMLElement>('.footer-squares')!.dataset.viewActive = current.id === 'track' ? 'account'
+    : current.id === 'forward' ? 'swap' : current.id;
   quotes.setVisible(current.id === 'swap');
   reverse.setVisible(current.id === 'track');
+  forward.setVisible(current.id === 'forward');
   setBalancesActive(current.id === 'operations' && admin);
   for (const link of document.querySelectorAll('nav a')) {
     if (link.getAttribute('href') === '#' + current.id) link.setAttribute('aria-current', 'page');
@@ -297,6 +301,7 @@ mountAuth(next => {
     quotes.setContext(next ? null : false, next?.csrfToken, false, false, next?.user.role === 'ADMIN');
   } else if (!next) quotes.setContext(false);
   reverse.setSession(next);
+  forward.setSession(next);
   admin = next?.user.role === 'ADMIN';
   setBalancesActive(admin && !get('operations').hidden);
   if (!admin) {

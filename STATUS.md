@@ -20,5 +20,5 @@
 ## Bitcoin on-chain → Lightning (prioridad)
 
 - Incremento offline: `ForwardExecutor` registra una intención durable por hash y outpoint antes del envío, comprueba de nuevo el depósito y recupera por consulta al mismo pagador sin reenviar. Una respuesta perdida, evidencia insuficiente o confirmaciones perdidas requieren reconciliación.
-- La web aún no ejecuta forward. Faltan admisión por propietario, asignación de un depósito controlado por el proveedor, puertos reales de Core/LND y prueba aislada de pago y recuperación con esos puertos. No habilitar el envío hasta contar con esa evidencia. Ark y Liquid después; reverse no es requisito.
-- No se envió ningún pago ni se intentó o confirmó ningún swap en esta revalidación.
+- `b9f3287` verificó admisión, depósito y pago/recuperación con Core/LND aislados fuera de HTTP. La API y la vista forward reutilizan esa admisión; las pruebas HTTP con puertos simulados verifican autorización por cuenta, CSRF, idempotencia, importe exacto y recuperación sin reenvío.
+- Orca embebido, cuenta autenticada, `#forward`: disponibilidad HTTP 200/`false`, controles ocultos. Ark conserva `executionAvailable: false`. No se enviaron fondos ni se verificó un swap desde la web. Gate cerrado: falta instalar el perfil de arranque con el diario canónico del pagador (hay una intención previa `UNKNOWN` que revisar), la vinculación local de cuenta/Core/LND/canal y la prueba financiada de navegador con recuperación. Ver [evidencia y condiciones](docs/isolated-forward-regtest.md#http-y-preview-web-2026-11-25).

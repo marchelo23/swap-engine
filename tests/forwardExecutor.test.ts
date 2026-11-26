@@ -1,12 +1,18 @@
 import { test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
+import { once } from 'node:events';
+import type { AddressInfo } from 'node:net';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ForwardExecutor, type ForwardPorts } from '../src/core/ForwardExecutor.js';
 import { ForwardAdmission } from '../src/core/ForwardAdmission.js';
 import { Store } from '../src/persistence/Store.js';
+import { SwapManager } from '../src/core/SwapManager.js';
+import { createApi } from '../src/api/server.js';
+import { readAccounts } from '../src/auth/store.js';
+import { provisionAccount } from '../scripts/provision-auth.js';
 
 async function setup(t: TestContext) {
   const directory = await mkdtemp(join(tmpdir(), 'forward-journal-'));
@@ -37,7 +43,8 @@ async function setup(t: TestContext) {
     },
     track: async queried => { assert.equal(queried, hash); counts.tracks++; return outcome; },
   };
-  return { a, ports, success, counts, executor: () => new ForwardExecutor(store, ports), snapshot: () => store.read(),
+  return { a, ports, success, counts, directory, manager: () => new SwapManager(store),
+    executor: () => new ForwardExecutor(store, ports), snapshot: () => store.read(),
     service: (allocateDeposit: () => Promise<unknown>) => new ForwardAdmission(store, {
       ...ports, allocateDeposit,
     }, a.payerNode, a.payeeNode),
@@ -45,6 +52,81 @@ async function setup(t: TestContext) {
     disconnect: () => { disconnect = true; }, confirmations: (n: number) => { confirms = n; },
     outcome: (value: unknown) => { outcome = value; } };
 }
+
+test('forward HTTP is opt-in, owner and CSRF bound; only verified recovery reports SUCCEEDED', async t => {
+  const f = await setup(t);
+  const storePath = join(f.directory, 'users.json');
+  const password = randomBytes(24).toString('hex');
+  await provisionAccount(storePath, 'forward-owner', 'USER', password);
+  await provisionAccount(storePath, 'other-admin', 'ADMIN', password);
+  const owner = (await readAccounts(storePath)).find(account => account.username === 'forward-owner')!;
+  let allocations = 0;
+  let valueSats = 5099;
+  const inspect = f.ports.inspectDeposit;
+  f.ports.inspectDeposit = async (txid, vout) => ({ ...await inspect(txid, vout) as object, valueSats });
+  const admission = f.service(async () => {
+    allocations++;
+    return { address: 'bcrt1q' + 'a'.repeat(38), scriptPubKey: f.a.deposit.scriptPubKey };
+  });
+  const liquidity = async () => ({ onchainSats: 0, incomingSats: 0 });
+  assert.throws(() => createApi(f.manager(), liquidity, undefined, 'simulation', { forward: { ownerId: owner.id, admission } }), /regtest/);
+  const server = createApi(f.manager(), liquidity, undefined, 'regtest', { environment: 'regtest',
+    auth: { storePath }, forward: { ownerId: owner.id, admission } });
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  t.after(() => new Promise<void>(resolve => server.close(() => resolve())));
+  const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const base = '/v1/forward';
+  const request = (path: string, headers?: Record<string, string>, input?: unknown) => fetch(origin + path,
+    input === undefined ? { headers } : { method: 'POST', headers: { origin, 'content-type': 'application/json', ...headers },
+      body: JSON.stringify(input) });
+  const login = async (username: string) => {
+    const response = await request('/v1/auth/login', {}, { username, password });
+    assert.equal(response.status, 200);
+    return { cookie: response.headers.get('set-cookie')!.split(';')[0]!, 'x-csrf-token': (await response.json()).csrfToken as string };
+  };
+  assert.equal((await request(`${base}/availability`)).status, 401);
+  const member = await login('forward-owner');
+  const admin = await login('other-admin');
+  assert.deepEqual(await (await request(`${base}/availability`, admin)).json(), { executionAvailable: false });
+  assert.deepEqual(await (await request('/v1/ark/availability', admin)).json(), { executionAvailable: false });
+  const input = { invoice: f.a.invoice, invoiceSats: f.a.invoiceSats };
+  assert.equal((await request(base, { cookie: member.cookie }, input)).status, 403);
+  assert.equal((await request(base, member, input)).status, 400);
+  const headers = { ...member, 'idempotency-key': 'forward-test-once' };
+  assert.equal((await request(base, headers, { ...input, owner: owner.id })).status, 400);
+  const reserved = await request(base, headers, input);
+  assert.equal(reserved.status, 201);
+  const terms = await reserved.json();
+  assert.deepEqual(await (await request(base, headers, input)).json(), terms);
+  assert.equal((await request(base, headers, { ...input, invoiceSats: 4999 })).status, 409);
+  assert.equal(allocations, 1);
+  const path = `${base}/${terms.id}`;
+  const { txid, vout } = f.a.deposit;
+  const point = { txid, vout };
+  assert.equal((await request(path, admin)).status, 403);
+  assert.equal((await request(`${path}/execute`, member, point)).status, 409);
+  valueSats = 5100;
+  f.confirmations(1);
+  assert.equal((await (await request(`${path}?txid=${txid}&vout=${vout}`, member)).json()).confirmations, 1);
+  assert.equal((await request(`${path}/execute`, member, point)).status, 409);
+  assert.equal(f.counts.sends, 0);
+  f.confirmations(2);
+  f.disconnect();
+  const sent = await request(`${path}/execute`, member, point);
+  assert.equal(sent.status, 200);
+  assert.equal((await sent.json()).state, 'UNKNOWN');
+  assert.equal((await (await request(`${path}/execute`, member, point)).json()).state, 'UNKNOWN');
+  assert.equal((await request(`${path}/execute`, member, { txid, vout: vout + 1 })).status, 409);
+  assert.equal((await request(`${path}/recover`, { cookie: member.cookie }, {})).status, 403);
+  const recovered = await request(`${path}/recover`, member, {});
+  assert.equal(recovered.status, 200);
+  assert.equal((await recovered.json()).state, 'SUCCEEDED');
+  const status = await (await request(path, member)).text();
+  assert.equal(JSON.parse(status).state, 'SUCCEEDED');
+  assert(!status.includes(f.success.preimage));
+  assert.deepEqual(f.counts, { sends: 1, tracks: 1 });
+});
 
 test('admission validates invoice amount before allocation and durably reserves invoice and script by owner', async t => {
   const f = await setup(t);

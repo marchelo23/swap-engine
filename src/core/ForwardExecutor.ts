@@ -43,6 +43,10 @@ export interface ForwardPorts {
 export class ForwardExecutor {
   constructor(private readonly store: Store, private readonly ports: ForwardPorts) {}
 
+  status(input: Approval): Status {
+    return this.entry(this.approval(input)).status;
+  }
+
   async execute(input: Approval): Promise<Status> {
     const a = this.approval(input);
     await this.checkSend(a);

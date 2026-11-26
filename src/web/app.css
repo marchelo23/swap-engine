@@ -360,3 +360,4 @@ html:has(#opening-overlay:not([hidden])) { overflow: hidden; }
 @media (pointer: coarse) {
   .rail-grip .icon { opacity: 1; transform: none; }
 }
+#forward-evidence dd { overflow-wrap: anywhere; }

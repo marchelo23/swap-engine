@@ -14,7 +14,7 @@ const allocation = z.object({ address: z.string().regex(/^bcrt1q[a-z0-9]{38}$/),
 const outpoint = z.object({ txid: hash, vout: z.number().int().min(0).max(0xffffffff) });
 export type ForwardAdmissionRecord = Omit<ForwardApproval, 'deposit'> & {
   owner: string; address: string; scriptPubKey: string; depositSats: number;
-  outpoint?: z.infer<typeof outpoint>;
+  outpoint?: z.infer<typeof outpoint>; requestKey?: string;
 };
 
 /** Internal service only. Owner must come from trusted authentication, never a request body.
@@ -29,9 +29,19 @@ export class ForwardAdmission {
     this.executor = new ForwardExecutor(store, ports);
   }
 
-  async admit(owner: string, invoice: string, invoiceSats: number) {
+  async admit(owner: string, invoice: string, invoiceSats: number, key?: string) {
     ownerId.parse(owner); invoiceSchema.parse(invoice);
     z.number().int().min(1000).max(200_000).parse(invoiceSats);
+    const replay = (records: Record<string, ForwardAdmissionRecord>) => {
+      const match = key && Object.entries(records).find(([, a]) => a.owner === owner && a.requestKey === key);
+      if (!match) return;
+      const [id, a] = match;
+      if (a.invoice !== invoice || a.invoiceSats !== invoiceSats ||
+        a.payerNode !== this.payerNode || a.payeeNode !== this.payeeNode) throw new Error('Forward request conflict');
+      return { id, address: a.address, depositSats: a.depositSats, expiresAt: a.expiresAt };
+    };
+    const existing = replay(this.store.read().forwardAdmissions ?? {});
+    if (existing) return existing;
     const payer = z.object({ network: z.literal('regtest'), ready: z.literal(true), node }).parse(await this.ports.inspectPayer());
     if (payer.node !== this.payerNode) throw new Error('Forward payer identity mismatch');
     const decoded = await this.ports.decodeInvoice(invoice);
@@ -43,15 +53,52 @@ export class ForwardAdmission {
     const id = randomUUID();
     const deposit = allocation.parse(await this.ports.allocateDeposit());
     const depositSats = invoiceSats + feeLimitSats;
-    await this.store.transaction(db => {
+    return this.store.transaction(db => {
       const admissions = db.forwardAdmissions ??= {};
+      const previous = replay(admissions);
+      if (previous) return previous;
       if (Date.now() >= expiresAt || db.forwardPayments?.[paymentHash] || Object.values(admissions).some(a =>
         a.paymentHash === paymentHash || a.scriptPubKey === deposit.scriptPubKey || a.address === deposit.address))
         throw new Error('Forward invoice expired or invoice/deposit already reserved');
       admissions[id] = { owner, network: 'regtest', payerNode: this.payerNode, payeeNode: this.payeeNode,
-        invoice, invoiceSats, paymentHash, expiresAt, feeLimitSats, ...deposit, depositSats };
+        invoice, invoiceSats, paymentHash, expiresAt, feeLimitSats, ...deposit, depositSats, requestKey: key };
+      return { id, address: deposit.address, depositSats, expiresAt };
     });
-    return { id, address: deposit.address, depositSats, expiresAt };
+  }
+
+  list(owner: string) {
+    return Object.entries(this.store.read().forwardAdmissions ?? {})
+      .filter(([, a]) => a.owner === owner && a.payerNode === this.payerNode && a.payeeNode === this.payeeNode)
+      .map(([id]) => id);
+  }
+
+  async status(owner: string, id: string, candidate?: z.infer<typeof outpoint>) {
+    const a = this.owned(owner, id);
+    const point = a.outpoint ?? candidate;
+    let confirmations: number | null = null;
+    if (point) {
+      try {
+        const seen = outpoint.extend({ network: z.literal('regtest'), confirmations: z.number().int().nonnegative(),
+          scriptPubKey: z.string(), valueSats: z.number().int() }).parse(await this.ports.inspectDeposit(point.txid, point.vout));
+        if (seen.txid === point.txid && seen.vout === point.vout &&
+          seen.scriptPubKey === a.scriptPubKey && seen.valueSats === a.depositSats) confirmations = seen.confirmations;
+      } catch { /* Never present missing or stale chain evidence as confirmed. */ }
+    }
+    const latest = this.owned(owner, id);
+    if (latest.outpoint && (latest.outpoint.txid !== point?.txid || latest.outpoint.vout !== point?.vout)) confirmations = null;
+    const journal = this.store.read().forwardPayments?.[a.paymentHash];
+    if (journal && !latest.outpoint) throw new Error('Forward payment journal requires a bound outpoint');
+    const state = journal && latest.outpoint ? this.executor.status(this.approval(latest, latest.outpoint))
+      : Date.now() >= a.expiresAt ? 'EXPIRED' : 'AWAITING_DEPOSIT';
+    return { id, invoice: a.invoice, invoiceSats: a.invoiceSats, address: a.address, depositSats: a.depositSats,
+      expiresAt: a.expiresAt, outpoint: latest.outpoint ?? null, confirmations, requiredConfirmations: 2, state };
+  }
+
+  async submit(owner: string, id: string, candidate: z.infer<typeof outpoint>) {
+    const a = this.owned(owner, id);
+    if (a.outpoint && (a.outpoint.txid !== candidate.txid || a.outpoint.vout !== candidate.vout))
+      throw new Error('Forward request conflict');
+    if (!this.store.read().forwardPayments?.[a.paymentHash]) await this.execute(owner, id, candidate);
   }
 
   async execute(owner: string, id: string, candidate: z.infer<typeof outpoint>) {
