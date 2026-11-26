@@ -9,7 +9,8 @@ const chainSchema = z.object({ chain: z.string(), blocks: count, headers: count,
   bestblockhash: hash, initialblockdownload: z.boolean() });
 const infoSchema = z.object({ chains: z.array(z.object({ chain: z.string(), network: z.string() })),
   block_height: count, block_hash: hash, synced_to_chain: z.boolean(),
-  wallet_synced: z.boolean().optional(), num_peers: count });
+  wallet_synced: z.boolean().optional(), num_peers: count,
+  version: z.string().optional(), commit_hash: z.string().optional() });
 
 function failureReason(error: unknown) {
   const e = error as { code?: string; cause?: { code?: string }; message?: string } | null;
@@ -60,6 +61,12 @@ export async function preflight(bitcoin: Rpc, lnd: Rest, wallet: string, mode: A
   const active = channels.value ? channels.value.channels.filter(c => c.active).length : null;
   const inactive = channels.value ? channels.value.channels.filter(c => !c.active).length : null;
   const tipsMatch = c && l ? c.blocks === l.block_height && c.bestblockhash === l.block_hash : null;
+  // This pinned upstream implementation gates synced_to_chain on Wallet.IsSynced().
+  // Unknown builds and an explicit negative wallet signal are not inferred away.
+  const walletSyncSource = l?.wallet_synced !== undefined ? 'explicit' as const
+    : l?.version === '0.20.8-beta commit=v0.20.8-beta' && l.commit_hash === '33f90e82464daf9e6d2f2a02e754955ba42e2951'
+      ? 'lnd-v0.20.8-beta-chain-sync' as const : null;
+  const walletSynced = l?.wallet_synced ?? (walletSyncSource && l?.synced_to_chain === true ? true : null);
   // These are the existing lab LND configurations, not addresses the app opens.
   const rawBlocks = notifications.value ? notifications.value.some(n => n.type === 'pubrawblock' && ['tcp://127.0.0.1:28332', 'tcp://0.0.0.0:28332'].includes(n.address)) : null;
   const rawTransactions = notifications.value ? notifications.value.some(n => n.type === 'pubrawtx' && ['tcp://127.0.0.1:28333', 'tcp://0.0.0.0:28333'].includes(n.address)) : null;
@@ -76,7 +83,7 @@ export async function preflight(bitcoin: Rpc, lnd: Rest, wallet: string, mode: A
   if (walletState.value?.state === 'LOCKED') blockers.push('LND_WALLET_LOCKED');
   else if (walletState.value?.state !== 'SERVER_ACTIVE') blockers.push('LND_SERVER_STATE_UNRESOLVED');
   if (l?.synced_to_chain !== true) blockers.push('LND_CHAIN_SYNC_UNRESOLVED');
-  if (l?.wallet_synced !== true) blockers.push('LND_WALLET_SYNC_UNRESOLVED');
+  if (walletSynced !== true) blockers.push('LND_WALLET_SYNC_UNRESOLVED');
   if (tipsMatch !== true) blockers.push('CORE_LND_TIP_UNVERIFIED_OR_DIFFERENT');
   if (active === null) blockers.push('CHANNEL_STATUS_UNAVAILABLE');
   else if (active === 0) blockers.push('NO_ACTIVE_CHANNELS');
@@ -92,7 +99,7 @@ export async function preflight(bitcoin: Rpc, lnd: Rest, wallet: string, mode: A
       notificationsRpc: notifications.status, rawBlockNotifications: rawBlocks, rawTransactionNotifications: rawTransactions },
     wallet: { loadingRpc: loaded.status, loadingReason: loaded.reason, directoryRpc: directory.status, directoryReason: directory.reason, loaded: walletLoaded, foundOnDisk },
     lnd: { rest: lightning.status, restReason: lightning.reason, walletStateRpc: walletState.status, walletState: walletState.value?.state ?? null, regtest: lndRegtest, height: l?.block_height ?? null,
-      syncedToChain: l?.synced_to_chain ?? null, walletSynced: l?.wallet_synced ?? null,
+      syncedToChain: l?.synced_to_chain ?? null, walletSynced, walletSyncSource,
       peers: l?.num_peers ?? null, channelsRpc: channels.status, channelsReason: channels.reason, activeChannels: active, inactiveChannels: inactive },
     tipsMatch,
   };

@@ -27,6 +27,15 @@ resetting its wallets. Recheck full sync, Core/LND tip equality and the
 active channel on both nodes. If a swap or channel funding may be on the
 lost branch, reconcile its exact outpoints before mining or retrying it.
 
+The pinned LND v0.20.8-beta does not return `wallet_synced` from GetInfo.
+Its [GetInfo implementation](https://github.com/lightningnetwork/lnd/blob/33f90e82464daf9e6d2f2a02e754955ba42e2951/rpcserver.go)
+computes `synced_to_chain` from `Wallet.IsSynced()` plus other sync checks.
+Read-only preflight accepts that signal only for the known version and commit
+when `wallet_synced` is absent. An explicit `false`, an unidentified build
+without the field, or an unsynchronized node still blocks wallet readiness.
+The server-state and exact Core tip checks remain independent. This is
+diagnostic evidence only; it does not change execution guards.
+
 For arkd v0.9.25, Compose expiry settings only seed a new database. The
 bootstrap checks the effective `vtxoTreeExpiry` through the isolated admin
 API and updates it if needed. The update does not change the expiry of

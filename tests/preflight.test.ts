@@ -77,6 +77,28 @@ test('missing wallet sync, foreign networks, malformed replies and tip disagreem
   }
 });
 
+test('pinned upstream LND can attest wallet sync via chain sync, without overriding an explicit negative', async () => {
+  const f = fixtures();
+  Object.assign(f.replies.getblockchaininfo as object, { blocks: 100, headers: 100, initialblockdownload: false });
+  f.replies.listwallets = ['lqwd-lab'];
+  f.replies['/v1/channels'] = { channels: [{ active: true }] };
+  const info = f.replies['/v1/getinfo'] as Record<string, unknown>;
+  delete info.wallet_synced;
+  Object.assign(info, { block_height: 100, synced_to_chain: true, num_peers: 1,
+    version: '0.20.8-beta commit=v0.20.8-beta', commit_hash: '33f90e82464daf9e6d2f2a02e754955ba42e2951' });
+  const good = await f.run();
+  assert.equal(good.prerequisitesSatisfied, true);
+  assert.equal(good.lnd.walletSyncSource, 'lnd-v0.20.8-beta-chain-sync');
+  assert.equal(good.paymentsEnabled, false);
+  for (const change of [{ synced_to_chain: false }, { commit_hash: 'other' }, { wallet_synced: false }]) {
+    const original = structuredClone(info);
+    Object.assign(info, change);
+    assert.ok((await f.run()).blockers.includes('LND_WALLET_SYNC_UNRESOLVED'));
+    for (const key of Object.keys(info)) delete info[key];
+    Object.assign(info, original);
+  }
+});
+
 test('ZMQ publishers bound to 0.0.0.0 in a container are accepted; other ports are rejected', async () => {
   const ok = fixtures();
   ok.replies.getzmqnotifications = [{ type: 'pubrawblock', address: 'tcp://0.0.0.0:28332' }, { type: 'pubrawtx', address: 'tcp://0.0.0.0:28333' }];
