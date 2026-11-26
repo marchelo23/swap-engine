@@ -1,7 +1,8 @@
 // Explicitly spends regtest sats and mines two blocks on the existing iso_rt_* stack.
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, unlinkSync, writeFileSync } from 'node:fs';
+import { unlinkSync, writeFileSync } from 'node:fs';
+import { userInfo } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { BitcoinRpcClient } from '../src/bitcoin/BitcoinRpcClient.js';
@@ -9,12 +10,12 @@ import { LndClient } from '../src/lightning/LndClient.js';
 import { HttpsLndPaymentTransport } from '../src/lightning/LndPaymentTransport.js';
 import { CoreLndForwardPorts } from '../src/core/CoreLndForwardPorts.js';
 import { ForwardAdmission } from '../src/core/ForwardAdmission.js';
+import { assertPersistentStorage, assertPrivateDirectory } from '../src/persistence/ForwardPayerRegistry.js';
 import { Store } from '../src/persistence/Store.js';
 
 const bitcoin = 'iso_rt_bitcoin';
 const provider = 'iso_rt_lnd_provider';
 const alice = 'iso_rt_lnd_alice';
-const root = '/tmp/opencode';
 const secret = '/root/.lnd/data/chain/bitcoin/regtest';
 const wallet = 'iso-core-lab';
 const docker = (container: string, ...args: string[]) =>
@@ -22,6 +23,11 @@ const docker = (container: string, ...args: string[]) =>
 const btc = (...args: string[]) => docker(bitcoin, 'bitcoin-cli', '-regtest', `-rpcwallet=${wallet}`, ...args).toString().trim();
 const lnd = (container: string, ...args: string[]) =>
   JSON.parse(docker(container, 'lncli', '--network=regtest', ...args).toString());
+
+function persistentVerifyRoot(): string {
+  const info = userInfo();
+  return join(info.homedir, '.local', 'share', 'lqwd-swap-engine', 'forward-isolated-verify');
+}
 
 async function verify() {
   if (process.argv[2] !== '--spend-isolated-regtest') throw new Error('Explicit opt-in required');
@@ -41,16 +47,28 @@ async function verify() {
     return result && JSON.parse(result)?.confirmations >= 6;
   });
   assert.equal(channels.length, 1);
-  const directory = mkdtempSync(join(root, 'forward-regtest-'));
-  const copy = (container: string, src: string, name: string) => {
-    const target = join(directory, name);
-    writeFileSync(target, docker(container, 'cat', src), { mode: 0o600 });
-    return target;
-  };
+
+  const verifyRoot = persistentVerifyRoot();
+  await assertPersistentStorage(verifyRoot);
+  await assertPrivateDirectory(verifyRoot, true);
+  const directory = join(verifyRoot, 'creds');
+  const state = join(verifyRoot, 'state');
+  await assertPersistentStorage(directory);
+  await assertPersistentStorage(state);
+  await assertPrivateDirectory(directory, true);
+
   let store: Store | undefined;
-  const state = join(directory, 'state');
-  let step = 'credentials and payer binding';
+  let step = 'provisioning and store lease';
   try {
+    await Store.provisionFreshForward(state, payer.identity_pubkey);
+    store = await Store.openForForward(state, payer.identity_pubkey);
+
+    step = 'credentials and payer binding';
+    const copy = (container: string, src: string, name: string) => {
+      const target = join(directory, name);
+      writeFileSync(target, docker(container, 'cat', src), { mode: 0o600 });
+      return target;
+    };
     const cookie = copy(bitcoin, '/root/.bitcoin/regtest/.cookie', 'core.cookie');
     const cert = copy(provider, '/root/.lnd/tls.cert', 'payer.cert');
     const readonly = copy(provider, `${secret}/readonly.macaroon`, 'payer.readonly');
@@ -69,8 +87,7 @@ async function verify() {
         await transport.stream(path, body, onPayment, signal, guard);
         if (body !== undefined) { observedSuccess = true; throw new Error('Simulated lost terminal response'); }
       },
-    }, payer.identity_pubkey, payee.identity_pubkey, channels[0].scid);
-    store = await Store.open(state);
+    }, payer.identity_pubkey, payee.identity_pubkey, channels[0].scid, store);
     await ports.inspectPayer();
     step = 'invoice and admission';
     const invoice = lnd(alice, 'addinvoice', '--amt=5000', '--expiry=600');
@@ -102,7 +119,7 @@ async function verify() {
     step = 'recovery after reopening disk state';
     await store.close();
     store = undefined;
-    store = await Store.open(state);
+    store = await Store.openForForward(state, payer.identity_pubkey);
     service = new ForwardAdmission(store, ports, payer.identity_pubkey, payee.identity_pubkey);
     await assert.rejects(service.recover('owner-b', admission.id), /not found/);
     await assert.rejects(service.execute('owner-a', admission.id, point), /already journaled/);

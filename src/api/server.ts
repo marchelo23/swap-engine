@@ -58,13 +58,22 @@ export function createApi(
     arkExecutionOwner?: string;
     guestQuotes?: boolean;
     guestReverse?: GuestReverse;
-    forward?: { ownerId: string; admission: ForwardAdmission };
+    forward?: { ownerId: string; admission: ForwardAdmission; requireAdminRole?: boolean; testToken?: object };
   } = {},
 ) {
   const auth = new Sessions(authOptions, mode);
-  if (forward && (mode !== 'regtest' || environment !== 'regtest'))
-    throw new Error('Forward requires isolated Bitcoin regtest');
-  if (forward) z.uuid().parse(forward.ownerId);
+  if (forward) {
+    if (mode !== 'regtest' || environment !== 'regtest')
+      throw new Error('Forward requires isolated Bitcoin regtest');
+    z.uuid().parse(forward.ownerId);
+    if (!forward.admission.usesStore(manager.store))
+      throw new Error('Forward requires the canonical API Store');
+    manager.store.assertForwardPayerBoundSync(forward.admission.boundPayerNode, forward.testToken);
+  }
+  const forwardExclusive = Boolean(forward?.requireAdminRole);
+  if (forwardExclusive && (guestQuotes || guestReverse || arkPort || arkExecutionOwner)) {
+    throw new Error('FORWARD_EXCLUSIVE_PROFILE_CONFLICT');
+  }
   const activeForward = new Set<string>();
   const fallbackCapabilities = (): Capabilities => {
     const unavailable = (id: RailId) => ({ id, configured: false, verified: false, available: false, reason: 'NOT_CONFIGURED' as const });
@@ -79,7 +88,7 @@ export function createApi(
   if ((guestQuotes || guestReverse) && mode !== 'regtest') throw new Error('Guest quote admission requires regtest');
   const guests = guestQuotes || guestReverse ? (guestReverse?.admission ?? new GuestAdmission(manager.store)) : undefined;
   const guestAttempts = new Map<string, { until: number; count: number }>();
-  const controlled = createOwnedReverseGateway(auth, { enabled: mode === 'regtest', delegateWhenInactive: true });
+  const controlled = createOwnedReverseGateway(auth, { enabled: !forwardExclusive && mode === 'regtest', delegateWhenInactive: true });
   const server = createServer(async (req, res) => {
     const send = (status: number, value: unknown) => { res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store' }); res.end(JSON.stringify(value)); };
     const noContent = () => { res.writeHead(204, { 'cache-control': 'no-store' }); res.end(); };
@@ -103,7 +112,7 @@ export function createApi(
         return send(200, QuoteResponse.parse({ id: randomUUID(), ...invoiceBudget(amount), expiresAt: Date.now() + policy.ttlMs }));
       }
       if (path === '/v1/guest/quotes' || path.startsWith('/v1/guest/quotes/')) {
-        if (!guests && !guestReverse) return send(503, { error: 'GUEST_QUOTES_NOT_CONFIGURED' });
+        if (forwardExclusive || (!guests && !guestReverse)) return send(503, { error: 'GUEST_QUOTES_NOT_CONFIGURED' });
         if (url.search || (req.headers.origin !== undefined && !auth.sameOrigin(req))) return send(403, { error: 'FORBIDDEN' });
         const guestFailure = (error: unknown) => {
           if (error instanceof GuestReverseError) return send(error.status, { error: error.code });
@@ -175,10 +184,12 @@ export function createApi(
         return send(report.prerequisitesSatisfied ? 200 : 503, report);
       }
       if (req.method === 'POST' && path === '/v1/quotes') {
+        if (forwardExclusive) return send(503, ErrorResponse.parse({ error: 'SERVICE_UNAVAILABLE' }));
         const input = QuoteRequest.parse(await body(req));
         return send(201, QuoteResponse.parse(await manager.quoteDebit(input.amountSats)));
       }
       if (req.method === 'POST' && path === '/v1/ark/quotes') {
+        if (forwardExclusive) return send(503, ErrorResponse.parse({ error: 'SERVICE_UNAVAILABLE' }));
         const input = ArkQuoteRequest.parse(await body(req));
         return send(201, ArkQuoteResponse.parse(arkService.quote(input.route, input.amountSats)));
       }
@@ -215,18 +226,26 @@ export function createApi(
         if (!session) return deny(401);
         if (req.headers.origin !== undefined && !auth.sameOrigin(req)) return deny(403);
         const owner = session.account.id;
-        const service = forward?.ownerId === owner ? forward.admission : undefined;
-        if (req.method === 'GET' && path === '/v1/forward/availability' && !url.search)
-          return send(200, { executionAvailable: Boolean(service) });
+        const service = forward?.ownerId === owner && (!forward.requireAdminRole || session.account.role === 'ADMIN')
+          ? forward.admission : undefined;
+        if (req.method === 'GET' && path === '/v1/forward/availability' && !url.search) {
+          if (!service) return send(200, { executionAvailable: false });
+          if (!(await service.isReady())) return send(503, { error: 'FORWARD_EXECUTION_UNAVAILABLE' });
+          return send(200, { executionAvailable: true });
+        }
         if (!forward) return send(503, { error: 'FORWARD_EXECUTION_UNAVAILABLE' });
         if (!service) return deny(403);
+        if (!(await service.isReady())) return send(503, { error: 'FORWARD_EXECUTION_UNAVAILABLE' });
         if (req.method === 'GET' && path === '/v1/forward' && !url.search)
           return send(200, { ids: service.list(owner) });
         if (req.method === 'POST' && path === '/v1/forward' && !url.search) {
           const key = z.string().regex(/^[a-zA-Z0-9_-]{8,128}$/).parse(req.headers['idempotency-key']);
           const input = forwardInvoice.parse(await body(req));
           try { return send(201, await service.admit(owner, input.invoice, input.invoiceSats, key)); }
-          catch { return send(409, { error: 'FORWARD_ADMISSION_REJECTED' }); }
+          catch {
+            if (!(await service.isReady())) return send(503, { error: 'FORWARD_EXECUTION_UNAVAILABLE' });
+            return send(409, { error: 'FORWARD_ADMISSION_REJECTED' });
+          }
         }
         const match = /^\/v1\/forward\/([a-f0-9-]{36})(?:\/(execute|recover))?$/.exec(path);
         const parsed = z.uuid().safeParse(match?.[1]);
@@ -253,7 +272,10 @@ export function createApi(
             if (point) await service.submit(owner, id, point);
             else await service.recover(owner, id);
             return send(200, await service.status(owner, id));
-          } catch { return send(409, { error: 'FORWARD_ACTION_NOT_CONFIRMED' }); }
+          } catch {
+            if (!(await service.isReady())) return send(503, { error: 'FORWARD_EXECUTION_UNAVAILABLE' });
+            return send(409, { error: 'FORWARD_ACTION_NOT_CONFIRMED' });
+          }
           finally { activeForward.delete(id); }
         }
         return send(404, { error: 'NOT_FOUND' });
@@ -266,6 +288,7 @@ export function createApi(
       if (req.method === 'POST' && (path === '/v1/liquid/lightning/quotes' || path === '/v1/liquid/lightning/swaps')) {
         const status = roleDenial(session, 'USER');
         if (status) return deny(status);
+        if (forwardExclusive) return send(503, ErrorResponse.parse({ error: liquidLightningUnavailable().reason }));
         LiquidLightningRequest.parse(await body(req));
         if (!/^[a-zA-Z0-9_-]{8,128}$/.test(String(req.headers['idempotency-key'] ?? '')))
           return send(400, ErrorResponse.parse({ error: 'IDEMPOTENCY_KEY_REQUIRED' }));
@@ -319,6 +342,7 @@ export function createApi(
       if (req.method === 'POST' && path === '/v1/ark/swaps') {
         const status = roleDenial(session, 'USER');
         if (status) return deny(status);
+        if (forwardExclusive) return send(503, ErrorResponse.parse({ error: 'ARK_SWAPS_REGTEST_ADAPTER_NOT_CONFIGURED' }));
         const input = ArkSwapRequest.parse(await body(req));
         const key = String(req.headers['idempotency-key'] ?? '');
         if (!/^[a-zA-Z0-9_-]{8,128}$/.test(key)) return send(400, ErrorResponse.parse({ error: 'IDEMPOTENCY_KEY_REQUIRED' }));
@@ -375,6 +399,7 @@ export function createApi(
       if (req.method === 'POST' && path === '/v1/swaps/reverse') {
         const status = roleDenial(session, 'USER');
         if (status) return deny(status);
+        if (forwardExclusive) return send(503, ErrorResponse.parse({ error: 'LIVE_SWAPS_DISABLED_OBSERVER_AND_RECOVERY_NOT_VERIFIED' }));
         ReverseRequest.parse(await body(req));
         if (!/^[a-zA-Z0-9_-]{8,128}$/.test(String(req.headers['idempotency-key'] ?? ''))) return send(400, ErrorResponse.parse({ error: 'IDEMPOTENCY_KEY_REQUIRED' }));
         return send(503, ErrorResponse.parse({ error: 'LIVE_SWAPS_DISABLED_OBSERVER_AND_RECOVERY_NOT_VERIFIED' }));

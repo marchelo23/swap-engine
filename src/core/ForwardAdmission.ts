@@ -23,15 +23,24 @@ export class ForwardAdmission {
   private readonly executor: ForwardExecutor;
   constructor(private readonly store: Store, private readonly ports: ForwardPorts & {
     allocateDeposit(): Promise<unknown>;
-  }, private readonly payerNode: string, private readonly payeeNode: string) {
+  }, private readonly payerNode: string, private readonly payeeNode: string, private readonly testToken?: object) {
     node.parse(payerNode); node.parse(payeeNode);
     if (payerNode === payeeNode) throw new Error('Forward payee must differ from payer');
-    this.executor = new ForwardExecutor(store, ports);
+    store.assertForwardPayerBoundSync(payerNode, testToken);
+    this.executor = new ForwardExecutor(store, ports, testToken);
+  }
+
+  get boundPayerNode() { return this.payerNode; }
+  usesStore(store: Store) { return this.store === store; }
+  async isReady() {
+    try { await this.store.assertForwardPayerHeld(this.payerNode, this.testToken); return true; }
+    catch { return false; }
   }
 
   async admit(owner: string, invoice: string, invoiceSats: number, key?: string) {
     ownerId.parse(owner); invoiceSchema.parse(invoice);
     z.number().int().min(1000).max(200_000).parse(invoiceSats);
+    await this.store.assertForwardPayerHeld(this.payerNode, this.testToken);
     const replay = (records: Record<string, ForwardAdmissionRecord>) => {
       const match = key && Object.entries(records).find(([, a]) => a.owner === owner && a.requestKey === key);
       if (!match) return;
@@ -67,12 +76,14 @@ export class ForwardAdmission {
   }
 
   list(owner: string) {
+    this.store.assertForwardPayerBoundSync(this.payerNode, this.testToken);
     return Object.entries(this.store.read().forwardAdmissions ?? {})
       .filter(([, a]) => a.owner === owner && a.payerNode === this.payerNode && a.payeeNode === this.payeeNode)
       .map(([id]) => id);
   }
 
   async status(owner: string, id: string, candidate?: z.infer<typeof outpoint>) {
+    await this.store.assertForwardPayerHeld(this.payerNode, this.testToken);
     const a = this.owned(owner, id);
     const point = a.outpoint ?? candidate;
     let confirmations: number | null = null;
@@ -95,6 +106,7 @@ export class ForwardAdmission {
   }
 
   async submit(owner: string, id: string, candidate: z.infer<typeof outpoint>) {
+    await this.store.assertForwardPayerHeld(this.payerNode, this.testToken);
     const a = this.owned(owner, id);
     if (a.outpoint && (a.outpoint.txid !== candidate.txid || a.outpoint.vout !== candidate.vout))
       throw new Error('Forward request conflict');
@@ -102,6 +114,7 @@ export class ForwardAdmission {
   }
 
   async execute(owner: string, id: string, candidate: z.infer<typeof outpoint>) {
+    await this.store.assertForwardPayerHeld(this.payerNode, this.testToken);
     const a = this.owned(owner, id);
     const point = outpoint.parse(candidate);
     // Don't pin an outpoint until Core confirms the exact reserved script and value.
@@ -121,6 +134,7 @@ export class ForwardAdmission {
   }
 
   async recover(owner: string, id: string) {
+    await this.store.assertForwardPayerHeld(this.payerNode, this.testToken);
     const a = this.owned(owner, id);
     if (!a.outpoint) throw new Error('No bound forward deposit');
     return this.executor.recover(this.approval(a, a.outpoint));

@@ -68,6 +68,19 @@ export type Config = {
   allowLegacyOfflineMigration: boolean;
   features: { reverse: boolean; forward: boolean; guest: boolean; mining: boolean };
   reverseSwapExplicit: boolean;
+  explicitFlags: {
+    reverse: boolean | undefined;
+    guest: boolean | undefined;
+    forward: boolean | undefined;
+    mining: boolean | undefined;
+    liveSwaps: boolean | undefined;
+    ark: boolean | undefined;
+    arkExecution: boolean | undefined;
+    liquid: boolean | undefined;
+    liquidExecution: boolean | undefined;
+    recovery: boolean | undefined;
+    miningPolicy: string | undefined;
+  };
   miningPolicy: 'disabled' | 'regtest-only';
   spendPolicy: 'disabled' | 'regtest-only';
   economics: EconomicsConfig;
@@ -274,12 +287,34 @@ export function config(env: NodeJS.ProcessEnv = process.env): Config {
     if (!['true', 'false'].includes(raw)) throw new Error(`${name}_INVALID`); return raw === 'true';
   };
   const reverseExplicit = exactFlag('REVERSE_SWAP_ENABLED');
+  const guestExplicit = exactFlag('GUEST_SWAP_ENABLED');
+  const forwardExplicit = exactFlag('FORWARD_SWAP_ENABLED');
+  const miningExplicit = exactFlag('REGTEST_AUTO_MINING');
+  const liveSwapsExplicit = exactFlag('ENABLE_LIVE_SWAPS');
+  const arkExplicit = exactFlag('ARK_ENABLED');
+  const arkExecutionExplicit = exactFlag('ARK_EXECUTION_ENABLED');
+  const liquidExplicit = exactFlag('LIQUID_ENABLED');
+  const liquidExecutionExplicit = exactFlag('LIQUID_EXECUTION_ENABLED');
+  const recoveryExplicit = exactFlag('ENABLE_READ_ONLY_RECOVERY');
+  const miningPolicyExplicit = optional(env, 'MINING_POLICY')?.toLowerCase();
   const reverseSwapExplicit = reverseExplicit !== undefined;
-  const features = { guest: exactFlag('GUEST_SWAP_ENABLED') ?? false,
+  const features = { guest: guestExplicit ?? false,
     reverse: reverseExplicit ?? true,
-    forward: exactFlag('FORWARD_SWAP_ENABLED') ?? false, mining: exactFlag('REGTEST_AUTO_MINING') ?? false };
-  if ([exactFlag('GUEST_SWAP_ENABLED'), reverseExplicit, exactFlag('FORWARD_SWAP_ENABLED'),
-    exactFlag('REGTEST_AUTO_MINING')].some(value => value === true) && selectedEnvironment !== 'regtest')
+    forward: forwardExplicit ?? false, mining: miningExplicit ?? false };
+  const explicitFlags = {
+    reverse: reverseExplicit,
+    guest: guestExplicit,
+    forward: forwardExplicit,
+    mining: miningExplicit,
+    liveSwaps: liveSwapsExplicit,
+    ark: arkExplicit,
+    arkExecution: arkExecutionExplicit,
+    liquid: liquidExplicit,
+    liquidExecution: liquidExecutionExplicit,
+    recovery: recoveryExplicit,
+    miningPolicy: miningPolicyExplicit,
+  };
+  if ([guestExplicit, reverseExplicit, forwardExplicit, miningExplicit].some(value => value === true) && selectedEnvironment !== 'regtest')
     throw new Error('FEATURE_REGTEST_ONLY');
   const miningRaw = (env.MINING_POLICY ?? 'disabled').trim().toLowerCase();
   if (!['disabled', 'regtest-only'].includes(miningRaw)) throw new Error('MINING_POLICY_INVALID');
@@ -355,7 +390,7 @@ export function config(env: NodeJS.ProcessEnv = process.env): Config {
   };
   return {
     environment: selectedEnvironment, mode, network: 'regtest', readOnly: true, chain, bitcoinNetwork, bitcoinGenesisHash,
-    deploymentId: deploymentId ?? null, signetChallenge, allowLegacyOfflineMigration, features, reverseSwapExplicit, miningPolicy, spendPolicy, economics, auth, legacy, rails: { onchain, lightning, ark, liquid },
+    deploymentId: deploymentId ?? null, signetChallenge, allowLegacyOfflineMigration, features, reverseSwapExplicit, explicitFlags, miningPolicy, spendPolicy, economics, auth, legacy, rails: { onchain, lightning, ark, liquid },
     bitcoinUrl: onchain.enabled ? onchain.url : '', cookie: onchain.enabled ? onchain.cookie : '',
     wallet: onchain.enabled ? onchain.wallet : '',
     lndUrl: lightning.enabled ? lightning.provider.url : '', cert: lightning.enabled ? lightning.provider.cert : '',

@@ -10,6 +10,7 @@ import { ForwardExecutor, type ForwardPorts } from '../src/core/ForwardExecutor.
 import { ForwardAdmission } from '../src/core/ForwardAdmission.js';
 import { CoreLndForwardPorts } from '../src/core/CoreLndForwardPorts.js';
 import { trackPaymentPath } from '../src/lightning/LndPaymentTransport.js';
+import { createTestForwardLeaseToken } from '../src/persistence/ForwardPayerRegistry.js';
 import { Store } from '../src/persistence/Store.js';
 import { SwapManager } from '../src/core/SwapManager.js';
 import { createApi } from '../src/api/server.js';
@@ -17,12 +18,17 @@ import { readAccounts } from '../src/auth/store.js';
 import { provisionAccount } from '../scripts/provision-auth.js';
 
 async function setup(t: TestContext) {
-  const directory = await mkdtemp(join(tmpdir(), 'forward-journal-'));
-  let store = await Store.open(directory);
-  t.after(async () => { await store.close(); await rm(directory, { recursive: true, force: true }); });
+  const root = await mkdtemp(join(tmpdir(), 'forward-journal-'));
+  const directory = join(root, 'store');
+  const registry = join(root, 'registry');
+  const payerNode = '02' + 'aa'.repeat(32);
+  const testToken = createTestForwardLeaseToken();
+  await Store.provisionFreshForwardWithTestToken(testToken, directory, payerNode, registry);
+  let store = await Store.openForForwardWithTestToken(testToken, directory, payerNode, registry);
+  t.after(async () => { await store.close().catch(() => {}); await rm(root, { recursive: true, force: true }); });
   const preimage = '99'.repeat(32);
   const hash = createHash('sha256').update(Buffer.from(preimage, 'hex')).digest('hex');
-  const a = { network: 'regtest' as const, payerNode: '02' + 'aa'.repeat(32), payeeNode: '03' + 'bb'.repeat(32),
+  const a = { network: 'regtest' as const, payerNode, payeeNode: '03' + 'bb'.repeat(32),
     paymentHash: hash, invoice: 'lnbcrt' + 'a'.repeat(40), invoiceSats: 5000, feeLimitSats: 10,
     expiresAt: Date.now() + 120_000, deposit: { txid: 'cc'.repeat(32), vout: 1,
       scriptPubKey: '0014' + 'dd'.repeat(20), valueSats: 5010 } };
@@ -45,12 +51,12 @@ async function setup(t: TestContext) {
     },
     track: async queried => { assert.equal(queried, hash); counts.tracks++; return outcome; },
   };
-  return { a, ports, success, counts, directory, manager: () => new SwapManager(store),
-    executor: () => new ForwardExecutor(store, ports), snapshot: () => store.read(),
+  return { a, ports, success, counts, directory, testToken, manager: () => new SwapManager(store),
+    executor: () => new ForwardExecutor(store, ports, testToken), snapshot: () => store.read(),
     service: (allocateDeposit: () => Promise<unknown>) => new ForwardAdmission(store, {
       ...ports, allocateDeposit,
-    }, a.payerNode, a.payeeNode),
-    async reopen() { await store.close(); store = await Store.open(directory); },
+    }, a.payerNode, a.payeeNode, testToken),
+    async reopen() { await store.close(); store = await Store.openForForwardWithTestToken(testToken, directory, payerNode, registry); },
     disconnect: () => { disconnect = true; }, confirmations: (n: number) => { confirms = n; },
     outcome: (value: unknown) => { outcome = value; } };
 }
@@ -71,9 +77,9 @@ test('forward HTTP is opt-in, owner and CSRF bound; only verified recovery repor
     return { address: 'bcrt1q' + 'a'.repeat(38), scriptPubKey: f.a.deposit.scriptPubKey };
   });
   const liquidity = async () => ({ onchainSats: 0, incomingSats: 0 });
-  assert.throws(() => createApi(f.manager(), liquidity, undefined, 'simulation', { forward: { ownerId: owner.id, admission } }), /regtest/);
+  assert.throws(() => createApi(f.manager(), liquidity, undefined, 'simulation', { forward: { ownerId: owner.id, admission, testToken: f.testToken } }), /regtest/);
   const server = createApi(f.manager(), liquidity, undefined, 'regtest', { environment: 'regtest',
-    auth: { storePath }, forward: { ownerId: owner.id, admission } });
+    auth: { storePath }, forward: { ownerId: owner.id, admission, testToken: f.testToken } });
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
   t.after(() => new Promise<void>(resolve => server.close(() => resolve())));

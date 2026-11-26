@@ -185,3 +185,42 @@ puede reabrirlos ni recrearlos; `chmod` con el mismo propietario no basta.
 Exigir un único destino de escritura y exclusión por pagador que cubra todos
 los lanzadores autorizados; una prueba de apertura concurrente debe fallar.
 Si falta evidencia de exclusión persistente, conservar el gate cerrado.
+
+### Exclusión persistente por `payerNode` y límites del lock cooperativo
+
+- **Mecanismo implementado (hito offline):** todos los caminos forward con capacidad
+  de envío (`ForwardExecutor`, `ForwardAdmission`, `createApi(..., { forward })` y
+  `scripts/verify-forward-isolated.ts`) exigen un `Store` abierto mediante
+  `Store.openForForward(directory, payerNode)` (y `createApi` exige además que
+  `forward.admission` comparta el mismo `Store` canónico que `manager.store`).
+  El registro privado por usuario del sistema operativo se deriva vía
+  `os.userInfo().homedir` y `process.getuid()` (nunca de `HOME`, `XDG_*`,
+  `DATA_DIR` ni flags por escritor) bajo
+  `~/.local/share/lqwd-swap-engine/forward-payers/{locks,bindings}`.
+- **Vínculo canónico 1:1 y fallo en cerrado:** al inicializar o reabrir se toman
+  exclusivamente `<payerNode>.lock` (`O_CREAT|O_EXCL|O_NOFOLLOW`, `0600`) y
+  `engine.lock`, y se valida el vínculo persistente cruzado entre
+  `bindings/<payerNode>.json` y `<store>/.forward-payer.json` (`storeId`, ruta
+  canónica `realpath`, `dev`, `ino`, `uid`), permisos `0700`/`0600`, ausencia de
+  symlinks/hardlinks (`nlink === 1`), ausencia de `state.tmp`, JSON estricto sin
+  claves duplicadas ni entradas de otro pagador. Cualquier conflicto de otro
+  `DATA_DIR`, ruta aliased o reemplazada, pérdida o sustitución de cualquiera de
+  los dos locks, metadatos incompletos/inválidos o recuperación incierta falla
+  en cerrado (incluso dentro de `beforeSend` antes de transmitir en red y en
+  `Store.close()`, sin romper locks ajenos ni auto-recuperar tras `SIGKILL`).
+- **Compatibilidad de rutas no forward:** `Store.open(directory)` y las rutas
+  no forward (lectura, cotizaciones, diagnósticos, Ark/Liquid/inversos)
+  conservan su comportamiento previo en los demás perfiles, pero no pueden instanciar rutas forward.
+  En el perfil exclusivo `--forward-regtest` (`:3201`), las mutaciones ajenas (incluida `POST /v1/quotes` y `POST /v1/ark/quotes`) fallan en cerrado con `503` antes de cualquier transacción sobre el `Store` canónico, y todas las capacidades no forward deben figurar deshabilitadas de forma explícita.
+- **Límites del lock cooperativo vs permisos/credenciales y custodia real:**
+  tanto `engine.lock` como `<payerNode>.lock` son **locks cooperativos** bajo el
+  mismo UID del sistema operativo. No impiden que un proceso externo bajo el
+  mismo UID (o `root`) invoque `lncli` o LND REST directamente usando
+  `router.macaroon` sin pasar por `Store.openForForward`/`ForwardExecutor`, ni
+  impiden a ese mismo UID borrar o alterar archivos del registro, del `Store` o
+  locks (aunque un escritor activo detectará la pérdida/sustitución vía
+  `assertHeld()` y abortará en cerrado antes de enviar o confirmar). La
+  custodia real en producción requiere además separación de UID y permisos de
+  sistema operativo sobre credenciales (`router.macaroon`, cookies/llaves),
+  montajes de sólo lectura o propietario distinto para históricos/backups,
+  inventario de todos los lanzadores y verificación de los gates en vivo.

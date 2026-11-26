@@ -6,6 +6,7 @@ import { z } from 'zod';
 export type PaymentStreamTransport = {
   readonly origin: string;
   stream(path: string, body: unknown | undefined, onPayment: (payment: unknown) => boolean, signal: AbortSignal, beforeRequest?: () => void | Promise<void>): Promise<void>;
+  probeRouterAuth?(): Promise<void>;
 };
 export type PaymentTransportIO = {
   credentials(): Promise<{ ca: Buffer; macaroon: Buffer }>;
@@ -61,12 +62,18 @@ export class HttpsLndPaymentTransport implements PaymentStreamTransport {
       signal.addEventListener('abort', abort, { once: true });
       // Listeners are installed before credentials load. A stopped client cannot later send.
       void Promise.resolve().then(() => this.io.credentials()).then(async credentials => {
-        if (finished || signal.aborted) return;
-        await beforeRequest?.();
-        if (finished || signal.aborted) return;
+        let macaroonHex: string;
+        try {
+          if (finished || signal.aborted) return;
+          await beforeRequest?.();
+          if (finished || signal.aborted) return;
+          macaroonHex = credentials.macaroon.toString('hex');
+        } finally {
+          credentials.macaroon.fill(0);
+        }
         request = this.io.request(new URL(path, this.endpoint), { method: body === undefined ? 'GET' : 'POST',
           ca: credentials.ca, rejectUnauthorized: true, timeout: 15000,
-          headers: { 'Grpc-Metadata-macaroon': credentials.macaroon.toString('hex'), 'content-type': 'application/json' } }, res => {
+          headers: { 'Grpc-Metadata-macaroon': macaroonHex, 'content-type': 'application/json' } }, res => {
           response = res;
           if (finished) { res.destroy(); return; }
           if (res.statusCode !== 200) return finish(false);
@@ -94,6 +101,81 @@ export class HttpsLndPaymentTransport implements PaymentStreamTransport {
         request.on('error', () => finish(false)); request.on('timeout', () => finish(false));
         request.end(body === undefined ? undefined : JSON.stringify(parsedBody.data));
       }).catch(() => finish(false));
+    });
+  }
+
+  /** Strictly read-only startup check that router macaroon + TLS authenticate on the payer LND endpoint. */
+  async probeRouterAuth(): Promise<void> {
+    const path = trackPaymentPath('00'.repeat(32));
+    const credentials = await this.io.credentials();
+    let macaroonHex: string;
+    try {
+      macaroonHex = credentials.macaroon.toString('hex');
+    } finally {
+      credentials.macaroon.fill(0);
+    }
+    await new Promise<void>((resolve, reject) => {
+      let request: ClientRequest | undefined;
+      let response: IncomingMessage | undefined;
+      let finished = false;
+      let data = '';
+      const finish = (ok: boolean) => {
+        if (finished) return;
+        finished = true;
+        clearTimeout(timer);
+        request?.destroy();
+        response?.destroy();
+        if (ok) resolve();
+        else reject(new Error('FORWARD_ROUTER_AUTH_FAILED'));
+      };
+      const timer = setTimeout(() => finish(false), 15_000);
+      request = this.io.request(new URL(path, this.endpoint), {
+        method: 'GET',
+        ca: credentials.ca,
+        rejectUnauthorized: true,
+        timeout: 15_000,
+        headers: { 'Grpc-Metadata-macaroon': macaroonHex, 'content-type': 'application/json' },
+      }, res => {
+        response = res;
+        if (finished) { res.destroy(); return; }
+        const code = res.statusCode ?? 0;
+        if (code !== 200 && code !== 404) return finish(false);
+        res.setEncoding('utf8');
+        res.on('data', (chunk: string) => {
+          if (finished) return;
+          data += chunk;
+          if (Buffer.byteLength(data) > 65_536) return finish(false);
+          if (code === 200 && data.includes('\n')) {
+            const firstLine = data.split('\n')[0]!.trim();
+            if (!firstLine) return;
+            try {
+              const event = JSON.parse(firstLine) as { result?: unknown; error?: { code?: unknown } };
+              if (event.result !== undefined || event.error?.code === 5) return finish(true);
+              return finish(false);
+            } catch {
+              return finish(false);
+            }
+          }
+        });
+        res.on('end', () => {
+          if (finished) return;
+          const trimmed = data.trim();
+          if (!trimmed) return finish(false);
+          try {
+            const parsed = JSON.parse(trimmed.split('\n')[0]!) as { result?: unknown; error?: { code?: unknown }; code?: unknown };
+            if (code === 200 && (parsed.result !== undefined || parsed.error?.code === 5)) return finish(true);
+            if (code === 404 && parsed.code === 5) return finish(true);
+            return finish(false);
+          } catch {
+            return finish(false);
+          }
+        });
+        res.on('error', () => finish(false));
+        res.on('aborted', () => finish(false));
+      });
+      request.on('error', () => finish(false));
+      request.on('timeout', () => finish(false));
+      request.end();
     });
   }
 }

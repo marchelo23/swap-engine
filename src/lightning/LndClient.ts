@@ -13,13 +13,22 @@ export type Invoice = {
 export class LndClient {
   /** Public endpoint identity only; credentials and local paths are never exposed. */
   get origin(): string { return new URL(this.url).origin; }
-  constructor(private url: string, private certPath: string, private macaroonPath: string) {
+  constructor(
+    private url: string,
+    private certPath: string,
+    private macaroonPath: string,
+    private readonly readCredential: (path: string) => Promise<Buffer> = readFile,
+  ) {
     const parsed = new URL(url);
     if (parsed.protocol !== 'https:' || !['127.0.0.1', 'localhost', '[::1]'].includes(parsed.hostname) || parsed.username || parsed.password) throw new Error('LND must use loopback HTTPS');
   }
   private async credentials() {
-    const [ca, macaroon] = await Promise.all([readFile(this.certPath), readFile(this.macaroonPath)]);
-    return { ca, headers: { 'Grpc-Metadata-macaroon': macaroon.toString('hex'), 'content-type': 'application/json' } };
+    const [ca, macaroon] = await Promise.all([this.readCredential(this.certPath), this.readCredential(this.macaroonPath)]);
+    try {
+      return { ca, headers: { 'Grpc-Metadata-macaroon': macaroon.toString('hex'), 'content-type': 'application/json' } };
+    } finally {
+      macaroon.fill(0);
+    }
   }
   async call<T>(path: string, body?: unknown): Promise<T> {
     const credentials = await this.credentials();

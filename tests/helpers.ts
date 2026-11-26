@@ -1,4 +1,4 @@
-import { randomBytes } from 'node:crypto';
+import { createHmac, randomBytes } from 'node:crypto';
 import assert from 'node:assert/strict';
 import { mkdtemp, realpath, rm } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -43,6 +43,54 @@ export async function privateTestDirectory(prefix: string) {
 export function routingFixture(channelPoint = 'ef'.repeat(32) + ':0') {
   return { channelId: '12345', channelPoint, bitcoinOrigin: 'http://127.0.0.1:18443',
     providerOrigin: 'https://127.0.0.1:8080', payerOrigin: 'https://127.0.0.1:8081' };
+}
+
+function encodeVarint(n: number): Buffer {
+  const bytes: number[] = [];
+  let v = n >>> 0;
+  while (v >= 0x80) {
+    bytes.push((v & 0x7f) | 0x80);
+    v >>>= 7;
+  }
+  bytes.push(v);
+  return Buffer.from(bytes);
+}
+
+function encodePbField(fieldNum: number, data: Buffer): Buffer {
+  return Buffer.concat([encodeVarint((fieldNum << 3) | 2), encodeVarint(data.length), data]);
+}
+
+export function buildLndMacaroon(
+  ops: Array<{ entity: string; actions: string[] }>,
+  caveats: string[] = [],
+  options: { location?: string; nonce?: Buffer; storageId?: Buffer; rootKey?: Buffer } = {},
+): Buffer {
+  const idBody = Buffer.concat([
+    encodePbField(1, options.nonce ?? randomBytes(16)),
+    encodePbField(2, options.storageId ?? Buffer.from([0x00, 0x00, 0x00, 0x00])),
+    ...ops.map(op => encodePbField(3, Buffer.concat([
+      encodePbField(1, Buffer.from(op.entity, 'utf8')),
+      ...op.actions.map(action => encodePbField(2, Buffer.from(action, 'utf8'))),
+    ]))),
+  ]);
+  const identifier = Buffer.concat([Buffer.from([0x03]), idBody]);
+  const rootKey = options.rootKey ?? Buffer.from('101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f', 'hex');
+  const derivedKey = createHmac('sha256', Buffer.from('macaroons-key-generator', 'utf8')).update(rootKey).digest();
+  let sig = createHmac('sha256', derivedKey).update(identifier).digest();
+  for (const caveat of caveats) {
+    sig = createHmac('sha256', sig).update(Buffer.from(caveat, 'utf8')).digest();
+  }
+  const pkt = (type: number, data: Buffer) => Buffer.concat([Buffer.from([type]), encodeVarint(data.length), data]);
+  const caveatPackets = caveats.flatMap(c => [pkt(2, Buffer.from(c, 'utf8')), Buffer.from([0x00])]);
+  return Buffer.concat([
+    Buffer.from([0x02]),
+    pkt(1, Buffer.from(options.location ?? 'lnd', 'utf8')),
+    pkt(2, identifier),
+    Buffer.from([0x00]),
+    ...caveatPackets,
+    Buffer.from([0x00]),
+    pkt(6, sig),
+  ]);
 }
 export function fixture() {
   const claimKey = keys.makeRandom(); const refundKey = keys.makeRandom();

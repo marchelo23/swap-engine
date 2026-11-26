@@ -23,6 +23,15 @@ import { attestStartup, type StartupScope } from './environment/StartupAttestati
 import { ElementsReadOnlyClient } from './environment/ElementsReadOnlyClient.js';
 import { isLegacyEconomics } from './core/Economics.js';
 import { createArkLabCliRunner, createArkRegtestCliPort, type ArkRegtestPort } from './ark/ArkAdapter.js';
+import {
+  assertForwardExclusiveConfig,
+  createAutoPinningCredentialReader,
+  forwardStartupArguments,
+  openForwardRegtestRuntime,
+  prepareForwardRegtestProfile,
+  type ForwardRegtestOverrides,
+  type ForwardRegtestRuntime,
+} from './forward/ForwardRegtestProfile.js';
 
 function sameOrigin(url: string, origin: string) { try { return new URL(url).origin === origin; } catch { return false; } }
 function assertOwnedPolicyBinding(policy: OwnedRuntimePolicy, c: ReturnType<typeof config>, identity: StartupScope | undefined) {
@@ -71,6 +80,8 @@ function assertGuestPolicyBinding(policy: import('./guest/GuestStartup.js').Gues
   }, operatorPolicy(c, identity));
 }
 
+export { forwardStartupArguments };
+
 export function guestStartupArguments(args: string[], mode: ApplicationMode) {
   if (args[0] !== '--guest-regtest') return undefined;
   if (mode !== 'regtest' || args.length < 5 || args[1] !== '--policy-path' || !isAbsolute(args[2] ?? '') ||
@@ -101,30 +112,37 @@ type Dependencies = {
   reads?: { liquidity: () => Promise<Balances>; diagnostics?: () => ReturnType<typeof preflight>;
     operations?: () => Promise<OperationsBalances> };
   identity?: StartupScope;
+  forward?: ForwardRegtestOverrides;
 };
 
 /** Real app entrypoint, also exercised offline with mock node/operator adapters. */
 export async function startApplication(env: NodeJS.ProcessEnv = process.env, args: string[] = [], dependencies: Dependencies = {}) {
   const c = config(env); const guestArgs = guestStartupArguments(args, c.mode);
   const ownedArgs = guestArgs ? undefined : ownedStartupArguments(args, c.mode);
-  const operatorArgs = guestArgs || ownedArgs ? undefined : controlledStartupArguments(args, c.mode);
+  const forwardArgs = guestArgs || ownedArgs ? undefined : forwardStartupArguments(args, c.mode);
+  const operatorArgs = guestArgs || ownedArgs || forwardArgs ? undefined : controlledStartupArguments(args, c.mode);
   const reverseMutationAllowed = c.spendPolicy === 'regtest-only' && c.features.reverse;
   if (ownedArgs && !reverseMutationAllowed) throw new Error('OWNED_EXECUTION_DISABLED');
   if (operatorArgs && parseOperatorCommand(operatorArgs).mode === 'serve' && !reverseMutationAllowed)
     throw new Error('CONTROLLED_EXECUTION_DISABLED');
-  if ((guestArgs || ownedArgs || (operatorArgs && parseOperatorCommand(operatorArgs).mode === 'serve')) && !isLegacyEconomics(c.economics))
+  if ((guestArgs || ownedArgs || forwardArgs || (operatorArgs && parseOperatorCommand(operatorArgs).mode === 'serve')) && !isLegacyEconomics(c.economics))
     throw new Error('EXECUTION_ECONOMICS_UNSUPPORTED');
   if (guestArgs && (c.spendPolicy !== 'regtest-only' || !c.features.guest)) throw new Error('GUEST_EXECUTION_DISABLED');
+  if (forwardArgs) assertForwardExclusiveConfig(c, 'FORWARD_EXECUTION_DISABLED');
+  const forwardPinnedCredentials = forwardArgs ? new Map<string, string>() : undefined;
+  const forwardCredReader = forwardPinnedCredentials ? createAutoPinningCredentialReader(forwardPinnedCredentials) : undefined;
   let liquidity: () => Promise<Balances>; let diagnostics: (() => ReturnType<typeof preflight>) | undefined;
   let operations: (() => Promise<OperationsBalances>) | undefined;
   let bitcoin: ReadOnlyBitcoinClient | null = null; let lnd: ReadOnlyLndClient | null = null;
   let alice: ReadOnlyLndClient | null = null; let liquid: ElementsReadOnlyClient | null = null;
   if (dependencies.reads) ({ liquidity, diagnostics, operations } = dependencies.reads);
   else if (c.bitcoinNetwork && (c.rails.onchain.enabled || c.rails.lightning.enabled)) {
-    bitcoin = c.rails.onchain.enabled ? new ReadOnlyBitcoinClient(c.rails.onchain.url, c.rails.onchain.cookie, c.rails.onchain.wallet) : null;
-    lnd = c.rails.lightning.enabled ? new ReadOnlyLndClient(c.rails.lightning.provider.url, c.rails.lightning.provider.cert, c.rails.lightning.provider.macaroon) : null;
+    bitcoin = c.rails.onchain.enabled
+      ? new ReadOnlyBitcoinClient(c.rails.onchain.url, c.rails.onchain.cookie, c.rails.onchain.wallet, forwardCredReader) : null;
+    lnd = c.rails.lightning.enabled
+      ? new ReadOnlyLndClient(c.rails.lightning.provider.url, c.rails.lightning.provider.cert, c.rails.lightning.provider.macaroon, forwardCredReader) : null;
     alice = c.rails.lightning.enabled && c.rails.lightning.alice
-      ? new ReadOnlyLndClient(c.rails.lightning.alice.url, c.rails.lightning.alice.cert, c.rails.lightning.alice.macaroon) : null;
+      ? new ReadOnlyLndClient(c.rails.lightning.alice.url, c.rails.lightning.alice.cert, c.rails.lightning.alice.macaroon, forwardCredReader) : null;
     if (c.mode === 'regtest') {
       liquidity = async () => {
         if (!bitcoin || !lnd) throw new Error('NODE_RAILS_NOT_CONFIGURED');
@@ -181,6 +199,17 @@ export async function startApplication(env: NodeJS.ProcessEnv = process.env, arg
         payerCertPath: c.rails.lightning.alice.cert, payerReadMacaroonPath: c.rails.lightning.alice.macaroon });
     }
   }
+  const preparedForward = forwardArgs
+    ? await prepareForwardRegtestProfile(
+      forwardArgs,
+      c,
+      identity,
+      dependencies.port,
+      forwardPinnedCredentials
+        ? { ...dependencies.forward, pinnedCredentials: dependencies.forward?.pinnedCredentials ?? forwardPinnedCredentials }
+        : dependencies.forward,
+    )
+    : undefined;
   await assertStateScope(c.directory, { environment: c.environment,
     deploymentId: c.deploymentId ?? 'simulation', genesisHash: identity?.genesisHash ?? null,
     wallet: identity?.wallet ?? '', bitcoinOrigin: identity?.bitcoinOrigin ?? null,
@@ -189,10 +218,13 @@ export async function startApplication(env: NodeJS.ProcessEnv = process.env, arg
     liquidOrigin: identity?.liquidOrigin ?? null, liquidWallet: identity?.liquidWallet ?? null,
     liquidGenesisHash: identity?.liquidGenesisHash ?? null, liquidChainName: identity?.liquidChainName ?? null,
     liquidPolicyAsset: identity?.liquidPolicyAsset ?? null, liquidParentGenesisHash: identity?.liquidParentGenesisHash ?? null },
-  { allowLegacyOfflineMigration: c.allowLegacyOfflineMigration });
-  const store = await Store.open(c.directory);
+  { allowLegacyOfflineMigration: forwardArgs ? false : c.allowLegacyOfflineMigration });
+  const forwardRuntime: ForwardRegtestRuntime | undefined = preparedForward
+    ? await openForwardRegtestRuntime(preparedForward)
+    : undefined;
+  const store = forwardRuntime ? forwardRuntime.store : await Store.open(c.directory);
   try {
-    await recoverInterruptedReverseRuns(store);
+    if (!forwardRuntime) await recoverInterruptedReverseRuns(store);
     let guestRuntime: GuestRuntime | undefined;
     if (guestArgs) {
       try {
@@ -204,7 +236,9 @@ export async function startApplication(env: NodeJS.ProcessEnv = process.env, arg
       }
     }
     const server = createApi(new SwapManager(store, c.economics), liquidity, diagnostics, c.mode,
-      { operations, ark, arkExecutionOwner, arkStorePath, guestReverse: guestRuntime?.guestReverse, auth: { storePath: c.auth.storePath ?? undefined, origin: c.auth.origin ?? undefined },
+      { operations, ark, arkExecutionOwner, arkStorePath, guestReverse: guestRuntime?.guestReverse,
+        auth: { storePath: c.auth.storePath ?? undefined, origin: c.auth.origin ?? undefined },
+        ...(forwardRuntime ? { forward: forwardRuntime.apiForward } : {}),
         capabilities: () => ({ ...c.capabilities({ ...identity?.verified, ark: arkVerified }),
           ...(identity?.liquidAssetEvidence ? { liquidStatus: 'CHAIN_AND_WALLET_VERIFIED' as const } : {}) }),
         environment: c.environment });
@@ -224,7 +258,17 @@ export async function startApplication(env: NodeJS.ProcessEnv = process.env, arg
         console.error('OWNED_PREPARATION_STOPPED: preserve runs; no automatic invoice or payment retry');
       }
     }
-    await new Promise<void>((ready, reject) => { server.once('error', reject); server.listen(dependencies.port ?? c.port, '127.0.0.1', () => { server.off('error', reject); ready(); }); });
+    const listenPort = dependencies.port ?? c.port;
+    await new Promise<void>((ready, reject) => { server.once('error', reject); server.listen(listenPort, '127.0.0.1', () => { server.off('error', reject); ready(); }); });
+    const listened = server.address();
+    const expectedListenPort = preparedForward
+      ? (preparedForward.testToken && dependencies.port === 0 ? undefined : preparedForward.policy.port)
+      : (listenPort === 0 ? undefined : listenPort);
+    if (!listened || typeof listened !== 'object' || listened.address !== '127.0.0.1' ||
+      listened.port < 1 || (expectedListenPort !== undefined && listened.port !== expectedListenPort)) {
+      await new Promise<void>(done => server.close(() => done()));
+      throw new Error('LISTEN_ADDRESS_MISMATCH');
+    }
     if (guestRuntime && guestArgs?.watch) {
       try { guestRuntime.start(); }
       catch { console.error('GUEST_WATCHER_STOPPED: guest request routes remain inert; reconcile without retry'); }

@@ -5,15 +5,26 @@ import { BitcoinConfirmationLookup } from './BitcoinConfirmationLookup.js';
 
 export class BitcoinRpcClient {
   get origin(): string { return new URL(this.url).origin; }
-  constructor(private url: string, private cookiePath: string, private wallet: string) {
+  constructor(
+    private url: string,
+    private cookiePath: string,
+    private wallet: string,
+    private readonly readCredential: (path: string) => Promise<Buffer> = readFile,
+  ) {
     const parsed = new URL(url);
     if (parsed.protocol !== 'http:' || !['localhost', '127.0.0.1', '[::1]'].includes(parsed.hostname) || parsed.username || parsed.password) throw new Error('Bitcoin RPC must use local HTTP and cookie authentication');
   }
   async call<T>(method: string, params: unknown[] = [], wallet = false): Promise<T> {
-    const cookie = (await readFile(this.cookiePath, 'utf8')).trim();
+    const cookieBytes = await this.readCredential(this.cookiePath);
+    let authHeader: string;
+    try {
+      authHeader = `Basic ${Buffer.from(cookieBytes.toString('utf8').trim()).toString('base64')}`;
+    } finally {
+      cookieBytes.fill(0);
+    }
     const response = await fetch(`${this.url.replace(/\/$/, '')}${wallet ? `/wallet/${encodeURIComponent(this.wallet)}` : ''}`, {
       method: 'POST', signal: AbortSignal.timeout(15_000),
-      headers: { authorization: `Basic ${Buffer.from(cookie).toString('base64')}`, 'content-type': 'application/json' },
+      headers: { authorization: authHeader, 'content-type': 'application/json' },
       body: JSON.stringify({ jsonrpc: '1.0', id: 'lqwd', method, params }),
     });
     const body = await response.json() as { result: T; error?: { code: number } };

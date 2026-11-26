@@ -1,0 +1,48 @@
+{
+  "origin": "Official gopkg.in/macaroon-bakery.v2@v2.3.0 + gopkg.in/macaroon.v2@v2.1.0 (LND v0.20.8-beta compatible)",
+  "syntheticFixtureRootKeyBase64": "EBESExQVFhcYGRobHB0eHyAhIiMkJSYnKCkqKywtLi8=",
+  "storageIdBase64": "AAAAAA==",
+  "location": "lnd",
+  "vectors": {
+    "routerUriMin": {
+      "base64": "AgEDbG5kAmMDChDznE0BrXOkVg3vu2/CAnNdEgQAAAAAGkgKA3VyaRIfL3JvdXRlcnJwYy5Sb3V0ZXIvU2VuZFBheW1lbnRWMhIgL3JvdXRlcnJwYy5Sb3V0ZXIvVHJhY2tQYXltZW50VjIAAAYg4kG8Cf7LCDzRaQdKi4CSmJZF2fSfJEijsy0bhMvC8vw=",
+      "expectedRolesAccepted": ["router"],
+      "expectedRolesRejected": ["readonly", "payer-readonly", "payee-readonly"]
+    },
+    "routerUriWithCaveat": {
+      "base64": "AgEDbG5kAmMDChDwnE0BrXOkVg3vu2/CAnNdEgQAAAAAGkgKA3VyaRIfL3JvdXRlcnJwYy5Sb3V0ZXIvU2VuZFBheW1lbnRWMhIgL3JvdXRlcnJwYy5Sb3V0ZXIvVHJhY2tQYXltZW50VjIAAiB0aW1lLWJlZm9yZSAyMDk5LTAxLTAxVDAwOjAwOjAwWgAABiDqR5NlMYVpostXYTRE/7ljAtp6UQW72O/xxDcQmej7qQ==",
+      "expectedRolesAccepted": [],
+      "expectedRolesRejected": ["router", "readonly", "payer-readonly", "payee-readonly"]
+    },
+    "routerDefaultOffchainRw": {
+      "base64": "AgEDbG5kAjIDChDxnE0BrXOkVg3vu2/CAnNdEgQAAAAAGhcKCG9mZmNoYWluEgRyZWFkEgV3cml0ZQAABiCpfgZi3TYSVChDWG90f4NVakjP4xtPSnjiujqOX00moA==",
+      "expectedRolesAccepted": [],
+      "expectedRolesRejected": ["router", "readonly", "payer-readonly", "payee-readonly"]
+    },
+    "payerReadUriMin": {
+      "base64": "AgEDbG5kArgBAwoQ9pxNAa1zpFYN77tvwgJzXRIEAAAAABqcAQoDdXJpEh0vbG5ycGMuTGlnaHRuaW5nL0RlY29kZVBheVJlcRIYL2xucnBjLkxpZ2h0bmluZy9HZXRJbmZvEh0vbG5ycGMuTGlnaHRuaW5nL0xpc3RDaGFubmVscxIdL2xucnBjLkxpZ2h0bmluZy9MaXN0UGF5bWVudHMSHi9sbnJwYy5MaWdodG5pbmcvV2FsbGV0QmFsYW5jZQAABiARdgOH7HnEuvUheZSiUK9fSu0qoHfuUatIrPnP2OGnOQ==",
+      "expectedRolesAccepted": ["readonly", "payer-readonly"],
+      "expectedRolesRejected": ["payee-readonly", "router"]
+    },
+    "payeeReadUriMin": {
+      "base64": "AgEDbG5kAnkDChD3nE0BrXOkVg3vu2/CAnNdEgQAAAAAGl4KA3VyaRIYL2xucnBjLkxpZ2h0bmluZy9HZXRJbmZvEh0vbG5ycGMuTGlnaHRuaW5nL0xpc3RDaGFubmVscxIeL2xucnBjLkxpZ2h0bmluZy9XYWxsZXRCYWxhbmNlAAAGIAeY+gLdsi5IjeJ+7cVHMcYVC8ZTMYjOlKv1HbAQTYry",
+      "expectedRolesAccepted": ["payee-readonly"],
+      "expectedRolesRejected": ["readonly", "payer-readonly", "router"]
+    },
+    "readonlyEntityMin": {
+      "base64": "AgEDbG5kAkoDChD0nE0BrXOkVg3vu2/CAnNdEgQAAAAAGgwKBGluZm8SBHJlYWQaEAoIb2ZmY2hhaW4SBHJlYWQaDwoHb25jaGFpbhIEcmVhZAAABiCtBFQi5SK0HE7Thp4qz48PPTg38DTW8Z9iGin2RYGarg==",
+      "expectedRolesAccepted": ["readonly", "payer-readonly", "payee-readonly"],
+      "expectedRolesRejected": ["router"]
+    },
+    "readonlyDefaultLnd": {
+      "base64": "AgEDbG5kAq8BAwoQ9ZxNAa1zpFYN77tvwgJzXRIEAAAAABoPCgdhZGRyZXNzEgRyZWFkGgwKBGluZm8SBHJlYWQaEAoIaW52b2ljZXMSBHJlYWQaEAoIbWFjYXJvb24SBHJlYWQaDwoHbWVzc2FnZRIEcmVhZBoQCghvZmZjaGFpbhIEcmVhZBoPCgdvbmNoYWluEgRyZWFkGg0KBXBlZXJzEgRyZWFkGg4KBnNpZ25lchIEcmVhZAAABiDFoDLFO8KEitVc//UZBtCK65L3SHrSBXcyN5l+KnOTtA==",
+      "expectedRolesAccepted": [],
+      "expectedRolesRejected": ["readonly", "payer-readonly", "payee-readonly", "router"]
+    },
+    "adminDefaultLnd": {
+      "base64": "AgEDbG5kApICAwoQ+pxNAa1zpFYN77tvwgJzXRIEAAAAABoWCgdhZGRyZXNzEgRyZWFkEgV3cml0ZRoTCgRpbmZvEgRyZWFkEgV3cml0ZRoXCghpbnZvaWNlcxIEcmVhZBIFd3JpdGUaIQoIbWFjYXJvb24SCGdlbmVyYXRlEgRyZWFkEgV3cml0ZRoWCgdtZXNzYWdlEgRyZWFkEgV3cml0ZRoXCghvZmZjaGFpbhIEcmVhZBIFd3JpdGUaFgoHb25jaGFpbhIEcmVhZBIFd3JpdGUaFAoFcGVlcnMSBHJlYWQSBXdyaXRlGhgKBnNpZ25lchIIZ2VuZXJhdGUSBHJlYWQaFQoGd2FsbGV0EgRyZWFkEgV3cml0ZQAABiCMvThWgIhTO7HYq5dq1PVjt8K5ER838/Y8tyEWyqv8Hw==",
+      "expectedRolesAccepted": [],
+      "expectedRolesRejected": ["readonly", "payer-readonly", "payee-readonly", "router"]
+    }
+  }
+}

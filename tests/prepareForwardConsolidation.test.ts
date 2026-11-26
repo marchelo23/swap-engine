@@ -9,9 +9,17 @@ import { address, networks } from 'bitcoinjs-lib';
 import { forwardApprovalDigest, parseForwardApproval } from '../src/core/ForwardExecutor.js';
 import { CoreLndForwardPorts } from '../src/core/CoreLndForwardPorts.js';
 import { trackPaymentPath } from '../src/lightning/LndPaymentTransport.js';
-import { prepareForwardConsolidation, ReviewOutcomeUncertainError } from '../src/persistence/PrepareForwardConsolidation.js';
+import { createTestForwardLeaseToken } from '../src/persistence/ForwardPayerRegistry.js';
+import {
+  prepareForwardConsolidationWithTestRegistry,
+  ReviewOutcomeUncertainError,
+} from '../src/persistence/PrepareForwardConsolidation.js';
 import { Store } from '../src/persistence/Store.js';
 import { runConsolidationCLI } from '../scripts/prepare-forward-consolidation.js';
+
+const testToken = createTestForwardLeaseToken();
+const prepareForwardConsolidation = (input: Parameters<typeof prepareForwardConsolidationWithTestRegistry>[1], registry: string) =>
+  prepareForwardConsolidationWithTestRegistry(testToken, input, registry);
 
 const hash = (b: Buffer) => createHash('sha256').update(b).digest('hex');
 const payer = { node: `02${'1'.repeat(64)}`, container: 'iso_rt_lnd_provider',
@@ -62,6 +70,7 @@ function openAdmission(i: number, owner = adminOwner) {
 async function fixture(t: TestContext) {
   const root = await fs.mkdtemp(join(tmpdir(), 'forward-review-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const registry = join(root, 'registry');
   const input = { historicalADirectory: join(root, 'a'), historicalBDirectory: join(root, 'b'), adminDirectory: join(root, 'c'),
     outputDirectory: join(root, 'out'), evidenceFile: join(root, 'evidence') };
   const dirs = [input.historicalADirectory, input.historicalBDirectory, input.adminDirectory, input.outputDirectory];
@@ -92,13 +101,13 @@ async function fixture(t: TestContext) {
     await saveEvidence();
   };
   await save();
-  return { input, dirs, docs, rows, evidence, statePaths, save, saveEvidence };
+  return { root, registry, input, dirs, docs, rows, evidence, statePaths, save, saveEvidence };
 }
 
 test('offline review preserves three full Stores including the current quote and both admissions', async t => {
   const f = await fixture(t);
   const originals = await Promise.all([fs.readFile(f.statePaths[0]), fs.readFile(f.statePaths[1]), fs.readFile(f.statePaths[2])]);
-  assert.deepEqual(await prepareForwardConsolidation(f.input), { entries: 2 });
+  assert.deepEqual(await prepareForwardConsolidation(f.input, f.registry), { entries: 2 });
   const bundle = join(f.input.outputDirectory, review);
   assert.deepEqual(await fs.readdir(f.input.outputDirectory), [review]);
   assert.deepEqual((await fs.stat(bundle)).mode & 0o777, 0o700);
@@ -118,7 +127,7 @@ test('offline review preserves three full Stores including the current quote and
   assert.deepEqual(await fs.readFile(join(bundle, 'historical-a-original.json')), originals[0]);
   assert.deepEqual(await fs.readFile(join(bundle, 'historical-b-original.json')), originals[1]);
   assert.deepEqual(await Promise.all(f.statePaths.map(path => fs.readFile(path))), originals);
-  await assert.rejects(prepareForwardConsolidation(f.input), /empty/);
+  await assert.rejects(prepareForwardConsolidation(f.input, f.registry), /empty/);
 });
 
 type Fixture = Awaited<ReturnType<typeof fixture>>;
@@ -203,7 +212,7 @@ for (const [name, change, message] of refusals) {
     change(f);
     await f.save();
     const originals = await Promise.all(f.statePaths.map(path => fs.readFile(path)));
-    await assert.rejects(prepareForwardConsolidation(f.input), message);
+    await assert.rejects(prepareForwardConsolidation(f.input, f.registry), message);
     assert.deepEqual(await fs.readdir(f.input.outputDirectory), []);
     assert.deepEqual(await Promise.all(f.statePaths.map(path => fs.readFile(path))), originals);
     await Promise.all(f.dirs.slice(0, 3).map(async dir => assert.deepEqual(await fs.readdir(dir), ['state.json'])));
@@ -213,9 +222,9 @@ for (const [name, change, message] of refusals) {
 test('source roles are pinned to fingerprints; aliases and swapped inputs are refused', async t => {
   const f = await fixture(t);
   await assert.rejects(prepareForwardConsolidation({ ...f.input,
-    historicalADirectory: f.input.historicalBDirectory, historicalBDirectory: f.input.historicalADirectory }), /fingerprint/);
+    historicalADirectory: f.input.historicalBDirectory, historicalBDirectory: f.input.historicalADirectory }, f.registry), /fingerprint/);
   await assert.rejects(prepareForwardConsolidation({ ...f.input,
-    historicalADirectory: f.input.adminDirectory }), /separate/);
+    historicalADirectory: f.input.adminDirectory }, f.registry), /separate/);
   assert.deepEqual(await fs.readdir(f.input.outputDirectory), []);
 });
 
@@ -223,7 +232,7 @@ test('offline review refuses live Store, refuses late writes after close and nev
   const f = await fixture(t);
   const writer = await Store.open(f.input.adminDirectory);
   try {
-    await assert.rejects(prepareForwardConsolidation(f.input), { code: 'EEXIST' });
+    await assert.rejects(prepareForwardConsolidation(f.input, f.registry), { code: 'EEXIST' });
     assert.deepEqual(await fs.readdir(f.input.historicalADirectory), ['state.json']);
     assert.deepEqual(await fs.readdir(f.input.historicalBDirectory), ['state.json']);
     assert.deepEqual(await fs.readdir(f.input.adminDirectory), ['engine.lock', 'state.json']);
@@ -231,7 +240,7 @@ test('offline review refuses live Store, refuses late writes after close and nev
     await assert.rejects(writer.transaction(db => { db.quotes = {}; }), /closing/);
     await closing;
   } finally { await writer.close(); }
-  await prepareForwardConsolidation(f.input);
+  await prepareForwardConsolidation(f.input, f.registry);
 });
 
 test('offline review refuses symlinks, duplicate JSON and unresolved temporary state', async t => {
@@ -241,15 +250,15 @@ test('offline review refuses symlinks, duplicate JSON and unresolved temporary s
   await fs.writeFile(f.statePaths[0], invalid);
   f.evidence.sources.historicalA.sha256 = hash(invalid);
   await f.saveEvidence();
-  await assert.rejects(prepareForwardConsolidation(f.input), /Duplicate JSON key/);
+  await assert.rejects(prepareForwardConsolidation(f.input, f.registry), /Duplicate JSON key/);
   await fs.writeFile(f.statePaths[0], original);
   const temp = join(f.input.adminDirectory, 'state.tmp');
   await fs.writeFile(temp, original, { mode: 0o600 });
-  await assert.rejects(prepareForwardConsolidation(f.input), /temporary state/);
+  await assert.rejects(prepareForwardConsolidation(f.input, f.registry), /temporary state/);
   await fs.unlink(temp);
   await fs.unlink(f.statePaths[0]);
   await fs.symlink(f.statePaths[1], f.statePaths[0]);
-  await assert.rejects(prepareForwardConsolidation(f.input), { code: 'ELOOP' });
+  await assert.rejects(prepareForwardConsolidation(f.input, f.registry), { code: 'ELOOP' });
   assert.deepEqual(await fs.readdir(f.input.outputDirectory), []);
 });
 
@@ -265,7 +274,7 @@ test('publication failure cleans staging and excludes Store writers until comple
     throw new Error('fixture: rename failed');
   });
   syncBuiltinESMExports();
-  try { await assert.rejects(prepareForwardConsolidation(f.input), /fixture: rename failed/); }
+  try { await assert.rejects(prepareForwardConsolidation(f.input, f.registry), /fixture: rename failed/); }
   finally { mocking.mock.restore(); syncBuiltinESMExports(); }
   assert.equal(attempts, 1);
   assert.deepEqual(await fs.readdir(f.input.outputDirectory), []);
@@ -275,14 +284,15 @@ test('publication failure cleans staging and excludes Store writers until comple
 test('parent fsync failure does not report success or remove the visible review bundle', async t => {
   const f = await fixture(t);
   const actualOpen = fs.open;
+  let outputDirOpens = 0;
   const mocking = t.mock.method(fs, 'open', async (...args: Parameters<typeof fs.open>) => {
     const handle = await actualOpen(...args);
-    if (args[0] === f.input.outputDirectory && args[1] === 'r')
+    if (args[0] === f.input.outputDirectory && args[1] === 'r' && ++outputDirOpens === 2)
       handle.sync = async () => { throw new Error('fixture: directory fsync failed'); };
     return handle;
   });
   syncBuiltinESMExports();
-  try { await assert.rejects(prepareForwardConsolidation(f.input), /durability uncertain/); }
+  try { await assert.rejects(prepareForwardConsolidation(f.input, f.registry), /durability uncertain/); }
   finally { mocking.mock.restore(); syncBuiltinESMExports(); }
   assert.deepEqual(await fs.readdir(f.input.outputDirectory), [review]);
   assert.deepEqual((await fs.readdir(join(f.input.outputDirectory, review))).sort(), names);
@@ -307,7 +317,7 @@ test('losing a source lock before publication aborts without deleting a replacem
     return handle;
   });
   syncBuiltinESMExports();
-  try { await assert.rejects(prepareForwardConsolidation(f.input), /lock lost/); }
+  try { await assert.rejects(prepareForwardConsolidation(f.input, f.registry), /lock lost/); }
   finally { mocking.mock.restore(); syncBuiltinESMExports(); }
   assert.ok(writer);
   try {
@@ -321,7 +331,7 @@ test('offline review preserves open admission without outpoint', async t => {
   const open = openAdmission(3);
   f.docs[2].forwardAdmissions = { [open.id]: open.admission };
   await f.save();
-  assert.deepEqual(await prepareForwardConsolidation(f.input), { entries: 2 });
+  assert.deepEqual(await prepareForwardConsolidation(f.input, f.registry), { entries: 2 });
   const bundle = join(f.input.outputDirectory, review);
   const candidate = JSON.parse(await fs.readFile(join(bundle, 'candidate.json'), 'utf8'));
   const manifest = JSON.parse(await fs.readFile(join(bundle, 'manifest.json'), 'utf8'));
@@ -360,7 +370,7 @@ test('TrackPayment normalization from raw LND captures matches consolidation and
   Object.assign(f.rows[0].observation, { track: await trackWith(rawSuccess).track(f.rows[0].paymentHash) });
   Object.assign(f.rows[1].observation, { track: await trackWith(rawFailed).track(f.rows[1].paymentHash) });
   await f.save();
-  assert.deepEqual(await prepareForwardConsolidation(f.input), { entries: 2 });
+  assert.deepEqual(await prepareForwardConsolidation(f.input, f.registry), { entries: 2 });
   const candidate = await fs.readFile(join(f.input.outputDirectory, review, 'candidate.json'), 'utf8');
   assert.equal(candidate.includes('8'.repeat(64)), false);
   await assert.rejects(trackWith({ ...rawSuccess, failure_reason: 'FAILURE_REASON_ERROR' }).track(f.rows[0].paymentHash));
@@ -373,9 +383,10 @@ test('losing a source lock post-rename emits static uncertain diagnostic without
   const actualOpen = fs.open;
   const lock = join(f.input.historicalBDirectory, 'engine.lock');
   let writer: Store | undefined;
+  let outputDirOpens = 0;
   const mocking = t.mock.method(fs, 'open', async (...args: Parameters<typeof fs.open>) => {
     const handle = await actualOpen(...args);
-    if (args[0] === f.input.outputDirectory && args[1] === 'r') {
+    if (args[0] === f.input.outputDirectory && args[1] === 'r' && ++outputDirOpens === 2) {
       const sync = handle.sync.bind(handle);
       handle.sync = async () => {
         await sync();
@@ -387,7 +398,7 @@ test('losing a source lock post-rename emits static uncertain diagnostic without
   });
   syncBuiltinESMExports();
   let caught: unknown;
-  try { await prepareForwardConsolidation(f.input); assert.fail('expected post-rename uncertain failure'); }
+  try { await prepareForwardConsolidation(f.input, f.registry); assert.fail('expected post-rename uncertain failure'); }
   catch (error) { caught = error; }
   finally { mocking.mock.restore(); syncBuiltinESMExports(); }
   assert.ok(caught instanceof ReviewOutcomeUncertainError);
@@ -416,9 +427,10 @@ test('CLI distinguishes pre-rename and post-rename failures with static diagnost
   delete f.docs[2].extra;
   await f.save();
   const actualOpen = fs.open;
+  let outputDirOpens = 0;
   const mocking = t.mock.method(fs, 'open', async (...args: Parameters<typeof fs.open>) => {
     const handle = await actualOpen(...args);
-    if (args[0] === f.input.outputDirectory && args[1] === 'r') {
+    if (args[0] === f.input.outputDirectory && args[1] === 'r' && ++outputDirOpens === 2) {
       handle.sync = async () => { throw new Error(`post-rename fsync failed on ${f.input.outputDirectory}`); };
     }
     return handle;
@@ -453,4 +465,39 @@ test('Store.close enforces cooperative exclusion, drains queued writes, preserve
     await assert.rejects(lost.close(), /lock lost/);
     await assert.rejects(Store.open(dir), { code: 'EEXIST' });
   } finally { await replacement.close(); }
+});
+
+test('H7/H2: consolidation integrates ForwardPayerRegistry bindings, rejects bound historicals/invalid markers, and supports consolidated cutover', async t => {
+  // (a) adminDirectory with valid pre-existing binding -> consolidated cutover replaces state.json in-place & opens via Store.openForForward*
+  const f1 = await fixture(t);
+  const adminBackup = await fs.readFile(f1.statePaths[2]);
+  await fs.unlink(f1.statePaths[2]);
+  await Store.provisionFreshForwardWithTestToken(testToken, f1.input.adminDirectory, payer.node, f1.registry);
+  await fs.writeFile(f1.statePaths[2], adminBackup, { mode: 0o600 });
+  await prepareForwardConsolidation(f1.input, f1.registry);
+  const bundle1 = join(f1.input.outputDirectory, review);
+  const manifestBytes = await fs.readFile(join(bundle1, 'manifest.json'));
+  const manifest = JSON.parse(manifestBytes.toString());
+  assert.ok(manifest.boundAdmin && manifest.boundAdmin.storeId);
+  await Store.provisionConsolidatedForwardWithTestToken(
+    testToken, f1.input.adminDirectory, payer.node, bundle1, hash(manifestBytes), f1.registry,
+  );
+  const reopened = await Store.openForForwardWithTestToken(testToken, f1.input.adminDirectory, payer.node, f1.registry);
+  assert.equal(Object.keys(reopened.read().forwardPayments ?? {}).length, 2);
+  await reopened.close();
+
+  // (b) Rejection if historicalA has canonical binding
+  const f2 = await fixture(t);
+  const histBackup = await fs.readFile(f2.statePaths[0]);
+  await fs.unlink(f2.statePaths[0]);
+  await Store.provisionFreshForwardWithTestToken(testToken, f2.input.historicalADirectory, payer.node, f2.registry);
+  await fs.writeFile(f2.statePaths[0], histBackup, { mode: 0o600 });
+  await assert.rejects(prepareForwardConsolidation(f2.input, f2.registry), /explicit migration required/);
+  assert.deepEqual(await fs.readdir(f2.input.outputDirectory), []);
+
+  // (c) Rejection if adminDirectory/.forward-payer.json is invalid or bound to another payerNode
+  const f3 = await fixture(t);
+  await fs.writeFile(join(f3.input.adminDirectory, '.forward-payer.json'), '{"version":1,"payerNode":"02' + '9'.repeat(64) + '"}\n', { mode: 0o600 });
+  await assert.rejects(prepareForwardConsolidation(f3.input, f3.registry), /FORWARD_BINDING/);
+  assert.deepEqual(await fs.readdir(f3.input.outputDirectory), []);
 });

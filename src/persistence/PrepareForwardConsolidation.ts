@@ -7,6 +7,16 @@ import { address, networks } from 'bitcoinjs-lib';
 import { z } from 'zod';
 import { forwardApprovalDigest, parseForwardApproval, verifiedForwardBalanceFailure,
   verifiedForwardPayment } from '../core/ForwardExecutor.js';
+import {
+  acquireForwardRegistryAdvisoryLock,
+  assertBindingMatchesDirectory,
+  FORWARD_STORE_MARKER,
+  isValidTestForwardLeaseToken,
+  parseForwardBinding,
+  readPrivateFileStrict,
+  systemForwardPayerRegistryRoot,
+} from './ForwardPayerRegistry.js';
+import { parseStrictJson } from './StrictJson.js';
 import { lockStoreDirectory } from './Store.js';
 
 export class ReviewOutcomeUncertainError extends Error {
@@ -69,28 +79,7 @@ function object(value: unknown): Dict {
 
 /** JSON.parse alone silently drops duplicate keys and rounds large integers. Reject
  * ambiguous files before constructing a new state; keep original bytes in backups. */
-function parse(bytes: Buffer): unknown {
-  const text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
-  const parsed: unknown = JSON.parse(text);
-  const stack: Array<Set<string> | null> = [];
-  const tokens = /"(?:\\[\s\S]|[^"\\])*"|[{}[\]:]|-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?/g;
-  for (const token of text.matchAll(tokens)) {
-    const value = token[0];
-    if (value === '{') stack.push(new Set());
-    else if (value === '[') stack.push(null);
-    else if (value === '}' || value === ']') stack.pop();
-    else if (value.startsWith('"') && /^\s*:/.test(text.slice(token.index + value.length))) {
-      const keys = stack.at(-1);
-      const key = JSON.parse(value) as string;
-      if (!keys || keys.has(key)) throw new Error('Duplicate JSON key');
-      keys.add(key);
-    } else if (/^[-0-9]/.test(value) && String(Number(value)) !== value) {
-      // Only accept number tokens that JSON.stringify can reproduce exactly.
-      throw new Error('Noncanonical JSON number');
-    }
-  }
-  return parsed;
-}
+const parse = parseStrictJson;
 
 async function snapshot(path: string) {
   const f = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
@@ -214,30 +203,47 @@ function nested(a: string, b: string) {
   return !rel || (rel !== '..' && !rel.startsWith('../'));
 }
 
-/** Offline only. Evidence is a trusted operator capture, not authenticated by this
- * function. Publish a private review bundle, never an executable Store state. */
-export async function prepareForwardConsolidation(input: {
+export type ConsolidationInput = {
   adminDirectory: string; historicalADirectory: string; historicalBDirectory: string;
   outputDirectory: string; evidenceFile: string;
-}) {
+};
+
+async function prepareForwardConsolidationInternal(input: ConsolidationInput, registryRoot: string) {
   if (process.platform !== 'linux') throw new Error('Linux local filesystem required');
   const [admin, historicalA, historicalB, output] = await Promise.all([realpath(input.adminDirectory),
     realpath(input.historicalADirectory), realpath(input.historicalBDirectory), realpath(input.outputDirectory)]);
   const sources = { admin, historicalA, historicalB };
   const dirs = [...roles.map(role => sources[role]), output];
+  const dirStats = new Map<string, { dev: string; ino: string; uid: number }>();
   const identities = new Set<string>();
   for (const a of dirs) {
     if (dirs.some(b => b !== a && nested(a, b))) throw new Error('Directories must be separate');
-    const s = await lstat(a);
-    if (!s.isDirectory() || s.uid !== process.getuid?.() || (s.mode & 0o077))
+    const s = await lstat(a, { bigint: true });
+    if (!s.isDirectory() || s.uid !== BigInt(process.getuid?.() ?? -1) || (s.mode & 0o077n) !== 0n)
       throw new Error('Expected private directory owned by this user');
-    if (identities.has(`${s.dev}:${s.ino}`)) throw new Error('Directories must be separate');
-    identities.add(`${s.dev}:${s.ino}`);
+    const key = `${s.dev}:${s.ino}`;
+    if (identities.has(key)) throw new Error('Directories must be separate');
+    identities.add(key);
+    dirStats.set(a, { dev: String(s.dev), ino: String(s.ino), uid: Number(s.uid) });
   }
   const evidenceDir = await realpath(dirname(input.evidenceFile));
   if (dirs.some(dir => nested(dir, evidenceDir))) throw new Error('Evidence must be outside journal and output directories');
+  const evidence = await snapshot(join(evidenceDir, basename(input.evidenceFile)));
+  const attest = evidenceSchema.safeParse(parse(evidence));
+  if (!attest.success) throw new Error('Invalid offline evidence envelope');
+  const payerNode = attest.data.payer.node;
+
+  const regLock = await acquireForwardRegistryAdvisoryLock(payerNode, registryRoot, admin);
+  if (dirs.some(dir => nested(dir, regLock.regDir) || nested(regLock.regDir, dir))) {
+    await regLock.release().catch(() => regLock.closeHandle());
+    throw new Error('Registry and consolidation directories must be separate');
+  }
+
   const unlocks: Array<Awaited<ReturnType<typeof lockStoreDirectory>>> = [];
-  const assertHeld = async () => { for (const lock of unlocks) await lock.assertHeld(); };
+  const assertHeld = async () => {
+    await regLock.assertHeld();
+    for (const lock of unlocks) await lock.assertHeld();
+  };
   const assertNoTemps = async () => {
     for (const role of roles) if ((await readdir(sources[role])).includes('state.tmp'))
       throw new Error('Unresolved Store temporary state');
@@ -250,10 +256,39 @@ export async function prepareForwardConsolidation(input: {
     await assertHeld();
     if ((await readdir(output)).some(name => name !== 'engine.lock')) throw new Error('Output directory must be empty');
     await assertNoTemps();
+
+    for (const histRole of ['historicalA', 'historicalB'] as const) {
+      const histMarker = await readPrivateFileStrict(join(sources[histRole], FORWARD_STORE_MARKER));
+      if (histMarker) throw new Error('Historical source already forward-bound; explicit migration required');
+    }
+    const [bindingFile, adminMarkerFile] = await Promise.all([
+      readPrivateFileStrict(join(regLock.bindingsDir, `${payerNode}.json`)),
+      readPrivateFileStrict(join(admin, FORWARD_STORE_MARKER)),
+    ]);
+    let boundAdmin: { storeId: string; bindingSha256: string; markerSha256: string } | null = null;
+    if (bindingFile) {
+      const regBinding = parseForwardBinding(bindingFile.bytes, payerNode);
+      const adminStat = dirStats.get(admin)!;
+      if (regBinding.directory !== admin || regBinding.dev !== adminStat.dev ||
+        regBinding.ino !== adminStat.ino || regBinding.uid !== adminStat.uid) {
+        throw new Error('Payer node already bound to another directory; explicit migration required');
+      }
+      if (!adminMarkerFile) throw new Error('FORWARD_BINDING_INCOMPLETE');
+      const storeMarker = parseForwardBinding(adminMarkerFile.bytes, payerNode);
+      if (regBinding.storeId !== storeMarker.storeId) throw new Error('FORWARD_BINDING_CONFLICT');
+      assertBindingMatchesDirectory(storeMarker, { canonicalPath: admin, ...adminStat });
+      boundAdmin = {
+        storeId: regBinding.storeId,
+        bindingSha256: digest(bindingFile.bytes),
+        markerSha256: digest(adminMarkerFile.bytes),
+      };
+    } else if (adminMarkerFile) {
+      throw new Error('FORWARD_BINDING_INCOMPLETE');
+    }
+
     const snapshots = { admin: await snapshot(join(admin, 'state.json')),
       historicalA: await snapshot(join(historicalA, 'state.json')),
       historicalB: await snapshot(join(historicalB, 'state.json')) };
-    const evidence = await snapshot(join(evidenceDir, basename(input.evidenceFile)));
     const { candidate, entries, admissionCount } = consolidate(snapshots, evidence);
     const staging = join(output, '.incomplete');
     await mkdir(staging, { mode: 0o700 });
@@ -262,7 +297,7 @@ export async function prepareForwardConsolidation(input: {
       'historical-b-original.json': snapshots.historicalB, 'candidate.json': candidate };
     const checksums = Object.fromEntries(Object.entries(artifacts).map(([name, bytes]) => [name, digest(bytes)]));
     for (const [name, bytes] of Object.entries({ ...artifacts, 'manifest.json': Buffer.from(JSON.stringify({
-      target, network: 'regtest', entries, admissionCount, checksums, evidenceSha256: digest(evidence),
+      target, network: 'regtest', entries, admissionCount, checksums, evidenceSha256: digest(evidence), boundAdmin,
     })) })) {
       const f = await open(join(staging, name), 'wx', 0o600);
       try { await f.writeFile(bytes); await f.sync(); } finally { await f.close(); }
@@ -286,11 +321,30 @@ export async function prepareForwardConsolidation(input: {
     // Release all acquired locks even if staging cleanup or one unlock fails.
     try { if (stage) await rm(stage, { recursive: true }); }
     finally {
-      const results = await Promise.allSettled(unlocks.map(unlock => unlock()));
+      const results = await Promise.allSettled([
+        ...unlocks.map(unlock => unlock()),
+        regLock.release(),
+      ]);
       if (results.some(r => r.status === 'rejected')) {
         if (published) throw uncertain ?? new ReviewOutcomeUncertainError('Review bundle publication outcome uncertain; lock lost after rename; inspect manually');
         throw new Error('Review lock lost or cleanup failed; inspect manually');
       }
     }
   }
+}
+
+/** Offline only. Evidence is a trusted operator capture, not authenticated by this
+ * function. Publish a private review bundle, never an executable Store state. */
+export function prepareForwardConsolidation(input: ConsolidationInput) {
+  return prepareForwardConsolidationInternal(input, systemForwardPayerRegistryRoot());
+}
+
+/** Test-only variant isolated from the OS user's registry. */
+export function prepareForwardConsolidationWithTestRegistry(
+  testToken: object,
+  input: ConsolidationInput,
+  registryRoot: string,
+) {
+  if (!isValidTestForwardLeaseToken(testToken)) throw new Error('FORWARD_TEST_TOKEN_INVALID');
+  return prepareForwardConsolidationInternal(input, registryRoot);
 }

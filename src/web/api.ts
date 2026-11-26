@@ -262,7 +262,7 @@ const forwardPoint = z.object({ txid: z.string(), vout: z.int() });
 const forwardStatus = z.object({
   id: z.uuid(), invoice: z.string(), invoiceSats: amount, address: z.string(), depositSats: amount,
   expiresAt: z.int(), outpoint: z.nullable(forwardPoint), confirmations: z.nullable(amount),
-  requiredConfirmations: z.literal(2), state: z.enum(['AWAITING_DEPOSIT', 'EXPIRED', 'INTENT', 'UNKNOWN', 'SUCCEEDED']),
+  requiredConfirmations: z.literal(2), state: z.enum(['AWAITING_DEPOSIT', 'EXPIRED', 'INTENT', 'UNKNOWN', 'SUCCEEDED', 'FAILED_INSUFFICIENT_BALANCE']),
 });
 export type ForwardStatus = z.infer<typeof forwardStatus>;
 export type ForwardPoint = z.infer<typeof forwardPoint>;

@@ -62,17 +62,22 @@ export interface ForwardPorts {
   track(paymentHash: string): Promise<unknown>;
 }
 
-/** Only a trusted service can supply an approved plan. Uses one
- * durable Store per payer, including across recovery. Never wire to HTTP as-is. */
+/** Only a trusted service can supply an approved plan. Requires one canonical
+ * forward Store bound and locked per payerNode (`Store.openForForward`). Never wire to HTTP as-is. */
 export class ForwardExecutor {
-  constructor(private readonly store: Store, private readonly ports: ForwardPorts) {}
+  constructor(private readonly store: Store, private readonly ports: ForwardPorts, private readonly testToken?: object) {
+    store.assertForwardStore(testToken);
+  }
 
   status(input: Approval): Status {
-    return this.entry(this.approval(input)).status;
+    const a = this.approval(input);
+    this.store.assertForwardPayerBoundSync(a.payerNode, this.testToken);
+    return this.entry(a).status;
   }
 
   async execute(input: Approval): Promise<Status> {
     const a = this.approval(input);
+    await this.store.assertForwardPayerHeld(a.payerNode, this.testToken);
     await this.checkSend(a);
     const outpoint = `${a.deposit.txid}:${a.deposit.vout}`;
     const approvalDigest = this.digest(a);
@@ -86,10 +91,13 @@ export class ForwardExecutor {
     let wireAuthorized = false;
     try {
       const evidence = await this.ports.send(a.invoice, a.feeLimitSats, async () => {
+        await this.store.assertForwardPayerHeld(a.payerNode, this.testToken);
         await this.checkSend(a);
+        await this.store.assertForwardPayerHeld(a.payerNode, this.testToken);
         if (wireAuthorized || this.entry(a).status !== 'INTENT') throw new Error('Forward send intent no longer current');
         wireAuthorized = true;
       });
+      await this.store.assertForwardPayerHeld(a.payerNode, this.testToken);
       await this.checkPayer(a);
       paid = wireAuthorized && this.verifiedPayment(a, evidence);
     } catch { /* An ambiguous send consumes the intent. */ }
@@ -98,12 +106,14 @@ export class ForwardExecutor {
 
   async recover(input: Approval): Promise<Status> {
     const a = this.approval(input);
+    await this.store.assertForwardPayerHeld(a.payerNode, this.testToken);
     const initial = this.entry(a).status;
     if (initial === 'SUCCEEDED' || initial === 'FAILED_INSUFFICIENT_BALANCE') return initial;
     let outcome: Status = 'UNKNOWN';
     try {
       await this.checkPayer(a);
       const evidence = await this.ports.track(a.paymentHash);
+      await this.store.assertForwardPayerHeld(a.payerNode, this.testToken);
       await this.checkPayer(a);
       if (initial === 'UNKNOWN' && verifiedForwardBalanceFailure(a, evidence))
         outcome = 'FAILED_INSUFFICIENT_BALANCE';

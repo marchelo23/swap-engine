@@ -3,6 +3,7 @@ import { z } from 'zod';
 import type { BitcoinRpcClient } from '../bitcoin/BitcoinRpcClient.js';
 import type { LndClient } from '../lightning/LndClient.js';
 import { trackPaymentPath, type PaymentStreamTransport } from '../lightning/LndPaymentTransport.js';
+import type { Store } from '../persistence/Store.js';
 import type { ForwardPorts } from './ForwardExecutor.js';
 
 const hash = z.string().regex(/^[a-f0-9]{64}$/);
@@ -18,13 +19,16 @@ const noBalance = z.object({ failure_reason: z.literal('FAILURE_REASON_INSUFFICI
   fee_sat: z.literal('0'), fee: z.literal('0').optional() });
 
 /** Deliberately limited to one direct regtest channel and a Core provider wallet.
- * Never auto-registers with HTTP. No bitcoin spend or mining methods. */
+ * Never auto-registers with HTTP. Callers must only invoke `send()` through `ForwardExecutor`
+ * backed by `Store.openForForward`. No bitcoin spend or mining methods. */
 export class CoreLndForwardPorts implements ForwardPorts {
   constructor(private readonly core: Pick<BitcoinRpcClient, 'call'>,
     private readonly payer: Pick<LndClient, 'call' | 'origin'>, private readonly transport: PaymentStreamTransport,
-    private readonly payerNode: string, private readonly payeeNode: string, private readonly channelId: string) {
+    private readonly payerNode: string, private readonly payeeNode: string, private readonly channelId: string,
+    private readonly forwardStore?: Store, private readonly testToken?: object) {
     node.parse(payerNode); node.parse(payeeNode); channel.parse(channelId);
     if (payerNode === payeeNode || payer.origin !== transport.origin) throw new Error('Invalid forward payer binding');
+    if (forwardStore) forwardStore.assertForwardPayerBoundSync(payerNode, testToken);
   }
 
   private async tip() {
@@ -34,14 +38,16 @@ export class CoreLndForwardPorts implements ForwardPorts {
 
   async inspectPayer() {
     const info = z.object({ identity_pubkey: node, synced_to_chain: z.literal(true), version: z.string(),
-      wallet_synced: z.boolean().optional(), block_hash: hash, block_height: z.number().int(),
+      commit_hash: z.string().optional(), wallet_synced: z.boolean().optional(), block_hash: hash, block_height: z.number().int(),
       chains: z.array(z.object({ chain: z.literal('bitcoin'), network: z.literal('regtest') })).length(1) })
       .parse(await this.payer.call('/v1/getinfo'));
     const tip = await this.tip();
     // The isolated v0.20.8-beta build gates synced_to_chain on Wallet.IsSynced()
     // and does not expose wallet_synced. Do not infer it for other builds.
     if (info.identity_pubkey !== this.payerNode || info.block_hash !== tip.bestblockhash || info.block_height !== tip.blocks ||
-      (info.wallet_synced !== true && !(info.wallet_synced === undefined && info.version === '0.20.8-beta commit=v0.20.8-beta')))
+      (info.wallet_synced !== true && !(info.wallet_synced === undefined &&
+        info.version === '0.20.8-beta commit=v0.20.8-beta' &&
+        info.commit_hash === '33f90e82464daf9e6d2f2a02e754955ba42e2951')))
       throw new Error('Forward payer not synced to the bound Core tip');
     return { network: 'regtest', node: info.identity_pubkey, ready: true };
   }
@@ -80,10 +86,13 @@ export class CoreLndForwardPorts implements ForwardPorts {
   }
 
   async send(invoice: string, feeLimitSats: number, beforeSend: () => Promise<void>) {
+    if (!this.forwardStore) throw new Error('FORWARD_PAYER_LEASE_REQUIRED');
+    const store = this.forwardStore;
     invoiceFormat.parse(invoice); z.literal(100).parse(feeLimitSats);
     return this.observe('/v2/router/send', { payment_request: invoice, timeout_seconds: 60, fee_limit_sat: '100',
       max_parts: 16, outgoing_chan_ids: [this.channelId], no_inflight_updates: false, allow_self_payment: false,
       amp: false, cancelable: false }, async () => {
+      await store.assertForwardPayerHeld(this.payerNode, this.testToken);
       const { channels } = z.object({ channels: z.array(z.object({ chan_id: channel, active: z.boolean(),
         channel_point: z.string().regex(/^[a-f0-9]{64}:[0-9]{1,10}$/),
         remote_pubkey: node, zero_conf: z.boolean() })).max(1000) }).parse(await this.payer.call('/v1/channels'));
@@ -98,6 +107,7 @@ export class CoreLndForwardPorts implements ForwardPorts {
         .parse(await this.core.call('gettxout', [txid, z.number().int().min(0).max(0xffffffff).parse(Number(index)), true]));
       if (funding.bestblock !== tip.bestblockhash) throw new Error('Forward channel funding tip changed');
       await beforeSend();
+      await store.assertForwardPayerHeld(this.payerNode, this.testToken);
     });
   }
 
