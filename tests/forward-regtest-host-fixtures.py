@@ -16,6 +16,30 @@ spec.loader.exec_module(host)
 
 
 class HostFixtures(unittest.TestCase):
+    def test_sudo_denial(self):
+        denial = f"User {host.NAME} is not allowed to run sudo on parrot.\n"
+        for case, code, stdout, stderr, expected in (
+            ("denied exit 0", 0, denial, "", True),
+            ("denied exit 1", 1, "", denial, True),
+            ("allowed", 0, f"User {host.NAME} may run the following commands on parrot:\n"
+                           "    (ALL) ALL\n", "", False),
+            ("permissions plus denial", 1, denial + "    (ALL) ALL\n", "", False),
+            ("ambiguous prefix", 0, "Warning: " + denial, "", False),
+            ("ambiguous suffix", 1, denial.rstrip() + " extra\n", "", False),
+            ("extra line", 0, denial + "\n", "", False),
+            ("mixed streams", 1, denial, "\n", False),
+            ("split streams", 1, denial[:10], denial[10:], False),
+            ("wrong user", 1, denial.replace(host.NAME, "someone_else"), "", False),
+            ("unrelated error", 1, "", "sudo: a password is required\n", False),
+            ("empty exit 1", 1, "", "", False),
+            ("unexpected exit", 2, denial, "", False),
+        ):
+            with self.subTest(case=case), patch.object(host.subprocess, "run") as run:
+                run.return_value = subprocess.CompletedProcess([], code, stdout, stderr)
+                self.assertIs(host.denied_sudo(), expected)
+                self.assertEqual(run.call_args.args[0], ("/usr/bin/sudo", "-n", "-l", "-U", host.NAME))
+                self.assertEqual(run.call_args.kwargs["env"]["LC_ALL"], "C")
+
     def test_plan_and_checkout_apply(self):
         base = (sys.executable, "-I", SCRIPT, "--id", "2100", "--subid", "800000")
         plan = subprocess.run(base, check=True, capture_output=True, text=True)
@@ -128,15 +152,6 @@ class HostFixtures(unittest.TestCase):
                     else:
                         with self.assertRaises(ValueError):
                             host.protected(path, 0o500)
-
-    def test_sudo_requires_explicit_denial(self):
-        denial = f"User {host.NAME} is not allowed to run sudo on example.\n"
-        for rc, stdout, stderr, expected in ((1, denial, "", True), (1, "", denial, True),
-                                            (0, denial, "", False), (1, denial, "error", False),
-                                            (1, "", "sudo: a password is required", False)):
-            with self.subTest(rc=rc, stdout=stdout, stderr=stderr), patch.object(
-                    host.subprocess, "run", return_value=subprocess.CompletedProcess([], rc, stdout, stderr)):
-                self.assertEqual(host.denied_sudo(), expected)
 
     def test_acquisition_fixtures(self):
         for fault in ("", "rootful", "preexisting-image", "wrong-digest"):

@@ -45,9 +45,10 @@ def denied_sudo():
     result = subprocess.run(("/usr/bin/sudo", "-n", "-l", "-U", NAME), cwd="/",
                             env={"PATH": PATH, "LC_ALL": "C"}, stdin=subprocess.DEVNULL,
                             capture_output=True, text=True, check=False)
-    return (result.returncode == 1 and not (result.stdout.strip() and result.stderr.strip())
-            and re.fullmatch(rf"User {NAME} is not allowed to run sudo on \S+\.",
-                             (result.stdout + result.stderr).strip()) is not None)
+    return (result.returncode in (0, 1) and bool(result.stdout) != bool(result.stderr)
+            and re.fullmatch(rf"User {NAME} is not allowed to run sudo on "
+                             r"[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.\n?",
+                             result.stdout or result.stderr) is not None)
 
 
 def absent(path):

@@ -99,25 +99,45 @@ administración exclusiva (sin altas/cambios de identidades en paralelo).
 No usar el flag si falta cualquiera de esas comprobaciones. El preflight
 corrobora localmente, no sustituye esa atestación ni prueba unicidad global.
 
-Desde una terminal local del custodio, recibir el script autocontenido y los
-64 hex del SHA-256 aprobado por revisión por canal de confianza separado.
-**Después de revisión y autorización OP3/E2**, instalar copia en `/root`
-(no ejecutar desde checkout) y correr sólo el preflight, definiendo
-`fuente`, `sha`, `uid` y `subid` con los valores aprobados:
+La cuenta ya está creada; no repetir el alta. Según la evidencia facilitada
+del custodio en `LC_ALL=C`, `passwd -S iso_rt_fwd_svc` reportó `L` y
+`sudo -n -l -U iso_rt_fwd_svc` terminó con código `0` y una sola línea:
+`User iso_rt_fwd_svc is not allowed to run sudo on parrot.` El helper exige
+esa forma de denegación explícita en un único flujo, con código `0` o `1`.
+
+**Después de revisión independiente y autorización OP3/E2**, en una ventana
+de administración exclusiva, el custodio puede reemplazar únicamente la
+copia previa de `/root`. Recibir la fuente y confirmar el SHA-256 aprobado por
+un canal de confianza separado. Ejecutar el bloque en un shell local root,
+con `fuente` apuntando al archivo recibido (sin ejecutarlo desde el checkout).
+Si la copia previa está ausente o no coincide, detenerse sin reemplazarla:
 
 ```sh
-/usr/bin/sudo -v &&
-/usr/bin/sudo -n /usr/bin/test ! -e /root/forward-regtest-host.py &&
-/usr/bin/sudo -n /usr/bin/test ! -L /root/forward-regtest-host.py &&
-/usr/bin/sudo -n /usr/bin/install -T -o root -g root -m 0500 -- "$fuente" /root/forward-regtest-host.py &&
-printf '%s  /root/forward-regtest-host.py\n' "$sha" |
-  /usr/bin/sudo -n /usr/bin/sha256sum --strict -c - &&
-/usr/bin/sudo -n /usr/bin/env -i PATH=/usr/sbin:/usr/bin LC_ALL=C \
-  /usr/bin/python3 -I /root/forward-regtest-host.py --id "$uid" --subid "$subid" --attest-op3 --preflight
+(
+  set -eu
+  umask 077
+  old=548553cd35c5ef69547875774594898f01803a7bf131236c947ac11d307d1378
+  new=21c26f134e2bde00af11090d2a3fb608aa2814bacaa82fbb626d32e21e2c9696
+  dest=/root/forward-regtest-host.py
+  check_old() {
+    test ! -L "$dest" && test -f "$dest" &&
+      test "$(/usr/bin/stat -c '%u:%g:%a:%h' -- "$dest")" = 0:0:500:1 &&
+      printf '%s  %s\n' "$old" "$dest" | /usr/bin/sha256sum --strict -c -
+  }
+  check_old || exit 1
+  stage=$(/usr/bin/mktemp /root/.forward-regtest-host.XXXXXXXX)
+  trap '/usr/bin/rm -f -- "$stage"' EXIT
+  /usr/bin/install -T -o root -g root -m 0500 -- "$fuente" "$stage"
+  printf '%s  %s\n' "$new" "$stage" | /usr/bin/sha256sum --strict -c -
+  check_old || exit 1
+  /usr/bin/mv -fT -- "$stage" "$dest"
+  printf '%s  %s\n' "$new" "$dest" | /usr/bin/sha256sum --strict -c -
+)
 ```
 
 No usar `sudo -S`, ni capturar o transferir la contraseña. La autenticación
-ocurre en `sudo -v`; el helper no lee stdin. El preflight no invoca `runuser`
+ocurre sólo en la terminal local del custodio. El reemplazo no ejecuta el
+helper. El preflight posterior requiere autorización separada; no invoca `runuser`
 ni Podman (incluso `podman info` puede inicializar el almacén). Si rechaza,
 no inició E1: devolver el diagnóstico y resolver OP3/E2, sin adoptar recursos.
 No ejecutar la mutación E1 hasta autorización de la revisión. En E1, tras
