@@ -86,3 +86,52 @@ desde Orca el depósito exacto con fondos de prueba, las dos confirmaciones y
 la recuperación tras perder la respuesta, verificando un solo envío y
 liquidación en el receptor. No se financió ni se pagó ningún swap web en esta
 entrega. El alcance de laboratorio sigue sin reembolsos.
+### Revisión offline de la consolidación (`admin-regtest-3201`)
+
+La herramienta de preparación no abre conexiones, no activa el Store ni
+instala un `state.json`. Probada sólo con fixtures. La revisión en vivo y
+cualquier aplicación requieren autorización separada.
+
+1. Verificar por fuera de la herramienta qué directorio corresponde a
+   `admin-regtest-3201` y cuál es el otro historial del **mismo** pagador.
+   Identificar todos los escritores; detener o mantener deshabilitados sólo
+   los pertinentes, sin tocar `:3200`. Si algún escritor no respeta
+   `engine.lock`, si interviene `:3200`, o si no se puede demostrar aislamiento,
+   abortar. Usar Linux y almacenamiento local; no reemplazar, montar encima ni
+   mover directorios mientras dure la operación. No retirar un lock existente
+   ni un `state.tmp` para sortear un fallo.
+2. Reunir las aprobaciones originales y evidencia **independiente** de cada
+   hash mediante `TrackPayment` de sólo lectura en `iso_rt_lnd_provider`.
+   Acotar cada consulta con `GetInfo` y verificación del ID completo del
+   contenedor, antes y después, en el mismo contexto Docker. Confirmar
+   `bitcoin/regtest` y la pubkey en ambas respuestas. Conservar las capturas
+   originales en local para revisión, sin cabeceras, credenciales ni logs
+   públicos. Nunca generar `track` copiando el estado del diario. Si un lookup
+   está ausente, es ambiguo o no coincide, abortar; no enviar ni reintentar.
+3. Preparar `evidence.json` (`0600`, fuera del repo y de los tres directorios):
+   `{target:"admin-regtest-3201", payer:<identidad>, lookups:{<hash>:{before:<identidad>,after:<identidad>,approval:<ForwardApproval original>,track:<observación>}}}`.
+   La identidad contiene `network:"regtest"`, `container:"iso_rt_lnd_provider"`,
+   `containerId` (64 hex minúsculas) y `node` (pubkey). Normalizar `track` con
+   los campos de `CoreLndForwardPorts.track`: `{status:"SUCCEEDED",hash,preimage,valueMsat,feeMsat}`
+   o `{status:"FAILED",hash,reason:"FAILURE_REASON_INSUFFICIENT_BALANCE",htlcs:[],feeMsat:0}`.
+   Para el segundo, comprobar también `fee_sat` y, si existe, `fee` en cero
+   en la respuesta original. No retener preimágenes fuera de este entorno
+   privado. La API offline **no autentica el origen ni la vigencia** del JSON:
+   el revisor debe contrastarlo con las capturas y la identidad del lab.
+4. Tras autorización para usar entradas reales, preparar un directorio vacío
+   de revisión `0700` separado de ambos directorios del Store:
+   `npx tsx scripts/prepare-forward-consolidation.ts <admin-dir> <otro-dir> <salida-vacía> <evidence.json>`.
+   La herramienta toma los tres `engine.lock` antes de leer. Exige las dos
+   fuentes no vacías, verifica aprobaciones, digest, hash, outpoint y evidencia
+   terminal; incluso dos registros idénticos por hash causan rechazo. Conserva
+   campos completos y nunca sobrescribe secciones ajenas pobladas y distintas.
+5. Revisar localmente `admin-regtest-3201-review/`: dos backups byte a byte,
+   `candidate.json` y `manifest.json` con SHA-256 de los tres y de la evidencia.
+   Verificar permisos (`0700`/`0600`), hashes contra originales y evidencia,
+   cardinalidad exacta y unión íntegra, estados y reservas, y que no aparezca
+   ninguna modificación inesperada de estado no forward. Ante error de
+   publicación o durabilidad, no confiar en la salida ni reintentar a ciegas.
+   Si se reanudaron escritores, los hashes son sólo evidencia del snapshot:
+   cotejar de nuevo bajo exclusión antes de cualquier aplicación futura.
+   No renombrar `candidate.json` a `state.json`, no reiniciar ni habilitar
+   ejecución como parte de esta revisión.

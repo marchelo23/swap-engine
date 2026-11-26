@@ -28,6 +28,28 @@ const paidSchema = z.object({ status: z.literal('SUCCEEDED'), hash, preimage: ha
 const failedSchema = z.object({ status: z.literal('FAILED'), hash,
   reason: z.literal('FAILURE_REASON_INSUFFICIENT_BALANCE'), htlcs: z.tuple([]), feeMsat: z.literal(0) });
 
+export function parseForwardApproval(input: unknown): ForwardApproval {
+  const a = approvalSchema.parse(input);
+  if (a.payerNode === a.payeeNode || a.deposit.valueSats < a.invoiceSats + a.feeLimitSats)
+    throw new Error('Invalid forward payer or deposit economics');
+  return a;
+}
+
+export function forwardApprovalDigest(a: ForwardApproval) {
+  return createHash('sha256').update(JSON.stringify(a)).digest('hex');
+}
+
+export function verifiedForwardPayment(a: ForwardApproval, raw: unknown) {
+  const p = paidSchema.parse(raw);
+  return p.hash === a.paymentHash && p.valueMsat === a.invoiceSats * 1000 && p.feeMsat <= a.feeLimitSats * 1000 &&
+    createHash('sha256').update(Buffer.from(p.preimage, 'hex')).digest('hex') === a.paymentHash;
+}
+
+export function verifiedForwardBalanceFailure(a: ForwardApproval, raw: unknown) {
+  const failed = failedSchema.safeParse(raw);
+  return failed.success && failed.data.hash === a.paymentHash;
+}
+
 /** Trusted internal ports, not browser input. */
 export interface ForwardPorts {
   inspectPayer(): Promise<unknown>;
@@ -83,8 +105,7 @@ export class ForwardExecutor {
       await this.checkPayer(a);
       const evidence = await this.ports.track(a.paymentHash);
       await this.checkPayer(a);
-      const failed = failedSchema.safeParse(evidence);
-      if (initial === 'UNKNOWN' && failed.success && failed.data.hash === a.paymentHash)
+      if (initial === 'UNKNOWN' && verifiedForwardBalanceFailure(a, evidence))
         outcome = 'FAILED_INSUFFICIENT_BALANCE';
       else if (this.verifiedPayment(a, evidence)) outcome = 'SUCCEEDED';
     } catch { /* Missing, pending, malformed and failed observations do not reopen the intent. */ }
@@ -92,14 +113,11 @@ export class ForwardExecutor {
   }
 
   private approval(input: Approval) {
-    const a = approvalSchema.parse(input);
-    if (a.payerNode === a.payeeNode || a.deposit.valueSats < a.invoiceSats + a.feeLimitSats)
-      throw new Error('Invalid forward payer or deposit economics');
-    return a;
+    return parseForwardApproval(input);
   }
 
   private digest(a: Approval) {
-    return createHash('sha256').update(JSON.stringify(a)).digest('hex');
+    return forwardApprovalDigest(a);
   }
 
   private entry(a: Approval) {
@@ -125,9 +143,7 @@ export class ForwardExecutor {
   }
 
   private verifiedPayment(a: Approval, raw: unknown) {
-    const p = paidSchema.parse(raw);
-    return p.hash === a.paymentHash && p.valueMsat === a.invoiceSats * 1000 && p.feeMsat <= a.feeLimitSats * 1000 &&
-      createHash('sha256').update(Buffer.from(p.preimage, 'hex')).digest('hex') === a.paymentHash;
+    return verifiedForwardPayment(a, raw);
   }
 
   private record(a: Approval, outcome: Status) {
