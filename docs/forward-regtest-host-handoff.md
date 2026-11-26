@@ -61,9 +61,78 @@ printf '%s  %s\n' "$amd64" "$work/amd64" | sha256sum -c -
 
 ### Paso mínimo del administrador para E1
 
-1. En su contexto administrativo autorizado, crear o verificar la cuenta, subuid/subgid y runtime privado según OP3 pasos 1–2. Como esa cuenta, verificar `podman --remote=false info`: `Rootless=true`, `GraphRoot` nuevo persistente y `RunRoot` privado, ambos ajenos al operador, con permisos privados. El driver es decisión del administrador; dimensionar espacio descomprimido, no sólo los ~45,5 MB y ~61,0 MB comprimidos (`vfs` puede duplicar capas).
-2. Usar un entorno limpio con `HOME` y XDG propios (incluido `XDG_RUNTIME_DIR`), `PATH` de confianza, sin `DOCKER_HOST`, `CONTAINER_HOST`, `REGISTRY_AUTH_FILE` ni overrides `CONTAINERS_*` heredados; comprobar que no hay fallback de auth Docker ni config, política o mirrors del operador. Aplicar la política de confianza aprobada del despliegue. Repetir la comprobación de índices/manifiestos anterior, sin trazas de tokens. Bajo el UID dedicado y con `umask 077`, crear un authfile privado con `{}` bajo su runtime. Para cada fila usar `ref="docker.io/$repo@sha256:$amd64"` y, si `podman --remote=false image exists "$ref"` devuelve 1, ejecutar `podman --remote=false pull --authfile "$authfile" --tls-verify=true --platform linux/amd64 "$ref"` (cualquier otro error: detenerse). No usar tags ni fallback rootful o login al registro. Al terminar, retirar el authfile temporal.
-3. Devolver **sólo** pruebas no sensibles: resultado de validación de cuenta/aislamiento y `Rootless=true` con rutas dedicadas (redactadas si procede); verificación de ambos hashes de índice/manifiesto y exactamente dos imágenes con `Digest`/`RepoDigests` esperados y `Os/Architecture=linux/amd64`; espacio antes/después y confirmación de que no cambiaron contenedores, redes, volúmenes ni almacén del operador. No entregar tokens, archivos de configuración, dumps de entorno ni logs sin revisar. Esto acredita adquisición, no arranque ni custodia financiera.
+**Helper exclusivo de adquisición E1; no ejecutar hasta revisión independiente.**
+No crea cuentas, grupos, rangos, directorios ni unidades, no adopta un almacén
+usado y no modifica NSS. El modo por defecto sólo imprime el plan. OP3/E2 es
+administrativo y separado: en un host files-only puede hacerse alta local
+manual si la política lo admite. En este host (`files systemd winbind`),
+**no** usar `getent` negativo o una enumeración incompleta para dar por libre
+un ID o intervalo, ni pasar a files-only para sortear el directorio.
+
+**Pedido al custodio de este host (sin cambios para este pedido):** confirmar
+por canal privado si existe autorización OP3/E2 y quién puede validar, con
+fuentes autoritativas de files, systemd y winbind, el nombre exclusivo
+`iso_rt_fwd_svc`, su UID/GID común y un intervalo exclusivo de 65536 IDs
+para ambos subuid/subgid (incluidas identidades no enumerables, miembros
+del grupo, reservas y mapeos del directorio). Devolver el UID/GID e inicio
+propuestos, el resultado de esas comprobaciones y qué fuente no pudo
+validarse; si hay duda o colisión, dejar E1 cerrado. No enviar listados,
+configuración sensible, contraseñas o credenciales.
+
+Sólo una vez autorizado OP3/E2, el custodio crea y verifica la identidad
+dedicada, grupo sin otros miembros, nologin y contraseña bloqueada,
+subuid/subgid locales exactos, sin linger ni login runtime. Prepara con
+owner UID:GID del servicio, `0700` y sin ACL extendidas ni heredables:
+`/home/iso_rt_fwd_svc` con sólo los directorios vacíos `bitcoin`, `lnd-payer`,
+`lnd-payee`, `state`, `secrets`, `profile`, `auth`, `forward-payers`, `storage`,
+`config`, `data`, `cache`; `/run/iso_rt_fwd_svc` con sólo `storage` vacío.
+No reutilizar directorios ni remontar rutas. Si necesita otro backend subid
+o layout, parar y volver a revisión.
+
+Antes de usar `--attest-op3`, el custodio verifica y registra OP3/E2, control
+exclusivo de la cuenta (sin procesos de terceros), capacidad de disco, política SSH (denegación efectiva
+incluso por claves), PAM de `runuser`, configuración/política/mirrors globales
+de Podman y acceso efectivo a endpoints privilegiados según OP3. Verifica
+los índices públicos con la receta anterior; el helper fija y verifica los
+manifiestos de plataforma, no consulta los índices. Hacerlo en ventana de
+administración exclusiva (sin altas/cambios de identidades en paralelo).
+No usar el flag si falta cualquiera de esas comprobaciones. El preflight
+corrobora localmente, no sustituye esa atestación ni prueba unicidad global.
+
+Desde una terminal local del custodio, recibir el script autocontenido y los
+64 hex del SHA-256 aprobado por revisión por canal de confianza separado.
+**Después de revisión y autorización OP3/E2**, instalar copia en `/root`
+(no ejecutar desde checkout) y correr sólo el preflight, definiendo
+`fuente`, `sha`, `uid` y `subid` con los valores aprobados:
+
+```sh
+/usr/bin/sudo -v &&
+/usr/bin/sudo -n /usr/bin/test ! -e /root/forward-regtest-host.py &&
+/usr/bin/sudo -n /usr/bin/test ! -L /root/forward-regtest-host.py &&
+/usr/bin/sudo -n /usr/bin/install -T -o root -g root -m 0500 -- "$fuente" /root/forward-regtest-host.py &&
+printf '%s  /root/forward-regtest-host.py\n' "$sha" |
+  /usr/bin/sudo -n /usr/bin/sha256sum --strict -c - &&
+/usr/bin/sudo -n /usr/bin/env -i PATH=/usr/sbin:/usr/bin LC_ALL=C \
+  /usr/bin/python3 -I /root/forward-regtest-host.py --id "$uid" --subid "$subid" --attest-op3 --preflight
+```
+
+No usar `sudo -S`, ni capturar o transferir la contraseña. La autenticación
+ocurre en `sudo -v`; el helper no lee stdin. El preflight no invoca `runuser`
+ni Podman (incluso `podman info` puede inicializar el almacén). Si rechaza,
+no inició E1: devolver el diagnóstico y resolver OP3/E2, sin adoptar recursos.
+No ejecutar la mutación E1 hasta autorización de la revisión. En E1, tras
+revalidar preflight, el helper verifica contexto UID/grupos, mapas rootless
+y rutas VFS dedicadas antes del primer pull, con authfile efímero privado
+y entorno limpio. Si E1 inició y falla o se interrumpe, conservar estado,
+inventariar como custodio y acordar reconciliación manual; no reintentar, no
+hacer `prune`, ni borrar directorios, imágenes o identidades. El runtime
+efímero caduca al reinicio y no lo recrea E1.
+
+Devolver **sólo** pruebas no sensibles: resultado de preflight y, únicamente
+tras una E1 autorizada, `Rootless=true` con rutas dedicadas, ambos pines
+verificados, dos imágenes `linux/amd64`, espacio antes/después y constancia
+de inventario intacto de contenedores, redes y volúmenes. Esto no acredita
+arranque ni custodia financiera.
 
 ### OP4 restante — sólo tras su gate
 
