@@ -92,8 +92,11 @@ La herramienta de preparación no abre conexiones, no activa el Store ni
 instala un `state.json`. Probada sólo con fixtures. La revisión en vivo y
 cualquier aplicación requieren autorización separada.
 
-1. Verificar por fuera de la herramienta qué directorio corresponde a
-   `admin-regtest-3201` y cuál es el otro historial del **mismo** pagador.
+1. Acreditar por fuera de la herramienta el `DATA_DIR` actual de
+   `admin-regtest-3201`, y los dos Stores históricos no vacíos del **mismo**
+   pagador, con sus rutas canónicas y SHA-256 de `state.json`. Vincular el
+   actual al UUID del ADMIN autorizado y cada histórico a su cuenta original;
+   no reasignar admisiones de laboratorio al ADMIN.
    Identificar todos los escritores; detener o mantener deshabilitados sólo
    los pertinentes, sin tocar `:3200`. Si algún escritor no respeta
    `engine.lock`, si interviene `:3200`, o si no se puede demostrar aislamiento,
@@ -108,30 +111,77 @@ cualquier aplicación requieren autorización separada.
    originales en local para revisión, sin cabeceras, credenciales ni logs
    públicos. Nunca generar `track` copiando el estado del diario. Si un lookup
    está ausente, es ambiguo o no coincide, abortar; no enviar ni reintentar.
-3. Preparar `evidence.json` (`0600`, fuera del repo y de los tres directorios):
-   `{target:"admin-regtest-3201", payer:<identidad>, lookups:{<hash>:{before:<identidad>,after:<identidad>,approval:<ForwardApproval original>,track:<observación>}}}`.
+3. Preparar `evidence.json` (`0600`, fuera del repo y de los cuatro directorios):
+   `{target:"admin-regtest-3201", payer:<identidad>, payeeNode:<pubkey>, sources:{admin:{sha256,owner},historicalA:{sha256,owner},historicalB:{sha256,owner}}, lookups:{<hash>:{before:<identidad>,after:<identidad>,approval:<ForwardApproval original>,track:<observación>}}}`.
+   `sha256` fija los bytes de la fuente de cada rol; `sources.admin.owner` exige
+   el UUID canónico en minúsculas del ADMIN autorizado y los históricos conservan
+   su cuenta original; el nodo receptor es el de los registros originales, no
+   identidades nuevas.
    La identidad contiene `network:"regtest"`, `container:"iso_rt_lnd_provider"`,
    `containerId` (64 hex minúsculas) y `node` (pubkey). Normalizar `track` con
-   los campos de `CoreLndForwardPorts.track`: `{status:"SUCCEEDED",hash,preimage,valueMsat,feeMsat}`
-   o `{status:"FAILED",hash,reason:"FAILURE_REASON_INSUFFICIENT_BALANCE",htlcs:[],feeMsat:0}`.
-   Para el segundo, comprobar también `fee_sat` y, si existe, `fee` en cero
-   en la respuesta original. No retener preimágenes fuera de este entorno
-   privado. La API offline **no autentica el origen ni la vigencia** del JSON:
-   el revisor debe contrastarlo con las capturas y la identidad del lab.
+   esquema estricto de `CoreLndForwardPorts.track` (`{status:"SUCCEEDED",hash,preimage,valueMsat,feeMsat}`
+   o `{status:"FAILED",hash,reason:"FAILURE_REASON_INSUFFICIENT_BALANCE",htlcs:[],feeMsat:0}`)
+   y contrastar campo a campo contra las capturas crudas privadas de `TrackPayment`:
+   para `SUCCEEDED`, verificar `failure_reason:"FAILURE_REASON_NONE"`, `payment_hash`,
+   `payment_preimage` (`sha256 == payment_hash`), `value_msat` (y `value_sat` si
+   existe) y `fee_msat` (`fee_sat` si existe); para `FAILED`, comprobar
+   `failure_reason:"FAILURE_REASON_INSUFFICIENT_BALANCE"`, `htlcs:[]`, `fee_msat:"0"`,
+   `fee_sat:"0"` y, si existe, `fee:"0"` en la respuesta original. Las entradas
+   de `forwardPayments` no pueden incluir campos sensibles o inesperados (p. ej.
+   preimágenes o metadatos): el preparador falla en cerrado sin descartar datos.
+   No retener preimágenes fuera de este entorno privado. La API offline **no
+   autentica el origen ni la vigencia** del JSON: el revisor debe contrastarlo
+   con las capturas y la identidad del lab.
 4. Tras autorización para usar entradas reales, preparar un directorio vacío
-   de revisión `0700` separado de ambos directorios del Store:
-   `npx tsx scripts/prepare-forward-consolidation.ts <admin-dir> <otro-dir> <salida-vacía> <evidence.json>`.
-   La herramienta toma los tres `engine.lock` antes de leer. Exige las dos
-   fuentes no vacías, verifica aprobaciones, digest, hash, outpoint y evidencia
-   terminal; incluso dos registros idénticos por hash causan rechazo. Conserva
-   campos completos y nunca sobrescribe secciones ajenas pobladas y distintas.
-5. Revisar localmente `admin-regtest-3201-review/`: dos backups byte a byte,
-   `candidate.json` y `manifest.json` con SHA-256 de los tres y de la evidencia.
+   de revisión `0700` separado de los tres Stores:
+   `npx tsx scripts/prepare-forward-consolidation.ts <admin-dir> <histórico-a> <histórico-b> <salida-vacía> <evidence.json>`.
+   Toma cuatro `engine.lock` antes de leer y vuelve a verificar su propiedad y
+   los bytes de las fuentes antes de publicar. Une ambos mapas forward sin
+   deduplicar; valida cuenta, UUID canónico, IDs, reservas y el vínculo uno a uno
+   entre cada pago terminal y su admisión original. Una admisión sin pago sólo se
+   conserva si no ha fijado un outpoint; cualquier admisión con outpoint sin pago
+   o reserva ambigua (`id`, `paymentHash`, `invoice`, `address`, `scriptPubKey`,
+   `outpoint` o `(owner, requestKey)`) es rechazada. El estado no forward se limita
+   exclusivamente a `schema: 1`, `swaps: {}` vacío y `quotes` actual en `admin`:
+   cualquier clave inesperada, mapa poblado inesperado o solapamiento de `quotes`
+   (incluso idéntico) se rechaza sin borrar datos.
+5. Revisar localmente `admin-regtest-3201-review/`: tres backups byte a byte,
+   `candidate.json` y `manifest.json` con SHA-256 de los cuatro y la evidencia.
    Verificar permisos (`0700`/`0600`), hashes contra originales y evidencia,
    cardinalidad exacta y unión íntegra, estados y reservas, y que no aparezca
-   ninguna modificación inesperada de estado no forward. Ante error de
-   publicación o durabilidad, no confiar en la salida ni reintentar a ciegas.
+   ninguna modificación inesperada de estado no forward. Auditar toda admisión
+   abierta sin outpoint conservada en `candidate.json` antes de cualquier
+   activación futura: comprobar propietario, expiración, estado de la factura en
+   LND (`LookupInvoice`/`TrackPayment`) y ausencia o presencia de depósito UTXO en
+   Core para su dirección reservada. Ante error de publicación, pérdida de lock
+   posterior al `rename` o fallo de durabilidad, la herramienta y su CLI emiten un
+   diagnóstico estático seguro de resultado incierto sin filtrar rutas y conservan
+   tanto cualquier `engine.lock` sustituto como el bundle no ejecutable: no usar la
+   salida ni reintentar a ciegas. No romper locks: `Store.close()` drena las
+   transacciones pendientes, verifica la propiedad de `engine.lock` antes de
+   desvincular y falla en cerrado si se perdió; los consumidores deben esperar
+   `Store.close()` para garantizar exclusión cooperativa entre procesos `Store` y
+   mantenimiento offline, sin sustituir el aislamiento de escritores externos ni la
+   exclusión persistente por pagador (hito posterior).
    Si se reanudaron escritores, los hashes son sólo evidencia del snapshot:
    cotejar de nuevo bajo exclusión antes de cualquier aplicación futura.
    No renombrar `candidate.json` a `state.json`, no reiniciar ni habilitar
    ejecución como parte de esta revisión.
+
+### Condición para un cutover futuro, no autorizada por esta preparación
+
+Inventariar procesos, unidades/supervisores, tareas programadas, lanzadores
+manuales, contenedores y montajes que puedan abrir cualquiera de las tres
+rutas o acceder al pagador. Acreditar el `DATA_DIR`, UID, ruta real/inode,
+lock y perfil de cada escritor sin leer ni alterar `:3200`. Si algún escritor
+no puede identificarse o aislarse, no hay cutover. Con autorización separada,
+detener de forma ordenada sólo el escritor `:3201`, impedir su relanzamiento
+automático y revalidar los tres fingerprints bajo los locks originales.
+Sellar los históricos y backups como archivos privados en custodia separada
+(montaje de sólo lectura o propietario distinto, sin permiso para modificar
+archivos o padres desde el UID de servicio). Retirar sus rutas de la
+configuración escribible y verificar desde la identidad del servicio que no
+puede reabrirlos ni recrearlos; `chmod` con el mismo propietario no basta.
+Exigir un único destino de escritura y exclusión por pagador que cubra todos
+los lanzadores autorizados; una prueba de apertura concurrente debe fallar.
+Si falta evidencia de exclusión persistente, conservar el gate cerrado.
