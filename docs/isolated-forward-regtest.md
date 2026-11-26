@@ -19,7 +19,12 @@ enough after rebuilding an isolated chain.
 REST. `UNKNOWN` is not authorization to resend, even when LND returns no
 payment or a failure. Recovery reopens the same journal, tracks on the same
 payer, and requires matching hash, preimage, amount and fee evidence before
-recording `SUCCEEDED`. The preimage is not persisted.
+recording `SUCCEEDED`. The preimage is not persisted. An `UNKNOWN` intent
+can also close as `FAILED_INSUFFICIENT_BALANCE`, but only if tracking on the
+same verified payer returns the same hash, terminal `FAILED` with
+`FAILURE_REASON_INSUFFICIENT_BALANCE`, an explicitly empty HTLC list and zero
+fees. The hash and outpoint remain reserved; neither terminal state allows
+another send.
 
 To verify on the existing `swap-engine-iso-regtest` stack:
 
@@ -68,9 +73,12 @@ self-funded laboratory evidence, not an externally funded user swap.
   La ruta Ark devolvió `executionAvailable: false` sin tocar permisos.
 
 **No habilitar aún.** El arranque del preview no instala los puertos de
-escritura forward. Antes de instalarlos, reconciliar la intención `UNKNOWN`
-de la ejecución previa en el mismo LND y designar un único diario duradero y
-exclusivo para el pagador (no arrancar con un diario vacío en paralelo);
+escritura forward. La intención `UNKNOWN` se cerró en su diario original
+mediante consulta al mismo LND, sin envío. Se encontraron dos diarios
+históricos no vacíos del mismo pagador, con hashes y outpoints distintos.
+Antes de instalar los puertos, se necesita un único diario duradero y
+exclusivo que conserve ambos historiales y sus reservas (no elegir uno
+omitiendo el otro ni arrancar con un diario vacío en paralelo);
 vincular un perfil local revisado al UUID de la cuenta autorizada, al wallet
 Core, al par LND y al canal directo confirmado del stack aislado, con
 credenciales privadas y capacidad saliente vigente. En ese perfil, validar

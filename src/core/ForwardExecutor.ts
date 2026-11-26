@@ -17,7 +17,7 @@ const approvalSchema = z.object({
 });
 export type ForwardApproval = z.infer<typeof approvalSchema>;
 type Approval = ForwardApproval;
-type Status = 'INTENT' | 'UNKNOWN' | 'SUCCEEDED';
+type Status = 'INTENT' | 'UNKNOWN' | 'SUCCEEDED' | 'FAILED_INSUFFICIENT_BALANCE';
 export type ForwardPaymentJournal = { payerNode: string; outpoint: string; approvalDigest: string; status: Status };
 const depositSchema = approvalSchema.shape.deposit.extend({
   network: z.literal('regtest'), confirmations: z.number().int().min(2),
@@ -25,6 +25,8 @@ const depositSchema = approvalSchema.shape.deposit.extend({
 const payerSchema = z.object({ network: z.literal('regtest'), node: pubkey, ready: z.literal(true) });
 const paidSchema = z.object({ status: z.literal('SUCCEEDED'), hash, preimage: hash,
   valueMsat: z.number().int().positive(), feeMsat: z.number().int().nonnegative() });
+const failedSchema = z.object({ status: z.literal('FAILED'), hash,
+  reason: z.literal('FAILURE_REASON_INSUFFICIENT_BALANCE'), htlcs: z.tuple([]), feeMsat: z.literal(0) });
 
 /** Trusted internal ports, not browser input. */
 export interface ForwardPorts {
@@ -69,20 +71,24 @@ export class ForwardExecutor {
       await this.checkPayer(a);
       paid = wireAuthorized && this.verifiedPayment(a, evidence);
     } catch { /* An ambiguous send consumes the intent. */ }
-    return this.record(a, paid);
+    return this.record(a, paid ? 'SUCCEEDED' : 'UNKNOWN');
   }
 
   async recover(input: Approval): Promise<Status> {
     const a = this.approval(input);
-    if (this.entry(a).status === 'SUCCEEDED') return 'SUCCEEDED';
-    let paid = false;
+    const initial = this.entry(a).status;
+    if (initial === 'SUCCEEDED' || initial === 'FAILED_INSUFFICIENT_BALANCE') return initial;
+    let outcome: Status = 'UNKNOWN';
     try {
       await this.checkPayer(a);
       const evidence = await this.ports.track(a.paymentHash);
       await this.checkPayer(a);
-      paid = this.verifiedPayment(a, evidence);
+      const failed = failedSchema.safeParse(evidence);
+      if (initial === 'UNKNOWN' && failed.success && failed.data.hash === a.paymentHash)
+        outcome = 'FAILED_INSUFFICIENT_BALANCE';
+      else if (this.verifiedPayment(a, evidence)) outcome = 'SUCCEEDED';
     } catch { /* Missing, pending, malformed and failed observations do not reopen the intent. */ }
-    return this.record(a, paid);
+    return this.record(a, outcome);
   }
 
   private approval(input: Approval) {
@@ -98,7 +104,8 @@ export class ForwardExecutor {
 
   private entry(a: Approval) {
     const entry = this.store.read().forwardPayments?.[a.paymentHash];
-    if (!entry || entry.approvalDigest !== this.digest(a)) throw new Error('No matching forward payment intent');
+    if (!entry || entry.payerNode !== a.payerNode || entry.approvalDigest !== this.digest(a))
+      throw new Error('No matching forward payment intent');
     return entry;
   }
 
@@ -123,12 +130,13 @@ export class ForwardExecutor {
       createHash('sha256').update(Buffer.from(p.preimage, 'hex')).digest('hex') === a.paymentHash;
   }
 
-  private record(a: Approval, paid: boolean) {
+  private record(a: Approval, outcome: Status) {
     const digest = this.digest(a);
     return this.store.transaction(db => {
       const entry = db.forwardPayments?.[a.paymentHash];
-      if (!entry || entry.approvalDigest !== digest) throw new Error('Forward intent changed');
-      if (entry.status !== 'SUCCEEDED') entry.status = paid ? 'SUCCEEDED' : 'UNKNOWN';
+      if (!entry || entry.payerNode !== a.payerNode || entry.approvalDigest !== digest) throw new Error('Forward intent changed');
+      if (entry.status !== 'SUCCEEDED' && entry.status !== 'FAILED_INSUFFICIENT_BALANCE' &&
+        (outcome !== 'FAILED_INSUFFICIENT_BALANCE' || entry.status === 'UNKNOWN')) entry.status = outcome;
       return entry.status;
     });
   }

@@ -8,6 +8,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ForwardExecutor, type ForwardPorts } from '../src/core/ForwardExecutor.js';
 import { ForwardAdmission } from '../src/core/ForwardAdmission.js';
+import { CoreLndForwardPorts } from '../src/core/CoreLndForwardPorts.js';
+import { trackPaymentPath } from '../src/lightning/LndPaymentTransport.js';
 import { Store } from '../src/persistence/Store.js';
 import { SwapManager } from '../src/core/SwapManager.js';
 import { createApi } from '../src/api/server.js';
@@ -207,6 +209,47 @@ test('confirmation loss after durable intent prevents sending and cannot reopen 
   f.confirmations(2);
   await assert.rejects(f.executor().execute(f.a), /already journaled/);
   assert.deepEqual(f.counts, { sends: 0, tracks: 0 });
+});
+
+test('only matching authoritative zero-attempt, zero-fee insufficient balance closes UNKNOWN permanently', async t => {
+  const f = await setup(t);
+  const failed = { status: 'FAILED', failure_reason: 'FAILURE_REASON_INSUFFICIENT_BALANCE',
+    payment_hash: f.a.paymentHash, htlcs: [], fee: '0', fee_sat: '0', fee_msat: '0' };
+  let raw: unknown = failed;
+  const origin = 'https://127.0.0.1:48080';
+  const adapter = new CoreLndForwardPorts({ call: async () => { throw new Error('unused'); } },
+    { origin, call: async () => { throw new Error('unused'); } }, {
+      origin, async stream(path, body, observe) {
+        assert.equal(path, trackPaymentPath(f.a.paymentHash));
+        assert.equal(body, undefined);
+        assert.equal(observe(raw), true);
+      },
+    }, f.a.payerNode, f.a.payeeNode, '123');
+  f.ports.track = hash => adapter.track(hash);
+  f.disconnect();
+  assert.equal(await f.executor().execute(f.a), 'UNKNOWN');
+  await f.reopen();
+  const before = f.snapshot().forwardPayments![f.a.paymentHash];
+  for (raw of [
+    { ...failed, payment_hash: 'ab'.repeat(32) }, { ...failed, status: 'IN_FLIGHT' },
+    { ...failed, failure_reason: 'FAILURE_REASON_NO_ROUTE' }, { ...failed, htlcs: [{}] },
+    { ...failed, htlcs: undefined }, { ...failed, fee_msat: '1' }, { ...failed, fee_sat: '1' },
+    { ...failed, fee_msat: undefined },
+  ]) assert.equal(await f.executor().recover(f.a), 'UNKNOWN');
+  raw = failed;
+  const inspect = f.ports.inspectPayer;
+  let checks = 0;
+  f.ports.inspectPayer = async () => ++checks === 1 ? inspect()
+    : { network: 'regtest', ready: true, node: f.a.payeeNode };
+  assert.equal(await f.executor().recover(f.a), 'UNKNOWN');
+  f.ports.inspectPayer = inspect;
+  assert.equal(await f.executor().recover(f.a), 'FAILED_INSUFFICIENT_BALANCE');
+  await f.reopen();
+  f.ports.track = async () => { assert.fail('Terminal status must not track again'); };
+  assert.equal(await f.executor().recover(f.a), 'FAILED_INSUFFICIENT_BALANCE');
+  assert.deepEqual(f.snapshot().forwardPayments![f.a.paymentHash], { ...before, status: 'FAILED_INSUFFICIENT_BALANCE' });
+  await assert.rejects(f.executor().execute(f.a), /already journaled/);
+  assert.equal(f.counts.sends, 1);
 });
 
 test('a different payer cannot send or reconcile a forward payment', async t => {

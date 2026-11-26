@@ -13,6 +13,9 @@ const script = z.string().regex(/^0014[a-f0-9]{40}$/);
 const int64 = z.string().regex(/^(0|[1-9][0-9]{0,15})$/).transform(Number).pipe(z.number().int().nonnegative());
 const payment = z.object({ status: z.literal('SUCCEEDED'), failure_reason: z.literal('FAILURE_REASON_NONE'),
   payment_hash: hash, payment_preimage: hash, value_msat: int64, fee_msat: int64 });
+const noBalance = z.object({ failure_reason: z.literal('FAILURE_REASON_INSUFFICIENT_BALANCE'),
+  payment_hash: hash, htlcs: z.tuple([]), fee_msat: z.literal('0'),
+  fee_sat: z.literal('0'), fee: z.literal('0').optional() });
 
 /** Deliberately limited to one direct regtest channel and a Core provider wallet.
  * Never auto-registers with HTTP. No bitcoin spend or mining methods. */
@@ -99,17 +102,23 @@ export class CoreLndForwardPorts implements ForwardPorts {
   }
 
   track(paymentHash: string) {
-    return this.observe(trackPaymentPath(paymentHash), undefined);
+    return this.observe(trackPaymentPath(paymentHash), undefined, undefined, paymentHash);
   }
 
-  private async observe(path: string, body: unknown, guard?: () => Promise<void>) {
+  private async observe(path: string, body: unknown, guard?: () => Promise<void>, trackedHash?: string) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 75_000);
     try {
       let evidence: unknown;
       await this.transport.stream(path, body, raw => {
         const { status } = z.object({ status: z.enum(['INITIATED', 'IN_FLIGHT', 'SUCCEEDED', 'FAILED']) }).parse(raw);
-        if (status === 'FAILED') throw new Error('Forward payment failed; reconcile without resend');
+        if (status === 'FAILED') {
+          if (!trackedHash) throw new Error('Forward payment failed; reconcile without resend');
+          const p = noBalance.parse(raw);
+          if (p.payment_hash !== trackedHash) throw new Error('Forward tracked payment hash mismatch');
+          evidence = { status, hash: p.payment_hash, reason: p.failure_reason, htlcs: p.htlcs, feeMsat: 0 };
+          return true;
+        }
         if (status !== 'SUCCEEDED') return false;
         const p = payment.parse(raw);
         evidence = { status, hash: p.payment_hash, preimage: p.payment_preimage, valueMsat: p.value_msat, feeMsat: p.fee_msat };

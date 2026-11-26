@@ -71,6 +71,7 @@ export function mountForward() {
     buttons();
     notice({
       SUCCEEDED: 'Lightning payment verified by the backend.',
+      FAILED_INSUFFICIENT_BALANCE: 'LND verified insufficient balance. Payment was not sent; this deposit cannot be retried.',
       UNKNOWN: 'Payment must be checked without resending.',
       INTENT: 'Payment intent recorded. Check the payment without resending.',
       EXPIRED: 'Reservation expired. Do not send a deposit.',

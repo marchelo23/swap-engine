@@ -14,11 +14,23 @@
 ## Verificación automatizada
 
 - Compilación: `npm run build`.
-- Pruebas: `npm test`, 520 aprobadas, 1 omitida (ACL de Windows), 0 fallidas; suite forward dirigida final: 4 aprobadas.
+- Pruebas: `npm test`, 525 aprobadas, 1 omitida (ACL de Windows), 0 fallidas.
 - Escaneo previo a publicación: `npm run secrets:check`, sin hallazgos.
 
 ## Bitcoin on-chain → Lightning (prioridad)
 
 - Incremento offline: `ForwardExecutor` registra una intención durable por hash y outpoint antes del envío, comprueba de nuevo el depósito y recupera por consulta al mismo pagador sin reenviar. Una respuesta perdida, evidencia insuficiente o confirmaciones perdidas requieren reconciliación.
 - `b9f3287` verificó admisión, depósito y pago/recuperación con Core/LND aislados fuera de HTTP. La API y la vista forward reutilizan esa admisión; las pruebas HTTP con puertos simulados verifican autorización por cuenta, CSRF, idempotencia, importe exacto y recuperación sin reenvío.
-- Orca embebido, cuenta autenticada, `#forward`: disponibilidad HTTP 200/`false`, controles ocultos. Ark conserva `executionAvailable: false`. No se enviaron fondos ni se verificó un swap desde la web. Gate cerrado: falta instalar el perfil de arranque con el diario canónico del pagador (hay una intención previa `UNKNOWN` que revisar), la vinculación local de cuenta/Core/LND/canal y la prueba financiada de navegador con recuperación. Ver [evidencia y condiciones](docs/isolated-forward-regtest.md#http-y-preview-web-2026-11-25).
+- Orca embebido, cuenta autenticada, `#forward`: disponibilidad HTTP 200/`false`, controles ocultos. Ark conserva `executionAvailable: false`. No se enviaron fondos ni se verificó un swap desde la web. Gate cerrado por falta de un diario canónico que preserve ambos historiales del pagador. Ver [evidencia y condiciones](docs/isolated-forward-regtest.md#http-y-preview-web-2026-11-25).
+
+## Preview web local
+
+- Preview regtest en loopback con Core y ambos nodos LND del stack aislado. Capacidades verificadas para Bitcoin y Lightning; ejecución deshabilitada. Ark y Liquid no se configuraron en este preview.
+- Inicio de sesión ADMIN y vista protegida de balances verificados en el navegador embebido de Orca. Credenciales locales fuera del repositorio con permisos `0600`.
+
+### Segundo preview web (2026-11-25)
+
+- `127.0.0.1:3201` operativo en regtest y solo lectura; `:3200` conservó su proceso y respondió a health. Store de autenticación independiente y perfil de navegador Orca aislado para no compartir cookies con `:3200`. Login ADMIN verificado: sesión HTTP 200; disponibilidad forward HTTP 200 con `executionAvailable: false` y aviso visible.
+- Recuperación real en el diario original: `UNKNOWN` → `FAILED_INSUFFICIENT_BALANCE`. `trackpayment` del mismo LND regtest, mismo hash, `FAILED`, 0 HTLCs y comisión cero. Se conservan el hash y el outpoint; no se borró ni se reenvió la intención.
+- Bloqueo de escritura: dos diarios financieros no vacíos del mismo pagador, con hashes y outpoints distintos (`SUCCEEDED` en uno y `FAILED_INSUFFICIENT_BALANCE` en el otro). No se eligió ni se clonó uno como canónico, no se habilitó la cuenta para ejecución ni se reinició `:3201`.
+- Preflight `:3201`: HTTP 200, diagnósticos y requisitos correctos, tips coincidentes y sin bloqueos de diagnóstico. El canal directo activo con Alice tenía financiación sin gastar con 8 confirmaciones en Core, saldo local de 191.530 sats, reserva de 2.000 sats y 0 HTLCs pendientes. Orca confirmó que forward sigue no disponible. Ninguna ruta de ejecución nueva; sin depósito ni swap web.
