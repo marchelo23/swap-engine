@@ -15,7 +15,8 @@ const approvalSchema = z.object({
     scriptPubKey: z.string().regex(/^(0014[a-f0-9]{40}|0020[a-f0-9]{64}|5120[a-f0-9]{64})$/),
     valueSats: z.number().int().min(1).max(200_100) }),
 });
-type Approval = z.infer<typeof approvalSchema>;
+export type ForwardApproval = z.infer<typeof approvalSchema>;
+type Approval = ForwardApproval;
 type Status = 'INTENT' | 'UNKNOWN' | 'SUCCEEDED';
 export type ForwardPaymentJournal = { payerNode: string; outpoint: string; approvalDigest: string; status: Status };
 const depositSchema = approvalSchema.shape.deposit.extend({
@@ -25,7 +26,7 @@ const payerSchema = z.object({ network: z.literal('regtest'), node: pubkey, read
 const paidSchema = z.object({ status: z.literal('SUCCEEDED'), hash, preimage: hash,
   valueMsat: z.number().int().positive(), feeMsat: z.number().int().nonnegative() });
 
-/** Trusted internal ports, not browser input. No live implementation is registered. */
+/** Trusted internal ports, not browser input. */
 export interface ForwardPorts {
   inspectPayer(): Promise<unknown>;
   decodeInvoice(invoice: string): Promise<unknown>;
@@ -37,7 +38,7 @@ export interface ForwardPorts {
   track(paymentHash: string): Promise<unknown>;
 }
 
-/** Offline increment. Only a trusted operator can supply an approved plan. Uses one
+/** Only a trusted service can supply an approved plan. Uses one
  * durable Store per payer, including across recovery. Never wire to HTTP as-is. */
 export class ForwardExecutor {
   constructor(private readonly store: Store, private readonly ports: ForwardPorts) {}
