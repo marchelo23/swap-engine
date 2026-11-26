@@ -56,7 +56,7 @@ En esta fase no existen todavía los nodos nuevos ni el canal, por lo que **no**
 3. **Verificación offline automatizada:** ejecutar `npm run build`, `npm test` y `npm run secrets:check` tras los cambios de código pertinentes.
 4. **Acreditación del principal web y almacenamiento durable:**
    - Verificar de forma de sólo lectura el UUID v4 canónico en minúsculas del `ADMIN` autorizado existente en el `AUTH_STORE_PATH` propio de `admin-regtest-3201` (sin leer ni compartir el de `:3200`).
-   - Verificar mediante `df -T` / `findmnt` que las rutas destino de `DATA_DIR`, del registro `~/.local/share/lqwd-swap-engine/forward-payers/` y de los futuros volúmenes de nodos están en disco local persistente (**fuera de `tmpfs`**, jamás `/tmp`), pertenecen al mismo UID Linux y cumplen `0700`/`0600` sin symlinks.
+   - Verificar mediante `df -T` / `findmnt` que las rutas destino de `DATA_DIR`, del registro `~/.local/share/lqwd-swap-engine/forward-payers/` y de los futuros volúmenes de nodos están en disco local persistente (**fuera de `tmpfs`**, jamás `/tmp`), bajo un único UID dedicado `iso_rt_fwd_svc`, distinto del operador, y cumplen `0700`/`0600` sin symlinks. La cuenta y custodia requieren el gate administrativo, no la mera autorización de descarga.
    - Fijar la convención de nombres nuevos con prefijo **`iso_rt_*`** (ver sección 2.2), sin colisionar ni tocar ningún recurso `iso_rt_*` previo.
 5. **Autorización explícita del usuario:** el usuario aprueba por escrito:
    - La topología nueva `iso_rt_*` y el uso exclusivo del destino `127.0.0.1:3201/#forward` (`admin-regtest-3201`).
@@ -70,8 +70,8 @@ Sólo tras autorización escrita del usuario para la Fase B:
 1. **Convención de nombres nuevos `iso_rt_*` (sin tocar antiguos):**
    - Quedan **intocables**: `iso_rt_bitcoin`, `iso_rt_lnd_provider`, `iso_rt_lnd_alice`, `iso-core-lab`, `iso_rt_postgres`, `iso_rt_redis`, `iso_rt_nbxplorer`, `iso_rt_fulcrum`, `iso_rt_mempool_api`, `iso_rt_arkd*`, `iso_rt_elements`, sus volúmenes/redes, `:3200`, los históricos A/B y el viejo `DATA_DIR` de `:3201`.
    - Todos los recursos nuevos mantienen prefijo `iso_rt_*` y nombres disjuntos, por ejemplo:
-     - Contenedores/servicios nuevos: `iso_rt_lnd_fwd_payer`, `iso_rt_lnd_fwd_payee` (y, si el usuario aprueba un Core separado en lugar de una wallet aislada dentro de `iso_rt_bitcoin`, `iso_rt_bitcoin_fwd` con su propia red `iso_rt_fwd_net` y volumen `iso_rt_bitcoin_fwd_data`).
-     - Volúmenes/directorios persistentes fuera de `tmpfs` (`0700`, p. ej. bajo `~/.local/share/iso_rt_fwd_3201/`): `iso_rt_lnd_fwd_payer`, `iso_rt_lnd_fwd_payee`, `iso_rt_fwd_state` (`DATA_DIR` nuevo), `iso_rt_fwd_secrets`, `iso_rt_fwd_profile`.
+     - Contenedores/servicios nuevos: `iso_rt_lnd_fwd_payer`, `iso_rt_lnd_fwd_payee` y Core dedicado `iso_rt_bitcoin_fwd` con su propia red `iso_rt_fwd_net` y volumen `iso_rt_bitcoin_fwd_data`, tras el gate de topología; no usar una wallet dentro de `iso_rt_bitcoin`.
+     - Volúmenes/directorios persistentes fuera de `tmpfs` (`0700`, bajo el home del servicio): `iso_rt_lnd_fwd_payer`, `iso_rt_lnd_fwd_payee`, `iso_rt_fwd_state` (`DATA_DIR` nuevo), `iso_rt_fwd_secrets`, `iso_rt_fwd_profile`. Véase el [handoff administrativo](forward-regtest-host-handoff.md) para adquisición, custodia y relevo.
      - Wallet Core exclusiva nueva: `iso_rt_core_fwd` (nunca `iso-core-lab`), con `private_keys_enabled: true`, descriptor wallet vacía, saldo inicial `0`.
      - Puertos loopback nuevos en `127.0.0.1` distintos de `:3200`, `:3201`, `:40009–49736` y del puerto temporal de validación.
 2. **Verificación de Bitcoin Core regtest y wallet exclusiva:**
