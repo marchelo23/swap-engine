@@ -60,4 +60,5 @@ export type Database = { schema: 1; quotes: Record<string, Quote>; swaps: Record
     status: 'INTENT' | 'COMPLETED' | 'UNKNOWN'; blocksRequested: number;
     runtimeActions?: Record<string, { attemptId: string; status: 'INTENT' | 'DONE' | 'UNKNOWN' }>;
     payerSend?: { attemptId: string; hash: string; status: 'INTENT' | 'SUCCEEDED' | 'FAILED' | 'UNKNOWN' } }>;
+  forwardPayments?: Record<string, import('./ForwardExecutor.js').ForwardPaymentJournal>;
   chainObservations?: Record<string, ChainObservation> };
