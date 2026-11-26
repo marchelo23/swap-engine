@@ -116,7 +116,7 @@
           <input id="forward-invoice" required maxlength="4102" autocomplete="off" spellcheck="false">
           <label for="forward-amount">Invoice amount (sats)</label>
           <input id="forward-amount" type="number" min="1000" max="200000" step="1" required>
-          <button type="submit" class="primary">Reserve deposit</button>
+          <button id="forward-submit" type="submit" class="primary" disabled>Reserve deposit</button>
         </form>
         <label for="forward-picker">Your forward swaps</label>
         <select id="forward-picker"></select>

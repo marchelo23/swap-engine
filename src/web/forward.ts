@@ -6,7 +6,9 @@ export function mountForward() {
   const form = get<HTMLFormElement>('forward-admission');
   const invoice = get<HTMLInputElement>('forward-invoice');
   const amount = get<HTMLInputElement>('forward-amount');
+  const submit = get<HTMLButtonElement>('forward-submit');
   const picker = get<HTMLSelectElement>('forward-picker');
+  const refreshButton = get<HTMLButtonElement>('forward-refresh');
   const txid = get<HTMLInputElement>('forward-txid');
   const vout = get<HTMLInputElement>('forward-vout');
   const execute = get<HTMLButtonElement>('forward-execute');
@@ -16,6 +18,7 @@ export function mountForward() {
   let visible = false;
   let epoch = 0;
   let busy = false;
+  let ready = false;
   let verified: { status: ForwardStatus; point: string } | undefined;
   const point = () => {
     const index = vout.valueAsNumber;
@@ -24,10 +27,13 @@ export function mountForward() {
   };
   function buttons() {
     const status = verified?.status;
-    execute.disabled = busy || !status || status.state !== 'AWAITING_DEPOSIT' || status.expiresAt <= Date.now()
+    const locked = busy || !ready;
+    submit.disabled = locked;
+    refreshButton.disabled = locked;
+    execute.disabled = locked || !status || status.state !== 'AWAITING_DEPOSIT' || status.expiresAt <= Date.now()
       || (status.confirmations ?? 0) < status.requiredConfirmations || verified?.point !== JSON.stringify(point());
-    recover.disabled = busy || (status?.state !== 'UNKNOWN' && status?.state !== 'INTENT');
-    picker.disabled = busy;
+    recover.disabled = locked || (status?.state !== 'UNKNOWN' && status?.state !== 'INTENT');
+    picker.disabled = locked;
   }
   function render(status?: ForwardStatus) {
     txid.readOnly = vout.readOnly = Boolean(status?.outpoint);
@@ -89,12 +95,13 @@ export function mountForward() {
   function reset() {
     epoch++;
     busy = false;
+    ready = false;
     controls.hidden = true;
     form.reset();
     picker.replaceChildren();
     txid.value = vout.value = '';
     render();
-    notice('Sign in to check forward availability.');
+    notice(session && visible ? 'Checking forward availability…' : 'Sign in to check forward availability.');
     if (session && visible) void run(async (_owner, current) => {
       const available = await api.forwardAvailability().catch(() => undefined);
       if (!available) {
@@ -106,12 +113,17 @@ export function mountForward() {
         return;
       }
       if (!current()) return;
-      controls.hidden = false;
       await list(current);
+      if (!current()) return;
+      ready = true;
+      busy = false;
+      controls.hidden = false;
+      buttons();
     });
   }
   form.addEventListener('submit', event => {
     event.preventDefault();
+    if (busy || !ready || submit.disabled) return;
     const paymentRequest = invoice.value.trim();
     const invoiceSats = amount.valueAsNumber;
     void run(async (owner, current) => {
@@ -125,13 +137,21 @@ export function mountForward() {
       await list(current, id);
     });
   });
-  const refresh = () => void run(async (_owner, current) => { if (picker.value) await load(picker.value, current); });
-  picker.addEventListener('change', () => { txid.value = vout.value = ''; render(); refresh(); });
-  get('forward-refresh').addEventListener('click', refresh);
+  const refresh = () => {
+    if (busy || !ready) return;
+    void run(async (_owner, current) => { if (picker.value) await load(picker.value, current); });
+  };
+  picker.addEventListener('change', () => {
+    if (busy || !ready) return;
+    txid.value = vout.value = '';
+    render();
+    refresh();
+  });
+  refreshButton.addEventListener('click', refresh);
   txid.addEventListener('input', buttons);
   vout.addEventListener('input', buttons);
   function action(recovery: boolean) {
-    if ((recovery ? recover : execute).disabled || !verified) return;
+    if (busy || !ready || (recovery ? recover : execute).disabled || !verified) return;
     const id = verified.status.id;
     const candidate = recovery ? undefined : point();
     if (!recovery && !candidate) return;
