@@ -77,6 +77,19 @@ test('missing wallet sync, foreign networks, malformed replies and tip disagreem
   }
 });
 
+test('ZMQ publishers bound to 0.0.0.0 in a container are accepted; other ports are rejected', async () => {
+  const ok = fixtures();
+  ok.replies.getzmqnotifications = [{ type: 'pubrawblock', address: 'tcp://0.0.0.0:28332' }, { type: 'pubrawtx', address: 'tcp://0.0.0.0:28333' }];
+  const good = await ok.run();
+  assert.equal(good.bitcoin.rawBlockNotifications, true);
+  assert.equal(good.bitcoin.rawTransactionNotifications, true);
+  const bad = fixtures();
+  bad.replies.getzmqnotifications = [{ type: 'pubrawblock', address: 'tcp://0.0.0.0:28334' }, { type: 'pubrawtx', address: 'tcp://0.0.0.0:28335' }];
+  const rejected = await bad.run();
+  assert.equal(rejected.bitcoin.rawBlockNotifications, false);
+  assert.equal(rejected.bitcoin.rawTransactionNotifications, false);
+});
+
 test('wallet state endpoint distinguishes a locked LND wallet from an unavailable node', async () => {
   const f = fixtures();
   f.replies['/v1/state'] = { state: 'LOCKED' };

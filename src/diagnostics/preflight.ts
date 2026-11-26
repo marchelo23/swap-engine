@@ -61,8 +61,8 @@ export async function preflight(bitcoin: Rpc, lnd: Rest, wallet: string, mode: A
   const inactive = channels.value ? channels.value.channels.filter(c => !c.active).length : null;
   const tipsMatch = c && l ? c.blocks === l.block_height && c.bestblockhash === l.block_hash : null;
   // These are the existing lab LND configurations, not addresses the app opens.
-  const rawBlocks = notifications.value ? notifications.value.some(n => n.type === 'pubrawblock' && n.address === 'tcp://127.0.0.1:28332') : null;
-  const rawTransactions = notifications.value ? notifications.value.some(n => n.type === 'pubrawtx' && n.address === 'tcp://127.0.0.1:28333') : null;
+  const rawBlocks = notifications.value ? notifications.value.some(n => n.type === 'pubrawblock' && ['tcp://127.0.0.1:28332', 'tcp://0.0.0.0:28332'].includes(n.address)) : null;
+  const rawTransactions = notifications.value ? notifications.value.some(n => n.type === 'pubrawtx' && ['tcp://127.0.0.1:28333', 'tcp://0.0.0.0:28333'].includes(n.address)) : null;
   const blockers: string[] = [];
   if (coreRegtest !== true) blockers.push(c ? 'CORE_NOT_REGTEST' : 'CORE_RPC_UNAVAILABLE_OR_INVALID');
   if (c?.blocks === 0) blockers.push('CORE_GENESIS_ONLY');

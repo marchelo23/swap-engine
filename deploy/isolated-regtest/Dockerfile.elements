@@ -1,0 +1,19 @@
+FROM docker.io/library/debian:bookworm-slim
+
+ARG ELEMENTS_VERSION=23.3.4
+ARG ELEMENTS_URL=https://github.com/ElementsProject/elements/releases/download/elements-23.3.4/elements-23.3.4-x86_64-linux-gnu.tar.gz
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends ca-certificates curl tar \
+  && rm -rf /var/lib/apt/lists/* \
+  && curl -fsSL "${ELEMENTS_URL}" -o /tmp/elements.tar.gz \
+  && tar -xzf /tmp/elements.tar.gz -C /tmp \
+  && install -m 0755 "/tmp/elements-${ELEMENTS_VERSION}/bin/elementsd" /usr/local/bin/elementsd \
+  && install -m 0755 "/tmp/elements-${ELEMENTS_VERSION}/bin/elements-cli" /usr/local/bin/elements-cli \
+  && rm -rf /tmp/elements.tar.gz "/tmp/elements-${ELEMENTS_VERSION}" \
+  && mkdir -p /root/.elements \
+  && chmod 0700 /root/.elements
+
+EXPOSE 7052
+
+ENTRYPOINT ["elementsd"]
